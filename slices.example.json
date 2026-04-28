@@ -1,0 +1,4 @@
+{
+  "$comment": "Copy to slices.json. Reusable slice catalog entries are managed by the dashboard.",
+  "slices": []
+}

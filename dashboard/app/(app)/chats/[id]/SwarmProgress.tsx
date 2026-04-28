@@ -1,0 +1,243 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import type { Budget, BudgetLimits } from "@/lib/budget";
+import { Button } from "@/app/components/ui";
+import type { SliceEntry } from "./SliceLane";
+
+type Props = {
+  sessionId: string;
+  streaming: boolean;
+  slices: SliceEntry[];
+  onAbort?: () => void;
+};
+
+type Clock = { elapsed: string; remaining: string | null };
+
+function fmtClock(totalSec: number): string {
+  const s = Math.max(0, Math.floor(totalSec));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
+}
+
+function deriveClock(budget: Budget | null, limits: BudgetLimits): Clock {
+  if (!budget?.wallclock_started_at) return { elapsed: "00:00", remaining: null };
+  const startedMs = Date.parse(budget.wallclock_started_at);
+  if (!Number.isFinite(startedMs)) return { elapsed: "00:00", remaining: null };
+  const elapsedSec = Math.max(0, (Date.now() - startedMs) / 1000);
+  const rem =
+    limits.max_wallclock_seconds !== undefined
+      ? Math.max(0, limits.max_wallclock_seconds - elapsedSec)
+      : null;
+  return {
+    elapsed: fmtClock(elapsedSec),
+    remaining: rem !== null ? fmtClock(rem) : null,
+  };
+}
+
+export function SwarmProgress({ sessionId, streaming, slices, onAbort }: Props) {
+  const [budget, setBudget] = useState<Budget | null>(null);
+  const [limits, setLimits] = useState<BudgetLimits>({});
+  const [clock, setClock] = useState<Clock>({ elapsed: "00:00", remaining: null });
+  const [aborting, setAborting] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Poll budget while streaming; do one last fetch when we stop.
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        const res = await fetch(
+          `/api/sessions/${encodeURIComponent(sessionId)}/budget`,
+          { cache: "no-store" }
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        setBudget(data.budget ?? null);
+        setLimits(data.limits ?? {});
+      } catch {
+        /* ignore */
+      }
+    };
+    poll();
+    if (streaming) {
+      pollRef.current = setInterval(poll, 2000);
+      return () => {
+        if (pollRef.current) clearInterval(pollRef.current);
+      };
+    }
+  }, [sessionId, streaming]);
+
+  // Tick the wallclock locally so it feels live even between polls.
+  useEffect(() => {
+    if (!budget?.wallclock_started_at) return;
+    setClock(deriveClock(budget, limits));
+    const t = setInterval(() => setClock(deriveClock(budget, limits)), 1000);
+    return () => clearInterval(t);
+  }, [budget?.wallclock_started_at, limits]);
+
+  const handleAbort = async () => {
+    setAborting(true);
+    try {
+      await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/abort`, {
+        method: "POST",
+      });
+      onAbort?.();
+    } catch {
+      /* ignore */
+    } finally {
+      setAborting(false);
+    }
+  };
+
+  const tokensUsed = budget?.tokens_used ?? 0;
+  const sliceCalls = budget?.slice_calls ?? 0;
+  const maxTokens = limits.max_total_tokens;
+  const maxCalls = limits.max_slice_calls;
+  const tokenPct = maxTokens
+    ? Math.min(100, (tokensUsed / maxTokens) * 100)
+    : 0;
+  const callsPct = maxCalls
+    ? Math.min(100, (sliceCalls / maxCalls) * 100)
+    : 0;
+
+  const tokenTone: "" | "kpi-warn" | "kpi-fail" =
+    tokenPct >= 90 ? "kpi-fail" : tokenPct >= 70 ? "kpi-warn" : "";
+  const callsTone: "" | "kpi-warn" | "kpi-fail" =
+    callsPct >= 90 ? "kpi-fail" : callsPct >= 70 ? "kpi-warn" : "";
+
+  const running = slices.filter((s) => s.status === "running").length;
+  const completed = slices.filter((s) => s.status !== "running").length;
+
+  return (
+    <section
+      aria-label="Orchestrator progress"
+      className="rounded-xl border border-border overflow-hidden"
+      style={{ background: "var(--bg-elev)" }}
+    >
+      <div
+        className="px-4 py-2 flex items-center gap-2 flex-wrap"
+        style={{
+          borderBottom: "1px solid var(--border)",
+          background: "var(--bg-subtle)",
+        }}
+      >
+        <span className="eyebrow">Run Progress</span>
+        {streaming ? (
+          <span className="chip chip-warn" style={{ fontSize: 10 }}>
+            <span className="status-dot status-running" />
+            live
+          </span>
+        ) : (
+          <span className="chip" style={{ fontSize: 10 }}>
+            idle
+          </span>
+        )}
+        <div style={{ flex: 1 }} />
+        {streaming && (
+          <Button
+            size="sm"
+            variant="danger"
+            disabled={aborting}
+            onClick={handleAbort}
+          >
+            {aborting ? "Aborting…" : "Abort"}
+          </Button>
+        )}
+      </div>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))",
+          gap: 10,
+          padding: 12,
+        }}
+      >
+        {/* Tokens */}
+        <div className={`kpi ${tokenTone}`.trim()}>
+          <span className="accent-line" />
+          <div className="kpi-label">Tokens</div>
+          <div className="kpi-value">
+            {tokensUsed.toLocaleString()}
+            {maxTokens && (
+              <span
+                style={{
+                  fontSize: 12,
+                  fontWeight: 400,
+                  color: "var(--text-subtle)",
+                  marginLeft: 6,
+                }}
+              >
+                / {maxTokens.toLocaleString()}
+              </span>
+            )}
+          </div>
+          {maxTokens && (
+            <div
+              style={{
+                marginTop: 8,
+                height: 4,
+                borderRadius: 9999,
+                background: "var(--border)",
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  width: `${tokenPct}%`,
+                  height: "100%",
+                  background:
+                    tokenTone === "kpi-fail"
+                      ? "var(--fail)"
+                      : tokenTone === "kpi-warn"
+                      ? "var(--warn)"
+                      : "var(--accent)",
+                  transition: "width 240ms ease",
+                }}
+              />
+            </div>
+          )}
+        </div>
+
+        {/* Slices */}
+        <div className={`kpi ${callsTone}`.trim()}>
+          <span className="accent-line" />
+          <div className="kpi-label">Slices</div>
+          <div className="kpi-value">
+            {sliceCalls}
+            {maxCalls && (
+              <span
+                style={{
+                  fontSize: 12,
+                  fontWeight: 400,
+                  color: "var(--text-subtle)",
+                  marginLeft: 6,
+                }}
+              >
+                / {maxCalls}
+              </span>
+            )}
+          </div>
+          <div className="kpi-delta">
+            <span style={{ color: "var(--running)" }}>{running} running</span>
+            <span style={{ margin: "0 6px", color: "var(--text-subtle)" }}>·</span>
+            <span>{completed} completed</span>
+          </div>
+        </div>
+
+        {/* Wallclock */}
+        <div className="kpi">
+          <span className="accent-line" />
+          <div className="kpi-label">Elapsed</div>
+          <div className="kpi-value mono">{clock.elapsed}</div>
+          {clock.remaining !== null && (
+            <div className="kpi-delta mono">
+              {clock.remaining} remaining
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}

@@ -1,0 +1,41 @@
+{
+  "name": "saturn",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "NEXT_DIST_DIR=.next-dev next dev -p 3737 -H 127.0.0.1",
+    "build": "NEXT_DIST_DIR=.next-build next build",
+    "start": "NEXT_DIST_DIR=.next-build next start -p 3737 -H 127.0.0.1",
+    "clean": "rm -rf .next .next-dev .next-build",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.119",
+    "@anthropic-ai/sdk": "^0.91.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@openai/codex-sdk": "^0.125.0",
+    "@tailwindcss/typography": "^0.5.19",
+    "cron-parser": "^4.9.0",
+    "diff": "^9.0.0",
+    "geist": "^1.7.0",
+    "next": "^14.2.15",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^9.0.1",
+    "recharts": "^3.8.1",
+    "remark-gfm": "^4.0.1",
+    "shiki": "^4.0.2",
+    "tiktoken": "^1.0.22",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/diff": "^7.0.2",
+    "@types/node": "22.19.17",
+    "@types/react": "18.3.28",
+    "@types/react-dom": "^18",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.14",
+    "typescript": "5.9.3"
+  }
+}

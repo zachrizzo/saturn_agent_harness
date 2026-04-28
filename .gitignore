@@ -1,0 +1,41 @@
+.DS_Store
+*.log
+*.tmp
+
+# Local CLI/editor state
+.claude/
+.codex/
+.playwright-cli/
+.playwright-mcp/
+
+# Runtime data and private history
+output/
+runs/
+sessions/
+tasks/
+slice-fixtures/
+telegram/state.json
+telegram/*.log
+
+# Local source-of-truth configs. Commit the matching *.example.json files instead.
+agents.json
+settings.json
+working-directories.json
+mcps.json
+slices.json
+jobs/jobs.json
+
+# Dashboard local/build artifacts
+dashboard/.env.local
+dashboard/.next/
+dashboard/.next-build/
+dashboard/.next-dev/
+dashboard/.playwright-cli/
+dashboard/node_modules/
+dashboard/output/
+dashboard/tsconfig.tsbuildinfo
+
+# Package/tooling caches
+.vercel/
+.turbo/
+coverage/

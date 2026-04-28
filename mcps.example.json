@@ -1,0 +1,22 @@
+{
+  "$comment": "Copy to mcps.json. Put real tokens only in the ignored local file.",
+  "servers": {
+    "gitlab": {
+      "type": "local",
+      "targets": ["claude", "codex"],
+      "command": ["npx", "-y", "@modelcontextprotocol/server-gitlab"],
+      "env": {
+        "GITLAB_PERSONAL_ACCESS_TOKEN": "replace-me",
+        "GITLAB_API_URL": "https://gitlab.com/api/v4"
+      }
+    },
+    "langsmith": {
+      "type": "local",
+      "targets": ["claude", "codex"],
+      "command": ["npx", "-y", "@langchain/mcp-server-langsmith"],
+      "env": {
+        "LANGSMITH_API_KEY": "replace-me"
+      }
+    }
+  }
+}

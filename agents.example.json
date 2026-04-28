@@ -1,0 +1,4 @@
+{
+  "$comment": "Copy to agents.json. Saved agents are managed by the dashboard.",
+  "agents": []
+}

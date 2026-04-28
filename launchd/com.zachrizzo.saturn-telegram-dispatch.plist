@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.zachrizzo.saturn-telegram-dispatch</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-lc</string>
+    <string>exec /Users/zachrizzo/.nvm/versions/node/v20.19.5/bin/node "/Users/zachrizzo/programming/ai harnnes/bin/telegram-dispatch.mjs"</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AUTOMATIONS_ROOT</key>
+    <string>/Users/zachrizzo/programming/ai harnnes</string>
+    <key>SATURN_BASE_URL</key>
+    <string>http://127.0.0.1:3737</string>
+    <key>TELEGRAM_BOT_TOKEN</key>
+    <string>replace-with-botfather-token</string>
+    <key>TELEGRAM_BOT_USERNAME</key>
+    <string>replace-with-bot-username</string>
+    <key>TELEGRAM_ALLOWED_CHAT_IDS</key>
+    <string>replace-with-your-chat-id</string>
+    <key>SATURN_ADHOC_CLI</key>
+    <string>claude-bedrock</string>
+    <key>SATURN_ADHOC_MODEL</key>
+    <string>claude-sonnet-4-6</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/zachrizzo/programming/ai harnnes/runs/telegram-dispatch.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/zachrizzo/programming/ai harnnes/runs/telegram-dispatch.err.log</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/zachrizzo/programming/ai harnnes</string>
+</dict>
+</plist>

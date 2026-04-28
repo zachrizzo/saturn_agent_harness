@@ -1,0 +1,8 @@
+{
+  "$comment": "Copy to settings.json. Defaults can also be edited from the dashboard Settings page.",
+  "defaultCli": "claude-bedrock",
+  "defaultModels": {},
+  "defaultReasoningEfforts": {},
+  "defaultMcpTools": false,
+  "hiddenMcpImageServers": []
+}

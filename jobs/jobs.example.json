@@ -1,0 +1,4 @@
+{
+  "$comment": "Copy to jobs/jobs.json. Recurring jobs are managed by the dashboard and bin/register-job.sh.",
+  "jobs": []
+}
