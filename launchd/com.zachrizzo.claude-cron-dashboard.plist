@@ -9,17 +9,17 @@
   <array>
     <string>/bin/bash</string>
     <string>-lc</string>
-    <string>cd "/Users/zachrizzo/programming/ai harnnes/dashboard" &amp;&amp; exec /Users/zachrizzo/.nvm/versions/node/v20.19.5/bin/npm run start</string>
+    <string>cd "__SATURN_ROOT__/dashboard" &amp;&amp; exec "__NPM_BIN__" run start</string>
   </array>
 
   <key>EnvironmentVariables</key>
   <dict>
     <key>AUTOMATIONS_ROOT</key>
-    <string>/Users/zachrizzo/programming/ai harnnes</string>
+    <string>__SATURN_ROOT__</string>
     <key>NODE_ENV</key>
     <string>production</string>
     <key>PATH</key>
-    <string>/Users/zachrizzo/.nvm/versions/node/v20.19.5/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <string>__PATH__</string>
   </dict>
 
   <key>RunAtLoad</key>
@@ -29,12 +29,12 @@
   <true/>
 
   <key>StandardOutPath</key>
-  <string>/Users/zachrizzo/programming/ai harnnes/runs/dashboard.log</string>
+  <string>__SATURN_ROOT__/runs/dashboard.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/zachrizzo/programming/ai harnnes/runs/dashboard.err.log</string>
+  <string>__SATURN_ROOT__/runs/dashboard.err.log</string>
 
   <key>WorkingDirectory</key>
-  <string>/Users/zachrizzo/programming/ai harnnes/dashboard</string>
+  <string>__SATURN_ROOT__/dashboard</string>
 </dict>
 </plist>

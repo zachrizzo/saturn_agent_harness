@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { NextRequest, NextResponse } from "next/server";
@@ -8,14 +9,18 @@ export const dynamic = "force-dynamic";
 
 const execFileAsync = promisify(execFile);
 
-const DEFAULT_PATH = [
-  "/Users/zachrizzo/.local/bin",
-  "/Users/zachrizzo/.nvm/versions/node/v20.19.5/bin",
-  "/opt/homebrew/bin",
-  "/usr/local/bin",
-  "/usr/bin",
-  "/bin",
-].join(":");
+function defaultPath(): string {
+  const home = os.homedir();
+  const candidates = [
+    path.join(home, ".local", "bin"),
+    process.env.PATH ?? "",
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+  ];
+  return [...new Set(candidates.flatMap((item) => item.split(":")).filter(Boolean))].join(":");
+}
 
 const PERSONAL_ENV_KEYS = [
   "CLAUDE_CODE_USE_BEDROCK",
@@ -32,14 +37,15 @@ type ClaudeAuthStatus = {
 };
 
 function projectRoot(): string {
-  return path.dirname(automationsRoot());
+  return automationsRoot();
 }
 
 function personalClaudeEnv(): NodeJS.ProcessEnv {
+  const pathValue = defaultPath();
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    PATH: process.env.PATH ? `${DEFAULT_PATH}:${process.env.PATH}` : DEFAULT_PATH,
-    HOME: process.env.HOME || "/Users/zachrizzo",
+    PATH: pathValue,
+    HOME: process.env.HOME || os.homedir(),
   };
 
   for (const key of PERSONAL_ENV_KEYS) {
@@ -105,8 +111,8 @@ function loginCommand(mode: "claudeai" | "console", email: string | undefined, s
 
   const claudeInvocation = ["claude", ...authArgs.map(shellQuote)].join(" ");
   return [
-    `export PATH=${shellQuote(DEFAULT_PATH)}:$PATH`,
-    `export HOME=${shellQuote(process.env.HOME || "/Users/zachrizzo")}`,
+    `export PATH=${shellQuote(defaultPath())}:$PATH`,
+    `export HOME=${shellQuote(process.env.HOME || os.homedir())}`,
     `cd ${shellQuote(projectRoot())}`,
     "unset CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN",
     claudeInvocation,

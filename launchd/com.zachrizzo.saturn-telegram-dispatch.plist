@@ -9,13 +9,15 @@
   <array>
     <string>/bin/bash</string>
     <string>-lc</string>
-    <string>exec /Users/zachrizzo/.nvm/versions/node/v20.19.5/bin/node "/Users/zachrizzo/programming/ai harnnes/bin/telegram-dispatch.mjs"</string>
+    <string>exec "__NODE_BIN__" "__SATURN_ROOT__/bin/telegram-dispatch.mjs"</string>
   </array>
 
   <key>EnvironmentVariables</key>
   <dict>
     <key>AUTOMATIONS_ROOT</key>
-    <string>/Users/zachrizzo/programming/ai harnnes</string>
+    <string>__SATURN_ROOT__</string>
+    <key>PATH</key>
+    <string>__PATH__</string>
     <key>SATURN_BASE_URL</key>
     <string>http://127.0.0.1:3737</string>
     <key>TELEGRAM_BOT_TOKEN</key>
@@ -37,12 +39,12 @@
   <true/>
 
   <key>StandardOutPath</key>
-  <string>/Users/zachrizzo/programming/ai harnnes/runs/telegram-dispatch.log</string>
+  <string>__SATURN_ROOT__/runs/telegram-dispatch.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/zachrizzo/programming/ai harnnes/runs/telegram-dispatch.err.log</string>
+  <string>__SATURN_ROOT__/runs/telegram-dispatch.err.log</string>
 
   <key>WorkingDirectory</key>
-  <string>/Users/zachrizzo/programming/ai harnnes</string>
+  <string>__SATURN_ROOT__</string>
 </dict>
 </plist>

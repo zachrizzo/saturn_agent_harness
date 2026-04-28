@@ -6,63 +6,83 @@ Schedule Claude Code agent runs via native macOS cron and view results in a loca
 
 ## Fresh Machine Setup
 
-Paste this prompt into Claude Code to set up the entire project from scratch:
+Paste this prompt into a terminal-capable agent to set up the entire project from scratch:
 
 ```
-You are setting up the saturn harness on a fresh machine. The repo is at /Users/zachrizzo/programming/ai\ harnnes. Do all of the following in order:
+You are setting up Saturn from a clean macOS machine. Do all of this in order and stop if any command fails.
 
-1. Install prerequisites:
-   - Install the Codex Desktop app from https://codex.com (required for image generation — it populates ~/.codex/skills/.system/)
-   - Verify the Codex CLI is available: codex --version (it ships with the Desktop app; if missing run: npm install -g @openai/codex)
-   - Run: pipx install litellm
-   - Ensure ~/.local/bin is in PATH — add to ~/.zshrc if missing:
-     grep -q '.local/bin' ~/.zshrc || echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
-   - Create local config files from the committed examples:
-     cp settings.example.json settings.json
-     cp agents.example.json agents.json
-     cp slices.example.json slices.json
-     cp mcps.example.json mcps.json
-     cp working-directories.example.json working-directories.json
-     cp jobs/jobs.example.json jobs/jobs.json
-     cp dashboard/.env.local.example dashboard/.env.local
-   - Run: cd "/Users/zachrizzo/programming/ai harnnes/dashboard" && npm install && npm run build
+1. Install/verify command-line prerequisites.
+   - Required: git, node/npm, jq, Claude Code (`claude`), Codex CLI (`codex`).
+   - Optional but recommended: AWS CLI for `claude-bedrock`, pipx + LiteLLM for `claude-local`, LM Studio for local models.
+   - If Homebrew is available, run:
+     brew install git node jq awscli pipx
+     pipx ensurepath
+     pipx install litellm || pipx upgrade litellm
+   - If the CLIs are missing, run:
+     npm install -g @anthropic-ai/claude-code @openai/codex
+   - Open a new shell or export the common local bins for this setup:
+     export PATH="$HOME/.local/bin:$HOME/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+   - Verify:
+     git --version
+     node --version
+     npm --version
+     jq --version
+     claude --version
+     codex --version
 
-2. Create ~/litellm_config.yaml — copy the full YAML from the "Model Backends" section of README.md
+2. Clone or update Saturn.
+   REPO="${SATURN_REPO:-$HOME/programming/saturn_agent_harness}"
+   if [ -d "$REPO/.git" ]; then
+     git -C "$REPO" pull --ff-only
+   else
+     mkdir -p "$(dirname "$REPO")"
+     git clone https://github.com/zachrizzo/saturn_agent_harness.git "$REPO"
+   fi
+   cd "$REPO"
 
-3. Create ~/bin/claude-local — copy the full script from the "Model Backends" section of README.md
-   Then run: chmod +x ~/bin/claude-local
+3. Bootstrap the checkout.
+   bin/bootstrap.sh
+   This creates ignored local config files from the committed examples, writes dashboard/.env.local with the current repo path, creates runtime dirs, installs dashboard dependencies, builds the dashboard, and creates ~/bin/claude-local plus ~/litellm_config.yaml if they do not already exist.
 
-4. Configure Claude Code for Bedrock in ~/.claude/settings.json:
-   Ensure these env keys exist: CLAUDE_CODE_USE_BEDROCK=1, AWS_PROFILE=sondermind-development-new, AWS_REGION=us-east-1
-   Then run: aws sso login --profile sondermind-development-new
+4. Put real local secrets/config in ignored files.
+   - Edit mcps.json and replace any "replace-me" MCP tokens.
+   - Edit settings.json if you want a different default CLI/model.
+   - Edit jobs/jobs.json only if this machine should register recurring cron jobs.
+   - Run bin/sync-configs.sh after changing mcps.json or skills/.
 
-5. Patch all hardcoded /Users/zachrizzo paths to the current user's home directory:
-   REPO="/Users/zachrizzo/programming/ai harnnes"
-   ME="$(whoami)"
-   NODE_BIN="$(dirname $(which node))"
-   sed -i '' "s|/Users/zachrizzo|$HOME|g" "$REPO/bin/run-job.sh" "$REPO/bin/run-turn.sh" "$REPO/bin/run-slice.sh" "$REPO/dashboard/.env.local"
-   sed -i '' "s|/Users/zachrizzo/.nvm/versions/node/v[0-9.]*|$HOME/.nvm/versions/node/$(node --version)|g" "$REPO/bin/run-job.sh" "$REPO/bin/run-turn.sh" "$REPO/bin/run-slice.sh"
+5. Configure the backend auth paths you plan to use.
+   - Bedrock:
+     export AWS_PROFILE="${AWS_PROFILE:-sondermind-development-new}"
+     export AWS_REGION="${AWS_REGION:-us-east-1}"
+     aws sso login --profile "$AWS_PROFILE"
+   - Personal Claude:
+     Start Saturn, choose Personal, then run /login in the chat composer; or open Settings and use Claude Personal auth.
+   - Local Claude:
+     Start LM Studio, serve an OpenAI-compatible model on http://127.0.0.1:1234, and make sure ~/litellm_config.yaml model_name entries match LM Studio's model ids.
+   - Codex:
+     Run codex once and complete sign-in if prompted.
 
-6. Run: "/Users/zachrizzo/programming/ai harnnes/bin/sync-configs.sh"
-   This propagates MCP servers to Claude Code and Codex.
+6. Start Saturn.
+   - Recommended always-on launchd service:
+     cd "$REPO"
+     bin/install-dashboard-service.sh
+   - Foreground dev server alternative:
+     cd "$REPO/dashboard"
+     AUTOMATIONS_ROOT="$REPO" npm run dev
+     Leave this running and use a second shell for verification.
 
-7. Install the dashboard as an always-on service:
-   REPO="/Users/zachrizzo/programming/ai harnnes"
-   PLIST=~/Library/LaunchAgents/com.zachrizzo.claude-cron-dashboard.plist
-   cp "$REPO/launchd/com.zachrizzo.claude-cron-dashboard.plist" "$PLIST"
-   sed -i '' "s|/Users/zachrizzo|$HOME|g" "$PLIST"
-   NODE_VER=$(node --version)
-   sed -i '' "s|\.nvm/versions/node/v[0-9.]*|.nvm/versions/node/$NODE_VER|g" "$PLIST"
-   launchctl load "$PLIST"
+7. Verify the dashboard and model APIs.
+   curl -fsS http://127.0.0.1:3737/api/models?cli=claude-bedrock >/dev/null
+   curl -fsS http://127.0.0.1:3737/api/models?cli=claude-personal >/dev/null
+   curl -fsS http://127.0.0.1:3737/api/models?cli=claude-local >/dev/null
+   curl -fsS http://127.0.0.1:3737/api/models?cli=codex >/dev/null
+   Visit http://127.0.0.1:3737 and send a short ad-hoc chat with the backend you configured.
 
-8. Register cron jobs:
-   "/Users/zachrizzo/programming/ai harnnes/bin/register-job.sh"
-
-9. Verify:
-   - Visit http://127.0.0.1:3737
-   - Dashboard `claude-bedrock` should use AWS Bedrock
-   - Dashboard `claude-personal` should use Claude Code `/login`
-   - Dashboard `claude-local` should use LM Studio via LiteLLM
+8. Optional recurring jobs and Telegram.
+   - Register cron from jobs/jobs.json:
+     bin/register-job.sh
+   - Install Telegram Dispatch after creating a BotFather token:
+     TELEGRAM_BOT_TOKEN="123:abc" TELEGRAM_ALLOWED_CHAT_IDS="123456789" bin/install-telegram-service.sh
 ```
 
 ---
@@ -84,49 +104,29 @@ For manual terminal testing, Bedrock and local can be run side-by-side after ini
 
 | Terminal | Command | Backend |
 |---|---|---|
-| Terminal 1 | `claude` | AWS Bedrock (global `~/.claude/settings.json`) |
+| Terminal 1 | `CLAUDE_CODE_USE_BEDROCK=1 AWS_PROFILE=sondermind-development-new AWS_REGION=us-east-1 claude` | AWS Bedrock |
 | Terminal 2 | `claude-local` | LM Studio via LiteLLM proxy |
 
 Switch model for a local session:
 ```bash
-ANTHROPIC_MODEL=google/gemma-4-31b claude-local
+ANTHROPIC_MODEL=gemma4:26b-it-q4_K_M claude-local
 ```
 
 ### `~/litellm_config.yaml`
 
+`bin/bootstrap.sh` creates a starter LiteLLM config if this file does not already exist. Keep the `model_name` values aligned with the model ids LM Studio exposes at `http://127.0.0.1:1234/v1/models`.
+
 ```yaml
 model_list:
-  # AWS Bedrock models (via sondermind-development-new SSO profile)
-  - model_name: claude-opus-4-7
-    litellm_params:
-      model: bedrock/us.anthropic.claude-opus-4-7
-      aws_profile_name: sondermind-development-new
-      aws_region_name: us-east-1
-  - model_name: claude-opus-4-6
-    litellm_params:
-      model: bedrock/us.anthropic.claude-opus-4-6-v1
-      aws_profile_name: sondermind-development-new
-      aws_region_name: us-east-1
-  - model_name: claude-sonnet-4-6
-    litellm_params:
-      model: bedrock/us.anthropic.claude-sonnet-4-6
-      aws_profile_name: sondermind-development-new
-      aws_region_name: us-east-1
-  - model_name: claude-sonnet-4-5
-    litellm_params:
-      model: bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0
-      aws_profile_name: sondermind-development-new
-      aws_region_name: us-east-1
-  - model_name: claude-haiku-4-5
-    litellm_params:
-      model: bedrock/us.anthropic.claude-haiku-4-5-20251001
-      aws_profile_name: sondermind-development-new
-      aws_region_name: us-east-1
-
   # LM Studio local models (OpenAI-compatible endpoint)
-  - model_name: nvidia/nemotron-3-nano
+  - model_name: gemma4:26b-it-q4_K_M
     litellm_params:
-      model: openai/nvidia/nemotron-3-nano
+      model: openai/gemma4:26b-it-q4_K_M
+      api_base: http://127.0.0.1:1234/v1
+      api_key: lm-studio
+  - model_name: gemma4:4b
+    litellm_params:
+      model: openai/gemma4:4b
       api_base: http://127.0.0.1:1234/v1
       api_key: lm-studio
   - model_name: qwen/qwen3.6-27b
@@ -134,24 +134,9 @@ model_list:
       model: openai/qwen/qwen3.6-27b
       api_base: http://127.0.0.1:1234/v1
       api_key: lm-studio
-  - model_name: mlx-community/qwen3.6-27b
+  - model_name: nvidia/nemotron-3-nano
     litellm_params:
-      model: openai/mlx-community/qwen3.6-27b
-      api_base: http://127.0.0.1:1234/v1
-      api_key: lm-studio
-  - model_name: qwen/qwen3.6-35b-a3b
-    litellm_params:
-      model: openai/qwen/qwen3.6-35b-a3b
-      api_base: http://127.0.0.1:1234/v1
-      api_key: lm-studio
-  - model_name: google/gemma-4-31b
-    litellm_params:
-      model: openai/google/gemma-4-31b
-      api_base: http://127.0.0.1:1234/v1
-      api_key: lm-studio
-  - model_name: nvidia/nemotron-3-super
-    litellm_params:
-      model: openai/nvidia/nemotron-3-super
+      model: openai/nvidia/nemotron-3-nano
       api_base: http://127.0.0.1:1234/v1
       api_key: lm-studio
   - model_name: google/gemma-4-26b-a4b
@@ -166,20 +151,19 @@ general_settings:
 
 ### `~/bin/claude-local`
 
+`bin/bootstrap.sh` also creates this wrapper if missing:
+
 ```bash
 #!/bin/bash
-# claude-local — launch Claude Code pointed at LM Studio via LiteLLM proxy.
-# Terminal 1 (Bedrock):  claude
-# Terminal 2 (local):    claude-local
-# Override model:        ANTHROPIC_MODEL=google/gemma-4-31b claude-local
+set -euo pipefail
 
-LITELLM_PORT=4000
-LITELLM_CONFIG="$HOME/litellm_config.yaml"
-LITELLM_KEY="sk-local-proxy-key"
+LITELLM_PORT="${LITELLM_PORT:-4000}"
+LITELLM_CONFIG="${LITELLM_CONFIG:-$HOME/litellm_config.yaml}"
+LITELLM_KEY="${LITELLM_KEY:-sk-local-proxy-key}"
 
 _litellm_ready() {
   curl -sf -H "Authorization: Bearer ${LITELLM_KEY}" \
-    "http://0.0.0.0:${LITELLM_PORT}/health" >/dev/null 2>&1
+    "http://127.0.0.1:${LITELLM_PORT}/health" >/dev/null 2>&1
 }
 
 if ! _litellm_ready; then
@@ -187,9 +171,9 @@ if ! _litellm_ready; then
   lsof -ti tcp:${LITELLM_PORT} | xargs kill -9 2>/dev/null || true
   sleep 1
   echo "[claude-local] Starting LiteLLM proxy on port ${LITELLM_PORT}..."
-  "$HOME/.local/bin/litellm" --config "$LITELLM_CONFIG" --port "$LITELLM_PORT" \
+  "${LITELLM_BIN:-$HOME/.local/bin/litellm}" --config "$LITELLM_CONFIG" --port "$LITELLM_PORT" \
     >/tmp/litellm.log 2>&1 &
-  for i in $(seq 1 15); do
+  for _ in $(seq 1 20); do
     sleep 1
     if _litellm_ready; then echo "[claude-local] LiteLLM ready."; break; fi
   done
@@ -198,10 +182,10 @@ fi
 exec env \
   CLAUDE_CODE_USE_BEDROCK="" \
   CLAUDE_CODE_USE_VERTEX="" \
-  ANTHROPIC_BASE_URL="http://0.0.0.0:${LITELLM_PORT}" \
+  ANTHROPIC_BASE_URL="http://127.0.0.1:${LITELLM_PORT}" \
   ANTHROPIC_AUTH_TOKEN="${LITELLM_KEY}" \
-  ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-qwen/qwen3.6-27b}" \
-  ANTHROPIC_SMALL_FAST_MODEL="${ANTHROPIC_SMALL_FAST_MODEL:-nvidia/nemotron-3-nano}" \
+  ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-gemma4:26b-it-q4_K_M}" \
+  ANTHROPIC_SMALL_FAST_MODEL="${ANTHROPIC_SMALL_FAST_MODEL:-gemma4:4b}" \
   claude "$@"
 ```
 
@@ -236,13 +220,13 @@ It uses Telegram long polling, so the Mac does not need a public webhook URL. In
 
 2. Start the dashboard first:
    ```bash
-   cd "/Users/zachrizzo/programming/ai harnnes/dashboard"
-   AUTOMATIONS_ROOT="/Users/zachrizzo/programming/ai harnnes" npm run start
+   cd "$REPO/dashboard"
+   AUTOMATIONS_ROOT="$REPO" npm run start
    ```
 
 3. Run once in allow-all mode to discover your chat id:
    ```bash
-   cd "/Users/zachrizzo/programming/ai harnnes"
+   cd "$REPO"
    TELEGRAM_BOT_TOKEN="123:abc" \
    TELEGRAM_ALLOW_ALL=1 \
    SATURN_BASE_URL="http://127.0.0.1:3737" \
@@ -252,6 +236,7 @@ It uses Telegram long polling, so the Mac does not need a public webhook URL. In
 
 4. Run with a chat allowlist:
    ```bash
+   cd "$REPO"
    TELEGRAM_BOT_TOKEN="123:abc" \
    TELEGRAM_ALLOWED_CHAT_IDS="123456789" \
    SATURN_BASE_URL="http://127.0.0.1:3737" \
@@ -278,11 +263,12 @@ State lives in `telegram/state.json` and includes the Telegram update offset, pe
 
 ### launchd
 
-Copy `launchd/com.zachrizzo.saturn-telegram-dispatch.plist` to `~/Library/LaunchAgents/`, edit the token and chat id values, then load it:
+Generate and load the LaunchAgent from this checkout:
 
 ```bash
-cp "/Users/zachrizzo/programming/ai harnnes/launchd/com.zachrizzo.saturn-telegram-dispatch.plist" ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.zachrizzo.saturn-telegram-dispatch.plist
+TELEGRAM_BOT_TOKEN="123:abc" \
+TELEGRAM_ALLOWED_CHAT_IDS="123456789" \
+bin/install-telegram-service.sh
 ```
 
 Logs are written to:
@@ -298,6 +284,9 @@ saturn/
 ├── mcps.example.json     # template for local MCP server config
 ├── skills/               # shared Claude + Codex skills (symlinked into both)
 ├── bin/
+│   ├── bootstrap.sh      # create local configs, runtime dirs, local wrapper, npm install/build
+│   ├── install-dashboard-service.sh
+│   ├── install-telegram-service.sh
 │   ├── run-job.sh        # cron wrapper — invokes the configured backend
 │   ├── sync-configs.sh   # propagate mcps.json + skills/ to each CLI
 │   └── register-job.sh   # sync jobs.json into crontab
@@ -315,31 +304,24 @@ saturn/
 
 ## One-time setup
 
-1. **Create local config files**
+1. **Bootstrap local files**
    ```bash
-   cp settings.example.json settings.json
-   cp agents.example.json agents.json
-   cp slices.example.json slices.json
-   cp mcps.example.json mcps.json
-   cp working-directories.example.json working-directories.json
-   cp jobs/jobs.example.json jobs/jobs.json
-   cp dashboard/.env.local.example dashboard/.env.local
+   bin/bootstrap.sh
    ```
-   Edit `mcps.json` and `dashboard/.env.local` for your machine. These live files are ignored so secrets and local paths stay out of git.
+   Edit `mcps.json` for real MCP tokens. Live config files are ignored so secrets and local paths stay out of git.
 
 2. **Install the dashboard as an always-on service**
    ```bash
-   cp "/Users/zachrizzo/programming/ai harnnes/launchd/com.zachrizzo.claude-cron-dashboard.plist" ~/Library/LaunchAgents/
-   launchctl load ~/Library/LaunchAgents/com.zachrizzo.claude-cron-dashboard.plist
+   bin/install-dashboard-service.sh
    ```
    Visit http://127.0.0.1:3737 to confirm. Stop with:
    ```bash
-   launchctl unload ~/Library/LaunchAgents/com.zachrizzo.claude-cron-dashboard.plist
+   launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.zachrizzo.claude-cron-dashboard.plist
    ```
 
 3. **Register the jobs defined in `jobs/jobs.json`**
    ```bash
-   "/Users/zachrizzo/programming/ai harnnes/bin/register-job.sh"
+   bin/register-job.sh
    crontab -l    # verify the lines marked "# saturn:<name>"
    ```
 
@@ -350,22 +332,22 @@ saturn/
 Edit `jobs/jobs.json` to append an object with `name`, `cron`, `prompt`, `allowedTools`, and optional `description`, `cwd`. Then:
 
 ```bash
-"/Users/zachrizzo/programming/ai harnnes/bin/register-job.sh"
+bin/register-job.sh
 ```
 
 ## Testing a job manually
 
 ```bash
-"/Users/zachrizzo/programming/ai harnnes/bin/run-job.sh" my-open-mrs
+bin/run-job.sh my-job-name
 ```
 
-The run appears in `runs/my-open-mrs/<timestamp>/` and in the dashboard.
+The run appears in `runs/my-job-name/<timestamp>/` and in the dashboard.
 
 ---
 
 ## Notes
 
-- Cron jobs inherit a minimal environment. `run-job.sh` hardcodes `PATH`, `HOME`, and the claude binary location — edit it if your install moves.
+- Cron and launchd inherit minimal environments. The shell runners source `bin/lib/env.sh` to derive the repo root and add common Homebrew, pipx, and nvm binary paths.
 - The dashboard re-reads the filesystem on every request, so new runs show up on refresh.
 - Recurring tasks have no hard expiration; remove a line from `crontab -e` or delete from `jobs.json` and re-run `register-job.sh`.
 - `claude-bedrock` injects `CLAUDE_CODE_USE_BEDROCK=1` plus AWS profile/region at dispatch time.

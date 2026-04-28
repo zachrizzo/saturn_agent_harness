@@ -19,10 +19,11 @@
 
 set -euo pipefail
 
-export PATH="/Users/zachrizzo/.local/bin:/Users/zachrizzo/.nvm/versions/node/v20.19.5/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-export HOME="/Users/zachrizzo"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/env.sh
+source "$SCRIPT_DIR/lib/env.sh"
+saturn_setup_env
 
-AUTOMATIONS_ROOT="/Users/zachrizzo/programming/ai harnnes"
 SESSIONS_ROOT="$AUTOMATIONS_ROOT/sessions"
 
 # If the script exits unexpectedly (set -e), ensure session is not left in "running" state

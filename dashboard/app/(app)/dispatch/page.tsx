@@ -168,8 +168,7 @@ export default async function DispatchPage() {
           {!overview.service.loaded && (
             <div className="rounded-lg border border-border bg-bg-subtle p-4 text-[12px] text-muted space-y-2">
               <div className="text-fg font-medium">Install the Telegram Dispatch LaunchAgent</div>
-              <pre className="mono text-[11px] whitespace-pre-wrap overflow-x-auto">{`cp "/Users/zachrizzo/programming/ai harnnes/launchd/com.zachrizzo.saturn-telegram-dispatch.plist" ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.zachrizzo.saturn-telegram-dispatch.plist`}</pre>
+              <pre className="mono text-[11px] whitespace-pre-wrap overflow-x-auto">{`TELEGRAM_BOT_TOKEN="123:abc" TELEGRAM_ALLOWED_CHAT_IDS="123456789" bin/install-telegram-service.sh`}</pre>
             </div>
           )}
 

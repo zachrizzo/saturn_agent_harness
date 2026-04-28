@@ -162,7 +162,7 @@ export function DirPicker({ value, onChange, disabled, className }: Props) {
           }}
           onFocus={() => setOpen(true)}
           disabled={disabled || picking}
-          placeholder="/Users/zachrizzo/programming/..."
+          placeholder="$HOME/programming/..."
           className="min-w-0 mono"
         />
         <Button

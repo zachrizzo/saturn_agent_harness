@@ -8,8 +8,10 @@
 
 set -euo pipefail
 
-AUTOMATIONS_ROOT="${AUTOMATIONS_ROOT:-/Users/zachrizzo/programming/ai harnnes}"
-export AUTOMATIONS_ROOT
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/env.sh
+source "$SCRIPT_DIR/lib/env.sh"
+saturn_setup_env
 
 FIXTURES_ROOT="$AUTOMATIONS_ROOT/slice-fixtures"
 DASHBOARD_URL="${DASHBOARD_URL:-http://127.0.0.1:3737}"

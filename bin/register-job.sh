@@ -6,7 +6,11 @@
 
 set -euo pipefail
 
-AUTOMATIONS_ROOT="/Users/zachrizzo/programming/ai harnnes"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/env.sh
+source "$SCRIPT_DIR/lib/env.sh"
+saturn_setup_env
+
 JOBS_FILE="$AUTOMATIONS_ROOT/jobs/jobs.json"
 AGENTS_FILE="$AUTOMATIONS_ROOT/agents.json"
 RUN_JOB_BIN="$AUTOMATIONS_ROOT/bin/run-job.sh"
