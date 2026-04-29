@@ -38,6 +38,7 @@ saturn_setup_env() {
   saturn_prepend_path "/usr/bin"
   saturn_prepend_path "/usr/local/bin"
   saturn_prepend_path "/opt/homebrew/bin"
+  saturn_prepend_path "$SATURN_REPO_ROOT/bin"
 
   local nvm_bin
   nvm_bin="$(saturn_latest_nvm_bin)"

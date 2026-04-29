@@ -23,6 +23,28 @@ export type OrchestratorBudget = {
 export type OnBudgetExceeded = "report-partial" | "stop-hard";
 export type OnSliceFailure = "retry-once" | "continue" | "abort";
 
+export type SliceGraphNode = {
+  id: string;
+  slice_id: string;
+  x: number;
+  y: number;
+  label?: string;
+  instructions?: string;
+  prompt?: string;
+  config?: string;
+};
+
+export type SliceGraphEdge = {
+  id: string;
+  from: string;
+  to: string;
+};
+
+export type SliceGraph = {
+  nodes: SliceGraphNode[];
+  edges: SliceGraphEdge[];
+};
+
 export type Job = {
   name: string;
   cron: string;
@@ -34,6 +56,18 @@ export type Job = {
   reasoningEffort?: ModelReasoningEffort;
   cli?: CLI;
   timeout_seconds?: number;
+};
+
+export type JobUpdatePatch = {
+  cron?: string;
+  description?: string | null;
+  cwd?: string | null;
+  prompt?: string;
+  allowedTools?: string[] | null;
+  model?: string | null;
+  reasoningEffort?: ModelReasoningEffort | null;
+  cli?: CLI | null;
+  timeout_seconds?: number | null;
 };
 
 export type Agent = {
@@ -65,6 +99,7 @@ export type Agent = {
   budget?: OrchestratorBudget;
   on_budget_exceeded?: OnBudgetExceeded;
   on_slice_failure?: OnSliceFailure;
+  slice_graph?: SliceGraph;
 };
 
 // Re-export agent helpers from session-utils (client-safe, no Node built-ins)
@@ -157,15 +192,90 @@ function isENOENT(err: unknown): boolean {
   return (err as NodeJS.ErrnoException)?.code === "ENOENT";
 }
 
+async function readJobsFile(): Promise<{ jobs: Job[] }> {
+  try {
+    const raw = await fs.readFile(jobsFile(), "utf8");
+    const parsed = JSON.parse(raw) as { jobs?: Job[] };
+    return { jobs: parsed.jobs ?? [] };
+  } catch (err: unknown) {
+    if (isENOENT(err)) return { jobs: [] };
+    throw err;
+  }
+}
+
+async function writeJobsFile(data: { jobs: Job[] }): Promise<void> {
+  await fs.mkdir(path.dirname(jobsFile()), { recursive: true });
+  const body = {
+    $comment: "Saved jobs - managed by the dashboard and bin/register-job.sh.",
+    jobs: data.jobs,
+  };
+  await fs.writeFile(jobsFile(), JSON.stringify(body, null, 2), "utf8");
+}
+
 export async function listJobs(): Promise<Job[]> {
-  const raw = await fs.readFile(jobsFile(), "utf8");
-  const parsed = JSON.parse(raw) as { jobs: Job[] };
-  return (parsed.jobs ?? []).map((job) => ({ ...job, cli: normalizeCli(job.cli) }));
+  const { jobs } = await readJobsFile();
+  return jobs.map((job) => ({ ...job, cli: normalizeCli(job.cli) }));
 }
 
 export async function getJob(name: string): Promise<Job | undefined> {
   const jobs = await listJobs();
   return jobs.find((j) => j.name === name);
+}
+
+export async function createJob(job: Job): Promise<Job> {
+  const parsed = await readJobsFile();
+  if (parsed.jobs.some((j) => j.name === job.name)) {
+    throw new Error(`Job already exists: ${job.name}`);
+  }
+  const full: Job = { ...job, cli: normalizeCli(job.cli) };
+  parsed.jobs.push(full);
+  await writeJobsFile(parsed);
+  return full;
+}
+
+export async function updateJob(
+  name: string,
+  patch: JobUpdatePatch,
+): Promise<Job> {
+  const parsed = await readJobsFile();
+  const idx = parsed.jobs.findIndex((j) => j.name === name);
+  if (idx < 0) throw new Error(`Job not found: ${name}`);
+
+  const job = { ...parsed.jobs[idx] };
+  if (patch.cron !== undefined) job.cron = patch.cron;
+  if (patch.prompt !== undefined) job.prompt = patch.prompt;
+  if (patch.description !== undefined) {
+    if (patch.description === null || patch.description === "") delete job.description;
+    else job.description = patch.description;
+  }
+  if (patch.cwd !== undefined) {
+    if (patch.cwd === null || patch.cwd === "") delete job.cwd;
+    else job.cwd = patch.cwd;
+  }
+  if (patch.allowedTools !== undefined) {
+    if (patch.allowedTools === null) delete job.allowedTools;
+    else job.allowedTools = patch.allowedTools;
+  }
+  if (patch.model !== undefined) {
+    if (patch.model === null || patch.model === "") delete job.model;
+    else job.model = patch.model;
+  }
+  if (patch.cli !== undefined) {
+    if (patch.cli === null) delete job.cli;
+    else job.cli = normalizeCli(patch.cli);
+  }
+  if (patch.reasoningEffort !== undefined) {
+    if (patch.reasoningEffort === null) delete job.reasoningEffort;
+    else job.reasoningEffort = patch.reasoningEffort;
+  }
+  if (patch.timeout_seconds !== undefined) {
+    if (patch.timeout_seconds === null) delete job.timeout_seconds;
+    else job.timeout_seconds = patch.timeout_seconds;
+  }
+
+  parsed.jobs[idx] = job;
+  await writeJobsFile(parsed);
+  return { ...job, cli: normalizeCli(job.cli) };
 }
 
 async function listSubdirs(p: string): Promise<string[]> {
@@ -268,22 +378,14 @@ export async function getRun(
 
 export async function updateJobSettings(
   name: string,
-  settings: { model?: string | null; cli?: CLI; reasoningEffort?: ModelReasoningEffort | null },
+  settings: {
+    model?: string | null;
+    cli?: CLI;
+    reasoningEffort?: ModelReasoningEffort | null;
+    cron?: string;
+  },
 ): Promise<void> {
-  const raw = await fs.readFile(jobsFile(), "utf8");
-  const parsed = JSON.parse(raw) as { jobs: Job[] };
-  const job = parsed.jobs.find((j) => j.name === name);
-  if (!job) throw new Error(`Job not found: ${name}`);
-  if (settings.model !== undefined) {
-    if (settings.model === null) delete job.model;
-    else job.model = settings.model;
-  }
-  if (settings.cli !== undefined) job.cli = normalizeCli(settings.cli);
-  if (settings.reasoningEffort !== undefined) {
-    if (settings.reasoningEffort === null) delete job.reasoningEffort;
-    else job.reasoningEffort = settings.reasoningEffort;
-  }
-  await fs.writeFile(jobsFile(), JSON.stringify(parsed, null, 2), "utf8");
+  await updateJob(name, settings);
 }
 
 // Keep backwards compat

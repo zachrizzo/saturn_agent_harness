@@ -119,48 +119,48 @@ if [[ "$ENGINE" == "claude" && -z "$RESUME_ID" ]]; then
   IS_RESUME="no"
 fi
 
-# ─── Task system instructions ─────────────────────────────────────────────────
-# Always appended to the system/first-turn prompt so agents can use the task API.
-TASK_INSTRUCTIONS=""
-if [[ -n "${TASK_BASE_URL:-}" ]]; then
-  TASK_INSTRUCTIONS="
+# ─── Saturn app CLI instructions ──────────────────────────────────────────────
+# Always appended to the system/first-turn prompt so agents can manage Saturn
+# app objects without memorizing REST endpoints.
+SATURN_CLI_INSTRUCTIONS=""
+if [[ -n "${SATURN_BASE_URL:-}" ]]; then
+  SATURN_CLI_BIN="${SATURN_CLI_BIN:-saturn}"
+  SATURN_CLI_INSTRUCTIONS="
 ---
 
-## Shared Task Queue
+## Saturn App CLI
 
-You have access to a shared task/ticketing system. Use it to track work, coordinate with other agents, and avoid duplicate effort.
+You have access to the Saturn app CLI for creating and updating app objects. Use it to manage shared tasks, agents, slices, and scheduled jobs. All commands print JSON to stdout.
 
-Base URL: ${TASK_BASE_URL}
-Your identity (use as claimed_by): ${TASK_SESSION_ID:-unknown}
+Command: ${SATURN_CLI_BIN}
+Base URL: ${SATURN_BASE_URL}
+Your identity: ${SATURN_SESSION_ID:-unknown}
 
-### Available operations (use Bash with curl):
+Examples:
 
 \`\`\`
-# List open tasks
-curl -s \"${TASK_BASE_URL}?status=open&linked_session_id=${TASK_SESSION_ID:-unknown}\"
+# Tasks
+saturn tasks list --status open --linked-session-id \"${SATURN_SESSION_ID:-unknown}\"
+saturn tasks create --json '{\"title\":\"...\",\"priority\":\"medium\",\"created_by\":\"${SATURN_SESSION_ID:-agent}\",\"linked_session_id\":\"${SATURN_SESSION_ID:-unknown}\"}'
+saturn tasks claim <task-id> --json '{\"claimed_by\":\"${SATURN_SESSION_ID:-agent}\"}'
+saturn tasks update <task-id> --json '{\"status\":\"done\",\"notes\":\"...\",\"actor\":\"${SATURN_SESSION_ID:-agent}\"}'
+saturn tasks release <task-id> --json '{\"claimed_by\":\"${SATURN_SESSION_ID:-agent}\",\"status\":\"done\"}'
 
-# Create a task
-curl -s -X POST \"${TASK_BASE_URL}\" \\
-  -H 'Content-Type: application/json' \\
-  -d '{\"title\":\"...\",\"priority\":\"medium\",\"created_by\":\"${TASK_SESSION_ID:-agent}\",\"linked_session_id\":\"${TASK_SESSION_ID:-unknown}\"}'
+# Agents, slices, and jobs
+saturn agents create --json '{\"id\":\"helper-agent\",\"name\":\"Helper Agent\",\"prompt\":\"You are...\"}'
+saturn agents update helper-agent --json '{\"description\":\"...\"}'
+saturn slices create --json '{\"id\":\"repo-scan\",\"name\":\"Repo Scan\",\"prompt\":\"Inspect {{target}} and report findings.\"}'
+saturn slices update repo-scan --json '{\"description\":\"...\"}'
+saturn jobs create --json '{\"name\":\"daily-summary\",\"cron\":\"0 9 * * *\",\"prompt\":\"Summarize the repo.\"}'
+saturn jobs update daily-summary --json '{\"cron\":\"30 9 * * *\"}'
 
-# Claim a task (returns 409 if already taken by another agent)
-curl -s -X POST \"${TASK_BASE_URL}/{id}/claim\" \\
-  -H 'Content-Type: application/json' \\
-  -d '{\"claimed_by\":\"${TASK_SESSION_ID:-agent}\"}'
-
-# Update a task (status, notes, linked session)
-curl -s -X PATCH \"${TASK_BASE_URL}/{id}\" \\
-  -H 'Content-Type: application/json' \\
-  -d '{\"status\":\"done\",\"notes\":\"...\",\"actor\":\"${TASK_SESSION_ID:-agent}\"}'
-
-# Release a claim when done or handing off
-curl -s -X POST \"${TASK_BASE_URL}/{id}/release\" \\
-  -H 'Content-Type: application/json' \\
-  -d '{\"claimed_by\":\"${TASK_SESSION_ID:-agent}\"}'
+# Payload helpers
+saturn agents create --file agent.json
+echo '{\"title\":\"Follow up\"}' | saturn tasks create
+saturn slices create --dry-run --json '{\"id\":\"draft\",\"name\":\"Draft\",\"prompt\":\"...\"}'
 \`\`\`
 
-Claim tasks before working on them. Release when done. If a claim returns 409, another agent is already working on it — pick a different task.
+Claim tasks before working on them. Release when done. If a claim fails with a conflict, another agent is already working on it.
 
 ---"
 fi
@@ -168,13 +168,13 @@ fi
 # Build the prompt text
 if [[ "$BUILD_TRANSCRIPT" == "first" ]]; then
   if [[ -n "$AGENT_PROMPT" ]]; then
-    PROMPT_TO_SEND="$AGENT_PROMPT$TASK_INSTRUCTIONS
+    PROMPT_TO_SEND="$AGENT_PROMPT$SATURN_CLI_INSTRUCTIONS
 
 ---
 
 User: $USER_MESSAGE"
   else
-    PROMPT_TO_SEND="${TASK_INSTRUCTIONS:+${TASK_INSTRUCTIONS}$'\n\n'}$USER_MESSAGE"
+    PROMPT_TO_SEND="${SATURN_CLI_INSTRUCTIONS:+${SATURN_CLI_INSTRUCTIONS}$'\n\n'}$USER_MESSAGE"
   fi
 elif [[ "$BUILD_TRANSCRIPT" == "yes" ]]; then
   TRANSCRIPT="$(jq -r '

@@ -42,6 +42,12 @@ function nativeSessionId(ev: StreamEvent): string | undefined {
   return undefined;
 }
 
+function hasTerminalResult(events: StreamEvent[], start: number, end: number): boolean {
+  return events
+    .slice(start, end)
+    .some((ev) => ev.kind === "result" || rawRecord(ev).type === "saturn.turn_aborted");
+}
+
 function splitByResult(
   events: StreamEvent[],
   start: number,
@@ -64,6 +70,27 @@ function splitByResult(
   return slices;
 }
 
+function buildLegacySlices(events: StreamEvent[], start: number, end: number): EventSlice[] {
+  const starts: Array<{ sid: string; idx: number }> = [];
+  for (let i = start; i < end; i++) {
+    const sid = nativeSessionId(events[i]);
+    if (sid) starts.push({ sid, idx: i });
+  }
+
+  const slices: EventSlice[] = [];
+  if (starts.length === 0) {
+    slices.push(...splitByResult(events, start, end));
+    return slices;
+  }
+
+  starts.forEach((segmentStart, pos) => {
+    const segmentEnd = pos + 1 < starts.length ? starts[pos + 1].idx : end;
+    const isLastSegment = pos + 1 >= starts.length;
+    slices.push(...splitByResult(events, segmentStart.idx, segmentEnd, segmentStart.sid, isLastSegment));
+  });
+  return slices;
+}
+
 export function buildTurnChunks(
   meta: Pick<SessionMeta, "turns" | "status">,
   events: StreamEvent[],
@@ -75,22 +102,35 @@ export function buildTurnChunks(
   });
 
   if (turnStarts.length > 0) {
-    const slicesByTurnId = new Map<string, EventSlice>();
-    turnStarts.forEach((start, pos) => {
+    const markerSlices = turnStarts.map((start, pos): EventSlice => {
       const end = pos + 1 < turnStarts.length ? turnStarts[pos + 1].idx : events.length;
-      const turnEvents = events.slice(start.idx, end);
-      slicesByTurnId.set(start.turnId, {
+      return {
         turnId: start.turnId,
         start: start.idx,
         end,
-        hasResult: turnEvents.some((ev) => ev.kind === "result" || rawRecord(ev).type === "saturn.turn_aborted"),
-      });
+        hasResult: hasTerminalResult(events, start.idx, end),
+      };
     });
+    const slicesByTurnId = new Map(markerSlices.map((slice) => [slice.turnId!, slice]));
+    const consumedMarkerSlices = new Set<EventSlice>();
+    const legacySlices = buildLegacySlices(events, 0, turnStarts[0].idx);
+    let legacyCursor = 0;
 
     return meta.turns.map((t, i) => {
       const isLast = i === meta.turns.length - 1;
       const turnId = (t as unknown as Record<string, unknown>).turn_id as string | undefined;
-      const slice = turnId ? slicesByTurnId.get(turnId) : undefined;
+      let slice = turnId ? slicesByTurnId.get(turnId) : undefined;
+      if (slice) {
+        consumedMarkerSlices.add(slice);
+      } else if (legacyCursor < legacySlices.length) {
+        slice = legacySlices[legacyCursor++];
+      } else {
+        // Optimistic client turns do not know the server-generated turn_id yet.
+        // Attach the next unclaimed saturn.turn_start slice so live output shows
+        // immediately instead of waiting for a metadata refresh.
+        slice = markerSlices.find((candidate) => !consumedMarkerSlices.has(candidate));
+        if (slice) consumedMarkerSlices.add(slice);
+      }
       const turnEvents = slice ? events.slice(slice.start, slice.end) : [];
       return {
         turnIndex: i,
@@ -104,21 +144,7 @@ export function buildTurnChunks(
     });
   }
 
-  const starts: Array<{ sid: string; idx: number }> = [];
-  events.forEach((ev, i) => {
-    const sid = nativeSessionId(ev);
-    if (sid) starts.push({ sid, idx: i });
-  });
-
-  const allSlices: EventSlice[] = [];
-  if (starts.length === 0) {
-    allSlices.push(...splitByResult(events, 0, events.length));
-  }
-  starts.forEach((start, pos) => {
-    const end = pos + 1 < starts.length ? starts[pos + 1].idx : events.length;
-    const isLastSegment = pos + 1 >= starts.length;
-    allSlices.push(...splitByResult(events, start.idx, end, start.sid, isLastSegment));
-  });
+  const allSlices = buildLegacySlices(events, 0, events.length);
 
   const slicesBySid = new Map<string, EventSlice[]>();
   for (const slice of allSlices) {

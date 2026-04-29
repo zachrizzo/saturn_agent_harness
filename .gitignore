@@ -30,6 +30,8 @@ dashboard/.env.local
 dashboard/.next/
 dashboard/.next-build/
 dashboard/.next-dev/
+dashboard/.next-dev-control/
+dashboard/.next-dev-graph/
 dashboard/.playwright-cli/
 dashboard/node_modules/
 dashboard/output/

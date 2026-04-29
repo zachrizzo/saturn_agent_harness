@@ -53,6 +53,24 @@ type Attachment = {
   file?: File;
 };
 
+type QueuedMessage = {
+  text: string;
+  cli: CLI;
+  model?: string;
+  mcpTools?: boolean;
+  reasoningEffort?: ModelReasoningEffort;
+};
+
+function readQueuedMessages(queueStorageKey: string | null): QueuedMessage[] {
+  if (!queueStorageKey || typeof window === "undefined") return [];
+  try {
+    const parsed = JSON.parse(window.sessionStorage.getItem(queueStorageKey) ?? "[]") as unknown;
+    return Array.isArray(parsed) ? parsed as QueuedMessage[] : [];
+  } catch {
+    return [];
+  }
+}
+
 export type ComposerHandle = {
   focus: () => void;
   setDraft: (text: string) => void;
@@ -66,6 +84,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
   ref
 ) {
   const storageKey = sessionId ? `composer:${sessionId}` : null;
+  const queueStorageKey = sessionId ? `composer-queue:${sessionId}` : null;
 
   const [loadedPrefs, setLoadedPrefs] = useState<{
     cli?: CLI;
@@ -87,13 +106,15 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashQuery, setSlashQuery] = useState("");
   const [slashIdx, setSlashIdx] = useState(0);
-  const [queued, setQueued] = useState<{
-    text: string;
-    cli: CLI;
-    model?: string;
-    mcpTools?: boolean;
-    reasoningEffort?: ModelReasoningEffort;
-  }[]>([]);
+  const [cliPickerOpen, setCliPickerOpen] = useState(false);
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  const cliPickerRef = useRef<HTMLDivElement>(null);
+  const overflowRef = useRef<HTMLDivElement>(null);
+  const initialQueueRef = useRef<QueuedMessage[] | null>(null);
+  if (initialQueueRef.current === null) {
+    initialQueueRef.current = readQueuedMessages(queueStorageKey);
+  }
+  const [queued, setQueued] = useState<QueuedMessage[]>(() => initialQueueRef.current ?? []);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -102,7 +123,9 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
   const slashRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const onSendRef = useRef(onSend);
-  const prevDisabledRef = useRef(Boolean(disabled));
+  // If we restored queued messages, pretend we were previously disabled so the
+  // release effect fires immediately when disabled is false on mount.
+  const prevDisabledRef = useRef((initialQueueRef.current?.length ?? 0) > 0 ? true : Boolean(disabled));
   const prevSessionIdRef = useRef(sessionId);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -119,8 +142,24 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
   }, []);
 
   useEffect(() => {
+    const close = (e: MouseEvent) => {
+      if (cliPickerRef.current && !cliPickerRef.current.contains(e.target as Node)) setCliPickerOpen(false);
+      if (overflowRef.current && !overflowRef.current.contains(e.target as Node)) setOverflowOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, []);
+
+  useEffect(() => {
     onSendRef.current = onSend;
   }, [onSend]);
+
+  // Persist queue to sessionStorage so it survives page refresh
+  useEffect(() => {
+    if (!queueStorageKey) return;
+    if (queued.length === 0) sessionStorage.removeItem(queueStorageKey);
+    else sessionStorage.setItem(queueStorageKey, JSON.stringify(queued));
+  }, [queued, queueStorageKey]);
 
   useEffect(() => {
     if (prevSessionIdRef.current === sessionId) return;
@@ -475,6 +514,19 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
     if (textareaRef.current) textareaRef.current.style.height = "auto";
   };
 
+  const removeQueued = (index: number) => {
+    setQueued((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const steerWithQueued = (index: number) => {
+    setQueued((prev) => {
+      const item = prev[index];
+      if (!item) return prev;
+      return [item, ...prev.filter((_, i) => i !== index)];
+    });
+    onStop?.();
+  };
+
   // When the current turn finishes, release the next queued message.
   useEffect(() => {
     const wasDisabled = prevDisabledRef.current;
@@ -758,29 +810,43 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
         {/* Toolbar footer */}
         <div className="flex items-center gap-1 px-3 py-2 border-t border-border">
           {/* CLI pills */}
-          <div className="flex items-center gap-0.5">
-            {selectableClis.map((c) => (
-              <button
-                key={c}
-                type="button"
-                onClick={() => handleCliChange(c)}
-                disabled={disabled}
-                className={[
-                  "px-2 py-1 rounded-md text-[11px] font-medium transition-all disabled:opacity-40",
-                  cli === c
-                    ? "bg-accent text-white"
-                    : "text-muted hover:text-fg hover:bg-bg-hover",
-                ].join(" ")}
-              >
-                  {CLI_SHORT_LABELS[c]}
-              </button>
-            ))}
+          {/* CLI picker — single active pill + popover */}
+          <div className="relative" ref={cliPickerRef}>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => setCliPickerOpen((o) => !o)}
+              className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium bg-accent text-white disabled:opacity-40 transition-all"
+              title="Switch CLI"
+            >
+              {CLI_SHORT_LABELS[cli]}
+              <svg className="w-2.5 h-2.5 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            {cliPickerOpen && (
+              <div className="absolute bottom-full left-0 mb-1 z-50 min-w-[110px] rounded-lg border border-border bg-bg shadow-lg py-1">
+                {selectableClis.map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    onClick={() => { handleCliChange(c); setCliPickerOpen(false); }}
+                    className={[
+                      "w-full text-left px-3 py-1.5 text-[12px] transition-colors",
+                      cli === c ? "text-accent font-medium" : "text-fg hover:bg-bg-hover",
+                    ].join(" ")}
+                  >
+                    {CLI_SHORT_LABELS[c]}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="h-3.5 w-px bg-border mx-1.5" />
 
           {/* Model dropdown */}
-          <div className="relative flex items-center min-w-0 max-w-[160px]" title={models.find((m) => m.id === model) ? formatModelOption(models.find((m) => m.id === model)!) : model}>
+          <div className="relative flex items-center min-w-0 max-w-[130px]" title={models.find((m) => m.id === model) ? formatModelOption(models.find((m) => m.id === model)!) : model}>
             <select
               value={model}
               onChange={(e) => { didUserChoose.current = true; setModel(e.target.value); }}
@@ -801,7 +867,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
           <div className="h-3.5 w-px bg-border mx-1.5" />
 
           {/* Reasoning effort dropdown */}
-          <div className="relative flex items-center min-w-0 max-w-[110px]" title={`Reasoning: ${formatReasoningEffort(reasoningEffort || undefined)}`}>
+          <div className="relative flex items-center min-w-0 max-w-[100px]" title={`Reasoning: ${formatReasoningEffort(reasoningEffort || undefined)}`}>
             <select
               value={reasoningEffort}
               onChange={(e) => {
@@ -811,7 +877,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
               disabled={disabled}
               className="appearance-none bg-transparent text-[11px] text-muted hover:text-fg cursor-pointer pr-4 py-1 rounded transition-colors focus:outline-none disabled:opacity-40 truncate max-w-full"
             >
-              <option value="">Default effort</option>
+              <option value="">Effort</option>
               {reasoningEffortOptionsForCli(cli, models.find((m) => m.id === model)).map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
@@ -823,155 +889,178 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
             </svg>
           </div>
 
-          {cli === "claude-local" && (
-            <>
-              <div className="h-3.5 w-px bg-border mx-1.5" />
-              <label
-                className="flex items-center gap-1.5 text-[11px] text-muted hover:text-fg cursor-pointer select-none"
-                title={mcpTools ? "All MCP tools loaded — slower (~100K token prompt)" : "No MCP tools — faster prefill"}
-              >
-                <input
-                  type="checkbox"
-                  checked={mcpTools}
-                  onChange={(e) => setMcpTools(e.target.checked)}
-                  disabled={disabled}
-                  className="w-3 h-3 accent-accent"
-                />
-                MCP tools
-              </label>
-            </>
-          )}
-
-          {uploadsEnabled && (
-            <>
-              <div className="h-3.5 w-px bg-border mx-1.5" />
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                hidden
-                onChange={(e) => {
-                  const files = Array.from(e.target.files ?? []);
-                  if (files.length > 0) uploadFiles(files);
-                  e.target.value = "";
-                }}
-              />
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="flex items-center gap-1 text-[11px] text-muted hover:text-fg px-2 py-1 rounded hover:bg-bg-hover transition-colors"
-                title="Attach files (or drag/drop/paste)"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                </svg>
-                Attach
-              </button>
-            </>
-          )}
-
-          {cwd && (
-            <>
-              <div className="h-3.5 w-px bg-border mx-1.5" />
-              <span
-                className="flex items-center gap-1 text-[11px] text-muted max-w-[180px]"
-                title={cwd}
-              >
-                <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
-                </svg>
-                <span className="truncate mono">{cwd.split("/").pop() || cwd}</span>
-              </span>
-            </>
-          )}
-
           <div className="flex-1" />
 
-          {/* STT mic button */}
+          {/* Always-visible: attach + dictate icon buttons */}
+          {uploadsEnabled && (
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              hidden
+              onChange={(e) => {
+                const files = Array.from(e.target.files ?? []);
+                if (files.length > 0) uploadFiles(files);
+                e.target.value = "";
+              }}
+            />
+          )}
+          {uploadsEnabled && (
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="flex items-center justify-center w-7 h-7 rounded-lg text-muted hover:text-fg hover:bg-bg-hover transition-colors"
+              title="Attach files (or drag/drop/paste)"
+              aria-label="Attach files"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+              </svg>
+            </button>
+          )}
           {sttSupported && (
             <button
               type="button"
               onClick={toggleSTT}
               className={[
-                "flex items-center gap-1 text-[11px] px-2 py-1 rounded transition-colors",
-                isRecording
-                  ? "text-[var(--fail)] hover:bg-bg-hover"
-                  : "text-muted hover:text-fg hover:bg-bg-hover",
+                "flex items-center gap-1 w-7 h-7 justify-center rounded-lg transition-colors",
+                isRecording ? "text-[var(--fail)] hover:bg-bg-hover" : "text-muted hover:text-fg hover:bg-bg-hover",
               ].join(" ")}
               title={isRecording ? "Stop recording" : "Dictate (speech to text)"}
-              aria-label={isRecording ? "Stop recording" : "Start speech to text"}
+              aria-label={isRecording ? "Stop recording" : "Dictate"}
             >
               {isRecording ? (
-                <span className="flex items-end gap-px" style={{ width: 60, height: 20 }} aria-hidden>
-                  {waveformBars.map((h, i) => (
-                    <span
-                      key={i}
-                      style={{
-                        width: 3,
-                        height: h,
-                        background: "var(--fail)",
-                        opacity: 0.7,
-                        borderRadius: 2,
-                        transition: "height 60ms linear",
-                      }}
-                    />
+                <span className="flex items-end gap-px" style={{ width: 18, height: 14 }} aria-hidden>
+                  {waveformBars.slice(0, 5).map((h, i) => (
+                    <span key={i} style={{ width: 2.5, height: Math.max(3, h * 0.55), background: "var(--fail)", opacity: 0.8, borderRadius: 2, transition: "height 60ms linear" }} />
                   ))}
                 </span>
-              ) : null}
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                <line strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  x1="12" y1="19" x2="12" y2="23" />
-                <line strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  x1="8" y1="23" x2="16" y2="23" />
-              </svg>
-              {isRecording ? "Stop" : "Dictate"}
+              ) : (
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                  <line strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} x1="12" y1="19" x2="12" y2="23" />
+                  <line strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} x1="8" y1="23" x2="16" y2="23" />
+                </svg>
+              )}
             </button>
           )}
 
-          {/* Slash hint */}
-          <button
-            type="button"
-            onClick={() => {
-              setMessage("/");
-              setSlashOpen(true);
-              setSlashQuery("");
-              setTimeout(() => textareaRef.current?.focus(), 0);
-            }}
-            className="text-[11px] text-subtle hover:text-fg px-2 py-1 rounded hover:bg-bg-hover transition-colors"
-            title="Browse commands"
-          >
-            /
-          </button>
-
-          {/* queued indicator — only show inline badge for inline variant; sticky shows the list above */}
+          {/* queued indicator — only show inline badge for inline variant */}
           {queued.length > 0 && variant === "inline" && (
-            <span className="flex items-center gap-1 text-[10px] text-accent mr-2">
+            <span className="flex items-center gap-1 text-[10px] text-accent mr-1">
               <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
-              {queued.length} queued
+              {queued.length}
             </span>
           )}
 
-          {/* send hint */}
-          <span className="text-[10px] text-subtle mr-2 hidden sm:block">↵ send · ⇧↵ newline</span>
+          {/* Overflow ⋯ menu */}
+          <div className="relative" ref={overflowRef}>
+            <button
+              type="button"
+              onClick={() => setOverflowOpen((o) => !o)}
+              className={[
+                "flex items-center justify-center w-7 h-7 rounded-lg text-muted hover:text-fg hover:bg-bg-hover transition-colors",
+                overflowOpen ? "bg-bg-hover text-fg" : "",
+              ].join(" ")}
+              title="More options"
+              aria-label="More options"
+            >
+              <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                <circle cx="5" cy="12" r="2" /><circle cx="12" cy="12" r="2" /><circle cx="19" cy="12" r="2" />
+              </svg>
+            </button>
+            {overflowOpen && (
+              <div className="absolute bottom-full right-0 mb-1 z-50 w-52 rounded-lg border border-border bg-bg shadow-lg py-1">
+                {/* MCP tools (local only) */}
+
+                {cli === "claude-local" && (
+                  <label
+                    className="flex items-center gap-2.5 px-3 py-2 text-[12px] text-fg hover:bg-bg-hover cursor-pointer select-none transition-colors"
+                    title={mcpTools ? "All MCP tools loaded — slower (~100K token prompt)" : "No MCP tools — faster prefill"}
+                  >
+                    <svg className="w-3.5 h-3.5 text-muted shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                    MCP tools
+                    <input
+                      type="checkbox"
+                      checked={mcpTools}
+                      onChange={(e) => setMcpTools(e.target.checked)}
+                      disabled={disabled}
+                      className="ml-auto w-3 h-3 accent-accent"
+                    />
+                  </label>
+                )}
+                {/* Slash commands */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMessage("/");
+                    setSlashOpen(true);
+                    setSlashQuery("");
+                    setOverflowOpen(false);
+                    setTimeout(() => textareaRef.current?.focus(), 0);
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 text-[12px] text-fg hover:bg-bg-hover transition-colors"
+                >
+                  <span className="w-3.5 h-3.5 text-muted shrink-0 text-center font-mono font-bold">/</span>
+                  Slash commands
+                </button>
+                {/* CWD */}
+                {cwd && (
+                  <>
+                    <div className="h-px bg-border mx-2 my-1" />
+                    <div className="flex items-center gap-2 px-3 py-1.5 text-[11px] text-muted" title={cwd}>
+                      <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+                      </svg>
+                      <span className="truncate mono">{cwd.split("/").pop() || cwd}</span>
+                    </div>
+                  </>
+                )}
+                {/* Keyboard hint */}
+                <div className="h-px bg-border mx-2 my-1" />
+                <div className="px-3 py-1.5 text-[10px] text-subtle">↵ send · ⇧↵ newline</div>
+              </div>
+            )}
+          </div>
 
           {/* Stop button — shown while streaming */}
           {disabled && onStop ? (
-            <button
-              type="button"
-              onClick={onStop}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[12px] font-medium border border-[var(--fail)]/40 text-[var(--fail)] hover:bg-[var(--fail)]/10 transition-all active:scale-95"
-              aria-label="Stop generation"
-              title="Stop generation"
-            >
-              <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor">
-                <rect x="4" y="4" width="16" height="16" rx="2" />
-              </svg>
-              Stop
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={onStop}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[12px] font-medium border border-[var(--fail)]/40 text-[var(--fail)] hover:bg-[var(--fail)]/10 transition-all active:scale-95"
+                aria-label="Stop generation"
+                title="Stop generation"
+              >
+                <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor">
+                  <rect x="4" y="4" width="16" height="16" rx="2" />
+                </svg>
+                Stop
+              </button>
+              <button
+                type="button"
+                onClick={submit}
+                disabled={!canSend}
+                className={[
+                  "flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[12px] font-medium transition-all",
+                  canSend
+                    ? "bg-accent text-white shadow-sm hover:bg-[var(--accent-hover)] active:scale-95"
+                    : "bg-bg-hover text-subtle cursor-not-allowed",
+                ].join(" ")}
+                aria-label="Queue message"
+                title="Queue message"
+              >
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.3} d="M4 7h10M4 12h10M4 17h6m8-8v8m4-4h-8" />
+                </svg>
+                Queue
+              </button>
+            </>
           ) : sendLabel ? (
             <button
               type="button"
@@ -1025,8 +1114,17 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
     >
       {queued.length > 0 && (
         <div className="mb-2 flex flex-col gap-1">
-          <div className="text-[10px] uppercase tracking-wider text-subtle px-1 mb-0.5">
-            {queued.length} queued
+          <div className="flex items-center gap-2 px-1 mb-0.5">
+            <div className="text-[10px] uppercase tracking-wider text-subtle">
+              {queued.length} queued
+            </div>
+            <button
+              type="button"
+              onClick={() => setQueued([])}
+              className="rounded-md border border-border px-2 py-0.5 text-[10px] text-subtle hover:bg-bg-hover hover:text-fg transition-colors"
+            >
+              Clear
+            </button>
           </div>
           {queued.map((q, i) => (
             <div
@@ -1035,7 +1133,30 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
               style={{ background: "var(--bg-elev)" }}
             >
               <span className="shrink-0 text-subtle text-[10px] mt-0.5">{i + 1}.</span>
-              <span className="text-fg leading-snug line-clamp-2">{q.text}</span>
+              <div className="shrink-0 flex items-center gap-1">
+                {disabled && onStop && (
+                  <button
+                    type="button"
+                    onClick={() => steerWithQueued(i)}
+                    className="rounded-md border border-accent/40 px-2 py-1 text-[10px] font-medium text-accent hover:bg-accent/10 transition-colors"
+                    title="Stop current reply and send this queued message next"
+                  >
+                    Steer
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => removeQueued(i)}
+                  className="flex h-6 w-6 items-center justify-center rounded-md border border-border text-subtle hover:bg-bg-hover hover:text-fg transition-colors"
+                  aria-label={`Remove queued message ${i + 1}`}
+                  title="Remove queued message"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+              <span className="min-w-0 flex-1 text-fg leading-snug line-clamp-2">{q.text}</span>
             </div>
           ))}
         </div>

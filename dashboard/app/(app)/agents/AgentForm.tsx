@@ -1,8 +1,17 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import type { Agent, AgentKind, CLI, MutationTier, OrchestratorBudget, OnBudgetExceeded, OnSliceFailure } from "@/lib/runs";
+import type {
+  Agent,
+  AgentKind,
+  CLI,
+  MutationTier,
+  OrchestratorBudget,
+  OnBudgetExceeded,
+  OnSliceFailure,
+  SliceGraph,
+} from "@/lib/runs";
 import { agentDefaultCli, agentSupportedClis } from "@/lib/session-utils";
 import type { Model } from "@/lib/models";
 import {
@@ -36,6 +45,9 @@ export function AgentForm({ existing }: { existing?: Agent } = {}) {
   const [selectedSlices, setSelectedSlices] = useState<Set<string>>(
     new Set(Array.isArray(existing?.slices_available) ? existing.slices_available : [])
   );
+  const [sliceGraph, setSliceGraph] = useState<SliceGraph>(
+    existing?.slice_graph ?? { nodes: [], edges: [] }
+  );
   const [slicesAll, setSlicesAll] = useState(existing?.slices_available === "*");
   const [canCreateCustomSlices, setCanCreateCustomSlices] = useState(existing?.can_create_custom_slices ?? false);
   const [allowedMutations, setAllowedMutations] = useState<Set<MutationTier>>(
@@ -64,6 +76,10 @@ export function AgentForm({ existing }: { existing?: Agent } = {}) {
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const selectedSliceIdsForSave = useMemo(() => {
+    return Array.from(new Set([...selectedSlices, ...sliceGraph.nodes.map((node) => node.slice_id)]));
+  }, [selectedSlices, sliceGraph.nodes]);
 
   useEffect(() => {
     for (const c of supportedClis) {
@@ -126,7 +142,8 @@ export function AgentForm({ existing }: { existing?: Agent } = {}) {
         timeout_seconds: parseInt(timeout, 10) || 1800,
         kind,
         ...(kind === "orchestrator" ? {
-          slices_available: slicesAll ? "*" : Array.from(selectedSlices),
+          slices_available: slicesAll ? "*" : selectedSliceIdsForSave,
+          slice_graph: sliceGraph,
           can_create_custom_slices: canCreateCustomSlices,
           allowed_mutations: Array.from(allowedMutations),
           budget,
@@ -160,7 +177,7 @@ export function AgentForm({ existing }: { existing?: Agent } = {}) {
   };
 
   return (
-    <form onSubmit={(e) => { e.preventDefault(); save(); }} className="space-y-5 max-w-3xl">
+    <form onSubmit={(e) => { e.preventDefault(); save(); }} className="space-y-5 max-w-5xl">
       {error && (
         <Card className="p-3 border-[color-mix(in_srgb,var(--fail)_30%,var(--border))] text-[var(--fail)] text-sm">
           {error}
@@ -386,6 +403,16 @@ export function AgentForm({ existing }: { existing?: Agent } = {}) {
               </div>
             )}
 
+            {!slicesAll && (
+              <SliceWorkflowGraph
+                slices={allSlices}
+                graph={sliceGraph}
+                onGraphChange={setSliceGraph}
+                selectedSlices={selectedSlices}
+                onSelectedSlicesChange={setSelectedSlices}
+              />
+            )}
+
             <label className="flex items-center gap-2 cursor-pointer text-[13px]">
               <input
                 type="checkbox"
@@ -535,6 +562,467 @@ export function AgentForm({ existing }: { existing?: Agent } = {}) {
         </Button>
       </div>
     </form>
+  );
+}
+
+const NODE_WIDTH = 176;
+const NODE_HEIGHT = 104;
+
+function clamp(n: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, n));
+}
+
+function SliceWorkflowGraph({
+  slices,
+  graph,
+  onGraphChange,
+  selectedSlices,
+  onSelectedSlicesChange,
+}: {
+  slices: Slice[];
+  graph: SliceGraph;
+  onGraphChange: React.Dispatch<React.SetStateAction<SliceGraph>>;
+  selectedSlices: Set<string>;
+  onSelectedSlicesChange: React.Dispatch<React.SetStateAction<Set<string>>>;
+}) {
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const connectFromRef = useRef<string | null>(null);
+  const [dragging, setDragging] = useState<{ nodeId: string; offsetX: number; offsetY: number } | null>(null);
+  const [connectFrom, setConnectFrom] = useState<string | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(graph.nodes[0]?.id ?? null);
+
+  const sliceById = useMemo(() => new Map(slices.map((slice) => [slice.id, slice])), [slices]);
+  const placedSliceIds = useMemo(() => new Set(graph.nodes.map((node) => node.slice_id)), [graph.nodes]);
+  const selectedNode = useMemo(
+    () => graph.nodes.find((node) => node.id === selectedNodeId) ?? null,
+    [graph.nodes, selectedNodeId],
+  );
+
+  useEffect(() => {
+    if (selectedNodeId && graph.nodes.some((node) => node.id === selectedNodeId)) return;
+    setSelectedNodeId(graph.nodes[0]?.id ?? null);
+  }, [graph.nodes, selectedNodeId]);
+
+  const addNode = (sliceId: string, x?: number, y?: number) => {
+    const slice = sliceById.get(sliceId);
+    if (!slice) return;
+    const fallbackX = 48 + (graph.nodes.length % 3) * 220;
+    const fallbackY = 48 + Math.floor(graph.nodes.length / 3) * 136;
+    const node = {
+      id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      slice_id: slice.id,
+      x: clamp(x ?? fallbackX, 12, 540),
+      y: clamp(y ?? fallbackY, 12, 300),
+      label: slice.name,
+    };
+    onGraphChange((current) => ({ ...current, nodes: [...current.nodes, node] }));
+    setSelectedNodeId(node.id);
+    onSelectedSlicesChange((current) => {
+      const next = new Set(current);
+      next.add(slice.id);
+      return next;
+    });
+  };
+
+  const removeNode = (nodeId: string) => {
+    onGraphChange((current) => ({
+      nodes: current.nodes.filter((node) => node.id !== nodeId),
+      edges: current.edges.filter((edge) => edge.from !== nodeId && edge.to !== nodeId),
+    }));
+    if (connectFromRef.current === nodeId) connectFromRef.current = null;
+    setConnectFrom((current) => (current === nodeId ? null : current));
+    setSelectedNodeId((current) => (current === nodeId ? null : current));
+  };
+
+  const updateNode = (nodeId: string, patch: Partial<SliceGraph["nodes"][number]>) => {
+    onGraphChange((current) => ({
+      ...current,
+      nodes: current.nodes.map((node) => (
+        node.id === nodeId ? { ...node, ...patch } : node
+      )),
+    }));
+  };
+
+  const connectNode = (nodeId: string) => {
+    const fromNodeId = connectFromRef.current;
+    if (!fromNodeId || fromNodeId === nodeId) {
+      connectFromRef.current = nodeId;
+      setConnectFrom(nodeId);
+      return;
+    }
+
+    onGraphChange((current) => {
+      const exists = current.edges.some((edge) => edge.from === fromNodeId && edge.to === nodeId);
+      if (exists) return current;
+      return {
+        ...current,
+        edges: [...current.edges, { id: `edge-${fromNodeId}-${nodeId}`, from: fromNodeId, to: nodeId }],
+      };
+    });
+    connectFromRef.current = null;
+    setConnectFrom(null);
+  };
+
+  const removeEdge = (edgeId: string) => {
+    onGraphChange((current) => ({
+      ...current,
+      edges: current.edges.filter((edge) => edge.id !== edgeId),
+    }));
+  };
+
+  const arrangeGraph = () => {
+    onGraphChange((current) => ({
+      ...current,
+      nodes: current.nodes.map((node, i) => ({
+        ...node,
+        x: 28 + (i % 3) * 218,
+        y: 32 + Math.floor(i / 3) * 134,
+      })),
+    }));
+  };
+
+  const clearGraph = () => {
+    onGraphChange({ nodes: [], edges: [] });
+    connectFromRef.current = null;
+    setConnectFrom(null);
+    setSelectedNodeId(null);
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const sliceId = e.dataTransfer.getData("application/saturn-slice-id");
+    if (!sliceId || !canvasRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    addNode(
+      sliceId,
+      e.clientX - rect.left - NODE_WIDTH / 2,
+      e.clientY - rect.top - NODE_HEIGHT / 2,
+    );
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragging || !canvasRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const maxX = Math.max(12, rect.width - NODE_WIDTH - 12);
+    const maxY = Math.max(12, rect.height - NODE_HEIGHT - 12);
+    const x = clamp(e.clientX - rect.left - dragging.offsetX, 12, maxX);
+    const y = clamp(e.clientY - rect.top - dragging.offsetY, 12, maxY);
+    onGraphChange((current) => ({
+      ...current,
+      nodes: current.nodes.map((node) => (
+        node.id === dragging.nodeId ? { ...node, x, y } : node
+      )),
+    }));
+  };
+
+  const edgesWithNodes = graph.edges
+    .map((edge) => {
+      const from = graph.nodes.find((node) => node.id === edge.from);
+      const to = graph.nodes.find((node) => node.id === edge.to);
+      if (!from || !to) return null;
+      return { edge, from, to };
+    })
+    .filter((item): item is NonNullable<typeof item> => item !== null);
+
+  return (
+    <div className="rounded-lg border border-border bg-bg p-3 space-y-3">
+      <div className="flex items-center gap-2">
+        <div className="text-[12px] font-semibold text-fg">Slice workflow</div>
+        <div className="ml-auto flex gap-2">
+          <button
+            type="button"
+            onClick={arrangeGraph}
+            disabled={graph.nodes.length === 0}
+            className="rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:bg-bg-hover hover:text-fg disabled:opacity-40"
+          >
+            Arrange
+          </button>
+          <button
+            type="button"
+            onClick={clearGraph}
+            disabled={graph.nodes.length === 0}
+            className="rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:bg-bg-hover hover:text-fg disabled:opacity-40"
+          >
+            Clear
+          </button>
+        </div>
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-[240px_minmax(0,1fr)]">
+        <div className="rounded-lg border border-border bg-bg-subtle p-2">
+          <div className="mb-2 text-[10px] uppercase tracking-wider text-subtle">Palette</div>
+          <div className="max-h-[360px] space-y-2 overflow-y-auto pr-1">
+            {slices.length === 0 && (
+              <div className="rounded-md border border-border bg-bg px-3 py-6 text-center text-[12px] text-subtle">
+                No slices available
+              </div>
+            )}
+            {slices.map((slice) => {
+              const placed = placedSliceIds.has(slice.id);
+              const selected = selectedSlices.has(slice.id) || placed;
+              return (
+                <div
+                  key={slice.id}
+                  draggable
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData("application/saturn-slice-id", slice.id);
+                    e.dataTransfer.effectAllowed = "copy";
+                  }}
+                  className={[
+                    "rounded-md border p-2 transition-colors cursor-grab active:cursor-grabbing",
+                    selected
+                      ? "border-accent bg-accent-soft/40"
+                      : "border-border bg-bg hover:bg-bg-hover",
+                  ].join(" ")}
+                >
+                  <div className="flex items-start gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[12px] font-medium text-fg">{slice.name}</div>
+                      <div className="truncate text-[10px] text-muted">{slice.id}</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => addNode(slice.id)}
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border text-muted hover:bg-bg-hover hover:text-fg"
+                      title={`Add ${slice.name}`}
+                      aria-label={`Add ${slice.name}`}
+                    >
+                      <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.4} d="M12 5v14M5 12h14" />
+                      </svg>
+                    </button>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    <span className="rounded border border-border px-1.5 py-0.5 text-[10px] text-subtle">
+                      {slice.capability?.mutation}
+                    </span>
+                    <span className="rounded border border-border px-1.5 py-0.5 text-[10px] text-subtle">
+                      {slice.capability?.output.kind}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="min-w-0 space-y-2">
+          <div
+            ref={canvasRef}
+            className="relative min-h-[420px] overflow-hidden rounded-lg border border-border bg-bg-subtle"
+            onDragOver={(e) => {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "copy";
+            }}
+            onDrop={handleDrop}
+            onPointerMove={handlePointerMove}
+            onPointerUp={() => setDragging(null)}
+            onPointerCancel={() => setDragging(null)}
+          >
+            <svg className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden="true">
+              <defs>
+                <marker id="slice-workflow-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                  <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)" />
+                </marker>
+              </defs>
+              {edgesWithNodes.map(({ edge, from, to }) => (
+                <line
+                  key={edge.id}
+                  x1={from.x + NODE_WIDTH / 2}
+                  y1={from.y + NODE_HEIGHT / 2}
+                  x2={to.x + NODE_WIDTH / 2}
+                  y2={to.y + NODE_HEIGHT / 2}
+                  stroke="var(--accent)"
+                  strokeWidth={2}
+                  strokeOpacity={0.75}
+                  markerEnd="url(#slice-workflow-arrow)"
+                />
+              ))}
+            </svg>
+
+            {graph.nodes.length === 0 && (
+              <div className="absolute inset-0 flex items-center justify-center text-[12px] text-subtle">
+                No slices placed
+              </div>
+            )}
+
+            {graph.nodes.map((node) => {
+              const slice = sliceById.get(node.slice_id);
+              const isConnecting = connectFrom === node.id;
+              return (
+                <div
+                  key={node.id}
+                  className={[
+                    "absolute select-none rounded-lg border bg-bg p-3 shadow-sm transition-shadow",
+                    isConnecting ? "border-accent shadow-lg" : "border-border",
+                    dragging?.nodeId === node.id ? "cursor-grabbing" : "cursor-grab",
+                  ].join(" ")}
+                  style={{ left: node.x, top: node.y, width: NODE_WIDTH, height: NODE_HEIGHT }}
+                  onPointerDown={(e) => {
+                    if (!canvasRef.current) return;
+                    const rect = canvasRef.current.getBoundingClientRect();
+                    setSelectedNodeId(node.id);
+                    setDragging({
+                      nodeId: node.id,
+                      offsetX: e.clientX - rect.left - node.x,
+                      offsetY: e.clientY - rect.top - node.y,
+                    });
+                  }}
+                >
+                  <div className="flex items-start gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[12px] font-semibold text-fg">{node.label || slice?.name || node.slice_id}</div>
+                      <div className="truncate text-[10px] text-muted">{node.slice_id}</div>
+                    </div>
+                    <button
+                      type="button"
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={() => removeNode(node.id)}
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-subtle hover:bg-bg-hover hover:text-fg"
+                      title="Remove node"
+                      aria-label={`Remove ${slice?.name ?? node.slice_id}`}
+                    >
+                      <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                  <div className="mt-3 flex items-center justify-between">
+                    <span className="rounded border border-border px-1.5 py-0.5 text-[10px] text-subtle">
+                      {slice?.capability?.mutation ?? "slice"}
+                    </span>
+                    <button
+                      type="button"
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={() => connectNode(node.id)}
+                      className={[
+                        "rounded-full border px-2 py-1 text-[10px] font-medium transition-colors",
+                        isConnecting
+                          ? "border-accent bg-accent-soft text-accent"
+                          : "border-border text-muted hover:bg-bg-hover hover:text-fg",
+                      ].join(" ")}
+                    >
+                      Connect
+                    </button>
+                  </div>
+                  {(node.instructions || node.prompt || node.config) && (
+                    <div className="mt-2 truncate text-[10px] text-subtle">
+                      {node.instructions || node.prompt || node.config}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {edgesWithNodes.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {edgesWithNodes.map(({ edge, from, to }) => {
+                const fromSlice = sliceById.get(from.slice_id);
+                const toSlice = sliceById.get(to.slice_id);
+                return (
+                  <div key={edge.id} className="flex items-center gap-1 rounded-md border border-border bg-bg px-2 py-1 text-[11px] text-muted">
+                    <span className="max-w-[120px] truncate">{fromSlice?.name ?? from.slice_id}</span>
+                    <span className="text-accent">-&gt;</span>
+                    <span className="max-w-[120px] truncate">{toSlice?.name ?? to.slice_id}</span>
+                    <button
+                      type="button"
+                      onClick={() => removeEdge(edge.id)}
+                      className="ml-1 text-subtle hover:text-fg"
+                      title="Remove connection"
+                      aria-label="Remove connection"
+                    >
+                      <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {selectedNode && (
+            <div className="rounded-lg border border-border bg-bg p-3">
+              <div className="mb-3 flex items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="text-[12px] font-semibold text-fg">Node editor</div>
+                  <div className="truncate text-[10px] text-muted">{selectedNode.id}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => removeNode(selectedNode.id)}
+                  className="rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:bg-bg-hover hover:text-fg"
+                >
+                  Remove node
+                </button>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <Field label="Node label">
+                  <Input
+                    value={selectedNode.label ?? ""}
+                    onChange={(e) => updateNode(selectedNode.id, { label: e.target.value })}
+                    placeholder={sliceById.get(selectedNode.slice_id)?.name ?? selectedNode.slice_id}
+                  />
+                </Field>
+                <Field label="Slice">
+                  <Select
+                    value={selectedNode.slice_id}
+                    onChange={(e) => {
+                      const nextSlice = sliceById.get(e.target.value);
+                      updateNode(selectedNode.id, {
+                        slice_id: e.target.value,
+                        label: selectedNode.label || nextSlice?.name || e.target.value,
+                      });
+                      onSelectedSlicesChange((current) => {
+                        const next = new Set(current);
+                        next.add(e.target.value);
+                        return next;
+                      });
+                    }}
+                  >
+                    {!sliceById.has(selectedNode.slice_id) && (
+                      <option value={selectedNode.slice_id}>Missing slice: {selectedNode.slice_id}</option>
+                    )}
+                    {slices.map((slice) => (
+                      <option key={slice.id} value={slice.id}>{slice.name}</option>
+                    ))}
+                  </Select>
+                </Field>
+              </div>
+
+              <div className="mt-3 grid gap-3 lg:grid-cols-3">
+                <Field label="Instructions">
+                  <Textarea
+                    value={selectedNode.instructions ?? ""}
+                    onChange={(e) => updateNode(selectedNode.id, { instructions: e.target.value })}
+                    placeholder="What this node should accomplish"
+                    className="min-h-[96px]"
+                  />
+                </Field>
+                <Field label="Node prompt">
+                  <Textarea
+                    value={selectedNode.prompt ?? ""}
+                    onChange={(e) => updateNode(selectedNode.id, { prompt: e.target.value })}
+                    placeholder="Optional prompt override or extra context"
+                    className="min-h-[96px] mono"
+                  />
+                </Field>
+                <Field label="Config">
+                  <Textarea
+                    value={selectedNode.config ?? ""}
+                    onChange={(e) => updateNode(selectedNode.id, { config: e.target.value })}
+                    placeholder='Optional JSON or freeform config'
+                    className="min-h-[96px] mono"
+                  />
+                </Field>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 

@@ -161,7 +161,7 @@ export function tailSseResponse(opts: TailSseOptions): Response {
             if (!isTerminal(m.status)) {
               clearInterval(waitForRunning);
               startLiveTail();
-            } else if (ticks++ >= 20) { // 20 × 150ms = 3s max wait
+            } else if (ticks++ >= 66) { // 66 x 150ms ~= 10s max wait
               clearInterval(waitForRunning);
               send(JSON.stringify({ type: "_meta", meta: m }));
               close();

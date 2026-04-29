@@ -1,0 +1,254 @@
+#!/usr/bin/env node
+
+const fs = require("node:fs/promises");
+
+const RESOURCES = new Set(["tasks", "agents", "slices", "jobs"]);
+const CONTROL_FLAGS = new Set(["json", "file", "dry-run", "base-url", "compact", "help"]);
+const QUERY_FLAG_MAP = new Map([
+  ["status", "status"],
+  ["priority", "priority"],
+  ["tag", "tag"],
+  ["limit", "limit"],
+  ["linked-session-id", "linked_session_id"],
+  ["linked-job-name", "linked_job_name"],
+]);
+
+function usage() {
+  return `Saturn app control CLI
+
+Usage:
+  saturn <resource> <action> [id-or-name] [options]
+
+Resources:
+  tasks   list|get|create|update|claim|release
+  agents  list|get|create|update
+  slices  list|get|create|update
+  jobs    list|get|create|update
+
+Payloads:
+  --json '<json>'       JSON payload for create/update/claim/release
+  --file payload.json   JSON payload file
+  stdin                 JSON payload when --json/--file are omitted
+
+Options:
+  --base-url <url>      Defaults to SATURN_BASE_URL or http://127.0.0.1:\${PORT:-3737}
+  --dry-run             Print method, URL, and body without sending
+  --compact             Print compact JSON
+
+Examples:
+  saturn tasks list --status open --linked-session-id "$SATURN_SESSION_ID"
+  saturn tasks create --json '{"title":"Follow up","created_by":"agent"}'
+  saturn tasks claim <task-id> --json '{"claimed_by":"agent"}'
+  saturn agents create --file agent.json
+  saturn slices update repo-scan --json '{"description":"Repo scanner"}'
+  saturn jobs create --json '{"name":"daily-summary","cron":"0 9 * * *","prompt":"Summarize"}'
+`;
+}
+
+function fail(message, details) {
+  const body = details ? { error: message, ...details } : { error: message };
+  process.stderr.write(JSON.stringify(body, null, 2) + "\n");
+  process.exit(1);
+}
+
+function parseArgs(argv) {
+  const positional = [];
+  const flags = {};
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (!arg.startsWith("--")) {
+      positional.push(arg);
+      continue;
+    }
+
+    const eq = arg.indexOf("=");
+    const rawName = arg.slice(2, eq === -1 ? undefined : eq);
+    if (!rawName) fail("empty flag is not valid");
+
+    if (rawName === "dry-run" || rawName === "compact" || rawName === "help") {
+      flags[rawName] = true;
+      continue;
+    }
+
+    const value = eq === -1 ? argv[++i] : arg.slice(eq + 1);
+    if (value === undefined) fail(`missing value for --${rawName}`);
+    flags[rawName] = value;
+  }
+
+  return { positional, flags };
+}
+
+function baseUrl(flags) {
+  return String(
+    flags["base-url"] ||
+      process.env.SATURN_BASE_URL ||
+      `http://127.0.0.1:${process.env.PORT || "3737"}`,
+  ).replace(/\/+$/, "");
+}
+
+function encodeSegment(value) {
+  return encodeURIComponent(value);
+}
+
+function resourcePath(resource, id, suffix) {
+  let path = `/api/${resource}`;
+  if (id) path += `/${encodeSegment(id)}`;
+  if (suffix) path += `/${suffix}`;
+  return path;
+}
+
+async function readStdin() {
+  if (process.stdin.isTTY) return "";
+  let data = "";
+  for await (const chunk of process.stdin) data += chunk;
+  return data.trim();
+}
+
+async function payloadFrom(flags, required) {
+  let raw = "";
+  if (typeof flags.json === "string") {
+    raw = flags.json;
+  } else if (typeof flags.file === "string") {
+    raw = await fs.readFile(flags.file, "utf8");
+  } else {
+    raw = await readStdin();
+  }
+
+  if (!raw.trim()) {
+    if (required) fail("a JSON payload is required; use --json, --file, or stdin");
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      fail("payload must be a JSON object");
+    }
+    return parsed;
+  } catch (err) {
+    fail("payload is not valid JSON", { detail: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+function queryFromFlags(flags) {
+  const query = new URLSearchParams();
+  for (const [flag, key] of QUERY_FLAG_MAP) {
+    if (flags[flag] !== undefined) query.set(key, String(flags[flag]));
+  }
+  return query.toString();
+}
+
+function printJson(value, compact) {
+  process.stdout.write(JSON.stringify(value, null, compact ? 0 : 2) + "\n");
+}
+
+async function request({ method, url, body, dryRun, compact }) {
+  if (dryRun) {
+    printJson({ dry_run: true, method, url, body: body ?? null }, compact);
+    return;
+  }
+
+  const init = { method, headers: { Accept: "application/json" } };
+  if (body !== undefined) {
+    init.headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(body);
+  }
+
+  let res;
+  try {
+    res = await fetch(url, init);
+  } catch (err) {
+    fail("request failed", { detail: err instanceof Error ? err.message : String(err), url });
+  }
+
+  const text = await res.text();
+  let parsed = null;
+  if (text.trim()) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = { text };
+    }
+  }
+
+  if (!res.ok) {
+    fail(parsed?.error || `request failed with status ${res.status}`, {
+      status: res.status,
+      url,
+      response: parsed,
+    });
+  }
+
+  printJson(parsed ?? { success: true }, compact);
+}
+
+async function main() {
+  const { positional, flags } = parseArgs(process.argv.slice(2));
+  if (flags.help || positional.length === 0) {
+    process.stdout.write(usage());
+    return;
+  }
+
+  const [resource, action, target] = positional;
+  if (!RESOURCES.has(resource)) fail(`unknown resource: ${resource}`);
+  if (!action) fail("action is required");
+
+  for (const flag of Object.keys(flags)) {
+    if (!CONTROL_FLAGS.has(flag) && !QUERY_FLAG_MAP.has(flag)) {
+      fail(`unknown flag: --${flag}`);
+    }
+  }
+
+  const root = baseUrl(flags);
+  const compact = Boolean(flags.compact);
+  const dryRun = Boolean(flags["dry-run"]);
+  let method;
+  let path;
+  let body;
+
+  if (action === "list") {
+    method = "GET";
+    const query = resource === "tasks" ? queryFromFlags(flags) : "";
+    path = resourcePath(resource) + (query ? `?${query}` : "");
+  } else if (action === "get") {
+    if (!target) fail(`${resource} get requires an id or name`);
+    method = "GET";
+    path = resourcePath(resource, target);
+  } else if (action === "create") {
+    method = "POST";
+    path = resourcePath(resource);
+    body = await payloadFrom(flags, true);
+  } else if (action === "update") {
+    if (!target) fail(`${resource} update requires an id or name`);
+    method = resource === "tasks" ? "PATCH" : "PUT";
+    path = resourcePath(resource, target);
+    body = await payloadFrom(flags, true);
+  } else if (resource === "tasks" && action === "claim") {
+    if (!target) fail("tasks claim requires a task id");
+    method = "POST";
+    path = resourcePath(resource, target, "claim");
+    body = await payloadFrom(flags, false);
+    body.claimed_by ||= process.env.SATURN_SESSION_ID || "saturn-cli";
+  } else if (resource === "tasks" && action === "release") {
+    if (!target) fail("tasks release requires a task id");
+    method = "POST";
+    path = resourcePath(resource, target, "release");
+    body = await payloadFrom(flags, false);
+    body.claimed_by ||= process.env.SATURN_SESSION_ID || "saturn-cli";
+  } else {
+    fail(`${resource} does not support action: ${action}`);
+  }
+
+  await request({
+    method,
+    url: `${root}${path}`,
+    body,
+    dryRun,
+    compact,
+  });
+}
+
+main().catch((err) => {
+  fail(err instanceof Error ? err.message : String(err));
+});

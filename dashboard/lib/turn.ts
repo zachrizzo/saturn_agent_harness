@@ -130,8 +130,11 @@ export async function spawnTurn(
     extraEnv.ALLOWED_TOOLS_OVERRIDE = baseTools.length ? baseTools.join(",") : "";
   }
 
-  // Inject task API access for all sessions. Agents get the base URL and their
-  // identity (session id) so they can claim/release tasks without ambiguity.
+  // Inject Saturn app-control access for all sessions. Agents get the base URL
+  // and their identity (session id) so the CLI can create tasks and other
+  // app objects without ambiguity.
+  extraEnv.SATURN_BASE_URL = `http://127.0.0.1:${port}`;
+  extraEnv.SATURN_SESSION_ID = sessionId;
   extraEnv.TASK_BASE_URL = `http://127.0.0.1:${port}/api/tasks`;
   extraEnv.TASK_SESSION_ID = sessionId;
 

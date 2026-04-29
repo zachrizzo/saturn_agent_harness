@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { SessionMeta, CLI } from "@/lib/runs";
@@ -66,6 +67,7 @@ export function ChatView({
   const composerRef = useRef<ComposerHandle>(null);
   const [editingTurnIndex, setEditingTurnIndex] = useState<number | null>(null);
   const turnRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const [inspectorWidth, setInspectorWidth] = useState(420);
 
   // Tool selection — drives Inspector content.
   const [activeToolId, setActiveToolId] = useState<string | null>(null);
@@ -80,8 +82,52 @@ export function ChatView({
     }).catch(() => {});
   }, [sessionId]);
 
+  useEffect(() => {
+    const stored = Number(window.localStorage.getItem("saturn.inspectorWidth"));
+    if (Number.isFinite(stored) && stored >= 320 && stored <= 1100) {
+      setInspectorWidth(stored);
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("saturn.inspectorWidth", String(inspectorWidth));
+  }, [inspectorWidth]);
+
   // Keep metaRef in sync for use inside SSE callbacks
   useEffect(() => { metaRef.current = meta; }, [meta]);
+
+  const applySessionSnapshot = useCallback((incoming: SessionMeta, incomingEvents: StreamEvent[]) => {
+    if (incoming.turns.length >= metaRef.current.turns.length) {
+      setMeta(incoming);
+      setStreaming(incoming.status === "running");
+    }
+    setEvents((prev) => {
+      if (incomingEvents.length < prev.length) return prev;
+      seenRef.current = new Set(incomingEvents.map((event) => JSON.stringify(event.raw)));
+      return incomingEvents;
+    });
+  }, []);
+
+  const refreshSessionSnapshot = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+        cache: "no-store",
+      });
+      if (!res.ok) return;
+      const data = await res.json() as { meta: SessionMeta; events: StreamEvent[] };
+      applySessionSnapshot(data.meta, data.events ?? []);
+    } catch {}
+  }, [applySessionSnapshot, sessionId]);
+
+  useEffect(() => {
+    if (meta.status !== "running" && !streaming) return;
+    const initial = window.setTimeout(() => { void refreshSessionSnapshot(); }, 1200);
+    const interval = window.setInterval(() => { void refreshSessionSnapshot(); }, 2500);
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(interval);
+    };
+  }, [meta.status, refreshSessionSnapshot, streaming]);
 
   // Connect SSE whenever status transitions to running
   useEffect(() => {
@@ -107,6 +153,7 @@ export function ChatView({
         closedByTerminalMeta = true;
         setMeta(incoming);
         setStreaming(false);
+        router.refresh();
         es.close();
         return;
       }
@@ -118,6 +165,7 @@ export function ChatView({
       setEvents((prev) => [...prev, ...parsed]);
     };
     es.onerror = () => {
+      void refreshSessionSnapshot();
       if (!closedByTerminalMeta && metaRef.current.status === "running") {
         return;
       }
@@ -126,7 +174,7 @@ export function ChatView({
     };
 
     return () => es.close();
-  }, [sessionId, meta.status]);
+  }, [refreshSessionSnapshot, router, sessionId, meta.status]);
 
   // Scroll all the way to the bottom — past the last message AND showing the composer.
   const scrollToEnd = (behavior: ScrollBehavior = "auto") => {
@@ -245,6 +293,12 @@ export function ChatView({
     }
     return "Waiting for first token";
   }, [events, runningTools]);
+  const streamActivityDetail = useMemo(() => {
+    if (runningTools.length > 0) {
+      return `${runningTools.length} tool${runningTools.length === 1 ? "" : "s"} active`;
+    }
+    return `${events.length.toLocaleString()} event${events.length === 1 ? "" : "s"}`;
+  }, [events.length, runningTools.length]);
 
   const chunks = useMemo<TurnChunk[]>(() => {
     return buildTurnChunks(meta, events);
@@ -333,9 +387,13 @@ export function ChatView({
   };
 
   const stopGeneration = async () => {
-    setStreaming(false);
-    setMeta((m) => ({ ...m, status: "failed" }));
-    await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/abort`, { method: "POST" });
+    try {
+      await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/abort`, { method: "POST" });
+      await refreshSessionSnapshot();
+    } finally {
+      setStreaming(false);
+      setMeta((m) => ({ ...m, status: "failed" }));
+    }
   };
 
   const sendMessage = async (
@@ -410,7 +468,10 @@ export function ChatView({
 
   return (
     <ToolSelectionProvider value={toolSelection}>
-      <div className="chat-shell">
+      <div
+        className="chat-shell"
+        style={{ "--inspector-width": `${inspectorWidth}px` } as CSSProperties}
+      >
         <div className="chat-main">
           <header className="chat-header">
             <h1 className="truncate">{agentName}</h1>
@@ -465,18 +526,6 @@ export function ChatView({
             <div className="session-id">{sessionId}</div>
           </header>
 
-          {streaming && (
-            <div className="streaming-banner" role="status" aria-live="polite">
-              <span className="streaming-orb" aria-hidden="true" />
-              <span className="streaming-label">{streamActivityLabel}</span>
-              <span className="streaming-detail">
-                {runningTools.length > 0
-                  ? `${runningTools.length} tool${runningTools.length === 1 ? "" : "s"} active`
-                  : `${events.length.toLocaleString()} event${events.length === 1 ? "" : "s"}`}
-              </span>
-            </div>
-          )}
-
           <div className="chat-stream">
             {chunks.length === 0 && (
               <div className="card p-10 text-center text-muted text-[13px]">
@@ -522,6 +571,8 @@ export function ChatView({
                     kind="assistant"
                     events={chunk.events}
                     streaming={chunk.streaming}
+                    liveActivity={chunk.streaming ? streamActivityLabel : undefined}
+                    liveDetail={chunk.streaming ? streamActivityDetail : undefined}
                     sessionId={sessionId}
                     hiddenMcpImageServers={hiddenMcpImageServers}
                   />
@@ -603,6 +654,8 @@ export function ChatView({
           tools={tools}
           tokens={tokens}
           events={events}
+          width={inspectorWidth}
+          onWidthChange={setInspectorWidth}
         />
       </div>
     </ToolSelectionProvider>
