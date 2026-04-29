@@ -1978,15 +1978,15 @@ h1, h2, h3, h4, h5, h6 {
 .slice-workflow-node::before {
   content: "";
   position: absolute;
-  inset: 0 auto 0 0;
-  width: 3px;
-  border-radius: 10px 0 0 10px;
+  inset: 0 0 auto 0;
+  height: 3px;
+  border-radius: 10px 10px 0 0;
   background: color-mix(in srgb, var(--accent) 66%, transparent);
 }
 
 .slice-workflow-port {
   position: absolute;
-  top: 50%;
+  left: 50%;
   z-index: 3;
   display: grid;
   place-items: center;
@@ -1997,7 +1997,7 @@ h1, h2, h3, h4, h5, h6 {
   background: var(--bg);
   color: var(--text-subtle);
   cursor: crosshair;
-  transform: translateY(-50%);
+  transform: translateX(-50%);
   transition: background 100ms ease, border-color 100ms ease, box-shadow 100ms ease, transform 100ms ease;
 }
 
@@ -2011,11 +2011,11 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .slice-workflow-port.input {
-  left: -10px;
+  top: -10px;
 }
 
 .slice-workflow-port.output {
-  right: -10px;
+  bottom: -10px;
   border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
   color: var(--accent);
 }
@@ -2026,7 +2026,7 @@ h1, h2, h3, h4, h5, h6 {
   border-color: var(--accent);
   background: var(--accent-soft);
   box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 12%, transparent);
-  transform: translateY(-50%) scale(1.08);
+  transform: translateX(-50%) scale(1.08);
 }
 
 .slice-workflow-port.targetable {

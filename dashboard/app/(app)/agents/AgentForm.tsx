@@ -645,16 +645,73 @@ function SectionIntro({
 
 const NODE_WIDTH = 220;
 const NODE_HEIGHT = 128;
-const NODE_PORT_Y = NODE_HEIGHT / 2;
+const NODE_PORT_X = NODE_WIDTH / 2;
+const NODE_VERTICAL_GAP = 52;
 
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
 }
 
 function connectionPath(x1: number, y1: number, x2: number, y2: number): string {
-  const distance = Math.abs(x2 - x1);
-  const handle = Math.max(74, Math.min(180, distance * 0.46));
-  return `M ${x1} ${y1} C ${x1 + handle} ${y1}, ${x2 - handle} ${y2}, ${x2} ${y2}`;
+  const distance = Math.abs(y2 - y1);
+  const direction = y2 >= y1 ? 1 : -1;
+  const handle = Math.max(72, Math.min(180, distance * 0.48));
+  return `M ${x1} ${y1} C ${x1} ${y1 + direction * handle}, ${x2} ${y2 - direction * handle}, ${x2} ${y2}`;
+}
+
+function topDownNodeOrder(
+  nodes: SliceGraph["nodes"],
+  edges: SliceGraph["edges"],
+): SliceGraph["nodes"] {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const originalIndex = new Map(nodes.map((node, index) => [node.id, index]));
+  const indegree = new Map(nodes.map((node) => [node.id, 0]));
+  const outgoing = new Map(nodes.map((node) => [node.id, [] as string[]]));
+
+  edges.forEach((edge) => {
+    if (!byId.has(edge.from) || !byId.has(edge.to)) return;
+    outgoing.get(edge.from)?.push(edge.to);
+    indegree.set(edge.to, (indegree.get(edge.to) ?? 0) + 1);
+  });
+
+  const compareNodes = (a: SliceGraph["nodes"][number], b: SliceGraph["nodes"][number]) => (
+    a.y - b.y || a.x - b.x || (originalIndex.get(a.id) ?? 0) - (originalIndex.get(b.id) ?? 0)
+  );
+  const queue = nodes.filter((node) => (indegree.get(node.id) ?? 0) === 0).sort(compareNodes);
+  const ordered: SliceGraph["nodes"] = [];
+  const seen = new Set<string>();
+
+  while (queue.length > 0) {
+    const node = queue.shift()!;
+    if (seen.has(node.id)) continue;
+    ordered.push(node);
+    seen.add(node.id);
+
+    (outgoing.get(node.id) ?? [])
+      .map((id) => byId.get(id))
+      .filter((next): next is SliceGraph["nodes"][number] => Boolean(next))
+      .sort(compareNodes)
+      .forEach((next) => {
+        indegree.set(next.id, (indegree.get(next.id) ?? 0) - 1);
+        if ((indegree.get(next.id) ?? 0) === 0) queue.push(next);
+      });
+    queue.sort(compareNodes);
+  }
+
+  const remaining = nodes.filter((node) => !seen.has(node.id)).sort(compareNodes);
+  return [...ordered, ...remaining];
+}
+
+function topDownLayoutNodes(
+  nodes: SliceGraph["nodes"],
+  edges: SliceGraph["edges"],
+  laneX: number,
+): SliceGraph["nodes"] {
+  return topDownNodeOrder(nodes, edges).map((node, index) => ({
+    ...node,
+    x: laneX,
+    y: 32 + index * (NODE_HEIGHT + NODE_VERTICAL_GAP),
+  }));
 }
 
 function SliceWorkflowGraph({
@@ -671,6 +728,7 @@ function SliceWorkflowGraph({
   onSelectedSlicesChange: React.Dispatch<React.SetStateAction<Set<string>>>;
 }) {
   const canvasRef = useRef<HTMLDivElement>(null);
+  const migratedTopDownLayoutRef = useRef(false);
   const [dragging, setDragging] = useState<{ nodeId: string; offsetX: number; offsetY: number } | null>(null);
   const [connectionDrag, setConnectionDrag] = useState<{ fromNodeId: string; x: number; y: number } | null>(null);
   const [connectionTarget, setConnectionTarget] = useState<string | null>(null);
@@ -703,16 +761,44 @@ function SliceWorkflowGraph({
     };
   }, [fullscreen]);
 
+  const getDefaultNodeX = () => {
+    const canvasWidth = canvasRef.current?.clientWidth ?? 720;
+    const maxX = Math.max(28, canvasWidth - NODE_WIDTH - 28);
+    return clamp((canvasWidth - NODE_WIDTH) / 2, 28, maxX);
+  };
+
+  useEffect(() => {
+    if (migratedTopDownLayoutRef.current || graph.nodes.length < 2) return;
+    const xs = graph.nodes.map((node) => node.x);
+    const ys = graph.nodes.map((node) => node.y);
+    const rangeX = Math.max(...xs) - Math.min(...xs);
+    const rangeY = Math.max(...ys) - Math.min(...ys);
+    const looksHorizontal = rangeX > NODE_WIDTH * 0.85 && rangeY < NODE_HEIGHT * 0.8;
+    if (!looksHorizontal) return;
+    migratedTopDownLayoutRef.current = true;
+    const canvasWidth = canvasRef.current?.clientWidth ?? 720;
+    const maxX = Math.max(28, canvasWidth - NODE_WIDTH - 28);
+    const laneX = clamp((canvasWidth - NODE_WIDTH) / 2, 28, maxX);
+    onGraphChange((current) => ({
+      ...current,
+      nodes: topDownLayoutNodes(current.nodes, current.edges, laneX),
+    }));
+  }, [graph.nodes, onGraphChange]);
+
   const addNode = (sliceId: string, x?: number, y?: number) => {
     const slice = sliceById.get(sliceId);
     if (!slice) return;
-    const fallbackX = 48 + (graph.nodes.length % 3) * 284;
-    const fallbackY = 48 + Math.floor(graph.nodes.length / 3) * 164;
+    const canvasWidth = canvasRef.current?.clientWidth ?? 720;
+    const canvasHeight = canvasRef.current?.clientHeight ?? 520;
+    const maxX = Math.max(12, canvasWidth - NODE_WIDTH - 12);
+    const maxY = Math.max(12, canvasHeight - NODE_HEIGHT - 12);
+    const fallbackX = getDefaultNodeX();
+    const fallbackY = 32 + graph.nodes.length * (NODE_HEIGHT + NODE_VERTICAL_GAP);
     const node = {
       id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       slice_id: slice.id,
-      x: clamp(x ?? fallbackX, 12, 540),
-      y: clamp(y ?? fallbackY, 12, 300),
+      x: clamp(x ?? fallbackX, 12, maxX),
+      y: clamp(y ?? fallbackY, 12, Math.max(maxY, fallbackY)),
       label: slice.name,
     };
     onGraphChange((current) => ({ ...current, nodes: [...current.nodes, node] }));
@@ -770,8 +856,8 @@ function SliceWorkflowGraph({
     const candidates = graph.nodes
       .filter((node) => node.id !== fromNodeId)
       .map((node) => {
-        const portX = node.x;
-        const portY = node.y + NODE_PORT_Y;
+        const portX = node.x + NODE_PORT_X;
+        const portY = node.y;
         return {
           node,
           portDistance: Math.hypot(point.x - portX, point.y - portY),
@@ -814,13 +900,10 @@ function SliceWorkflowGraph({
   };
 
   const arrangeGraph = () => {
+    const laneX = getDefaultNodeX();
     onGraphChange((current) => ({
       ...current,
-      nodes: current.nodes.map((node, i) => ({
-        ...node,
-        x: 28 + (i % 3) * 284,
-        y: 32 + Math.floor(i / 3) * 164,
-      })),
+      nodes: topDownLayoutNodes(current.nodes, current.edges, laneX),
     }));
   };
 
@@ -887,7 +970,7 @@ function SliceWorkflowGraph({
       <div className="slice-workflow-header">
         <div className="min-w-0">
           <div className="slice-workflow-title">Slice workflow</div>
-          <div className="slice-workflow-subtitle">Drag slices onto the canvas, then connect the order of work.</div>
+          <div className="slice-workflow-subtitle">Drag slices onto the canvas, then connect work from top to bottom.</div>
         </div>
         <div className="slice-workflow-actions">
           <button
@@ -1002,10 +1085,10 @@ function SliceWorkflowGraph({
                 </marker>
               </defs>
               {edgesWithNodes.map(({ edge, from, to }) => {
-                const x1 = from.x + NODE_WIDTH;
-                const y1 = from.y + NODE_PORT_Y;
-                const x2 = to.x;
-                const y2 = to.y + NODE_PORT_Y;
+                const x1 = from.x + NODE_PORT_X;
+                const y1 = from.y + NODE_HEIGHT;
+                const x2 = to.x + NODE_PORT_X;
+                const y2 = to.y;
                 return (
                   <path
                     key={edge.id}
@@ -1021,10 +1104,10 @@ function SliceWorkflowGraph({
                 const target = connectionTarget
                   ? graph.nodes.find((node) => node.id === connectionTarget)
                   : null;
-                const x1 = from.x + NODE_WIDTH;
-                const y1 = from.y + NODE_PORT_Y;
-                const x2 = target ? target.x : connectionDrag.x;
-                const y2 = target ? target.y + NODE_PORT_Y : connectionDrag.y;
+                const x1 = from.x + NODE_PORT_X;
+                const y1 = from.y + NODE_HEIGHT;
+                const x2 = target ? target.x + NODE_PORT_X : connectionDrag.x;
+                const y2 = target ? target.y : connectionDrag.y;
                 return (
                   <path
                     d={connectionPath(x1, y1, x2, y2)}
@@ -1154,7 +1237,11 @@ function SliceWorkflowGraph({
                 return (
                   <div key={edge.id} className="flex items-center gap-1 rounded-md border border-border bg-bg px-2 py-1 text-[11px] text-muted">
                     <span className="max-w-[120px] truncate">{fromSlice?.name ?? from.slice_id}</span>
-                    <span className="text-accent">-&gt;</span>
+                    <span className="flex h-4 w-4 items-center justify-center text-accent" aria-hidden="true">
+                      <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 5v14M7 14l5 5 5-5" />
+                      </svg>
+                    </span>
                     <span className="max-w-[120px] truncate">{toSlice?.name ?? to.slice_id}</span>
                     <button
                       type="button"
