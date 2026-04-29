@@ -643,11 +643,18 @@ function SectionIntro({
   );
 }
 
-const NODE_WIDTH = 176;
-const NODE_HEIGHT = 104;
+const NODE_WIDTH = 220;
+const NODE_HEIGHT = 128;
+const NODE_PORT_Y = NODE_HEIGHT / 2;
 
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
+}
+
+function connectionPath(x1: number, y1: number, x2: number, y2: number): string {
+  const distance = Math.abs(x2 - x1);
+  const handle = Math.max(74, Math.min(180, distance * 0.46));
+  return `M ${x1} ${y1} C ${x1 + handle} ${y1}, ${x2 - handle} ${y2}, ${x2} ${y2}`;
 }
 
 function SliceWorkflowGraph({
@@ -664,9 +671,9 @@ function SliceWorkflowGraph({
   onSelectedSlicesChange: React.Dispatch<React.SetStateAction<Set<string>>>;
 }) {
   const canvasRef = useRef<HTMLDivElement>(null);
-  const connectFromRef = useRef<string | null>(null);
   const [dragging, setDragging] = useState<{ nodeId: string; offsetX: number; offsetY: number } | null>(null);
-  const [connectFrom, setConnectFrom] = useState<string | null>(null);
+  const [connectionDrag, setConnectionDrag] = useState<{ fromNodeId: string; x: number; y: number } | null>(null);
+  const [connectionTarget, setConnectionTarget] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(graph.nodes[0]?.id ?? null);
   const [fullscreen, setFullscreen] = useState(false);
 
@@ -699,8 +706,8 @@ function SliceWorkflowGraph({
   const addNode = (sliceId: string, x?: number, y?: number) => {
     const slice = sliceById.get(sliceId);
     if (!slice) return;
-    const fallbackX = 48 + (graph.nodes.length % 3) * 220;
-    const fallbackY = 48 + Math.floor(graph.nodes.length / 3) * 136;
+    const fallbackX = 48 + (graph.nodes.length % 3) * 284;
+    const fallbackY = 48 + Math.floor(graph.nodes.length / 3) * 164;
     const node = {
       id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       slice_id: slice.id,
@@ -722,8 +729,8 @@ function SliceWorkflowGraph({
       nodes: current.nodes.filter((node) => node.id !== nodeId),
       edges: current.edges.filter((edge) => edge.from !== nodeId && edge.to !== nodeId),
     }));
-    if (connectFromRef.current === nodeId) connectFromRef.current = null;
-    setConnectFrom((current) => (current === nodeId ? null : current));
+    setConnectionDrag((current) => (current?.fromNodeId === nodeId ? null : current));
+    setConnectionTarget((current) => (current === nodeId ? null : current));
     setSelectedNodeId((current) => (current === nodeId ? null : current));
   };
 
@@ -736,24 +743,67 @@ function SliceWorkflowGraph({
     }));
   };
 
-  const connectNode = (nodeId: string) => {
-    const fromNodeId = connectFromRef.current;
-    if (!fromNodeId || fromNodeId === nodeId) {
-      connectFromRef.current = nodeId;
-      setConnectFrom(nodeId);
-      return;
-    }
-
+  const addEdge = (fromNodeId: string, toNodeId: string) => {
+    if (fromNodeId === toNodeId) return;
     onGraphChange((current) => {
-      const exists = current.edges.some((edge) => edge.from === fromNodeId && edge.to === nodeId);
+      const exists = current.edges.some((edge) => edge.from === fromNodeId && edge.to === toNodeId);
       if (exists) return current;
       return {
         ...current,
-        edges: [...current.edges, { id: `edge-${fromNodeId}-${nodeId}`, from: fromNodeId, to: nodeId }],
+        edges: [...current.edges, { id: `edge-${fromNodeId}-${toNodeId}`, from: fromNodeId, to: toNodeId }],
       };
     });
-    connectFromRef.current = null;
-    setConnectFrom(null);
+  };
+
+  const canvasPoint = (clientX: number, clientY: number) => {
+    if (!canvasRef.current) return null;
+    const rect = canvasRef.current.getBoundingClientRect();
+    return {
+      x: clamp(clientX - rect.left, 0, rect.width),
+      y: clamp(clientY - rect.top, 0, rect.height),
+    };
+  };
+
+  const findConnectionTargetAt = (fromNodeId: string, clientX: number, clientY: number) => {
+    const point = canvasPoint(clientX, clientY);
+    if (!point) return null;
+    const candidates = graph.nodes
+      .filter((node) => node.id !== fromNodeId)
+      .map((node) => {
+        const portX = node.x;
+        const portY = node.y + NODE_PORT_Y;
+        return {
+          node,
+          portDistance: Math.hypot(point.x - portX, point.y - portY),
+          containsPoint:
+            point.x >= node.x &&
+            point.x <= node.x + NODE_WIDTH &&
+            point.y >= node.y &&
+            point.y <= node.y + NODE_HEIGHT,
+        };
+      })
+      .sort((a, b) => a.portDistance - b.portDistance);
+    const nearestPort = candidates.find((candidate) => candidate.portDistance <= 42);
+    if (nearestPort) return nearestPort.node.id;
+    return candidates.find((candidate) => candidate.containsPoint)?.node.id ?? null;
+  };
+
+  const startConnectionDrag = (nodeId: string, e: React.PointerEvent<HTMLButtonElement>) => {
+    const point = canvasPoint(e.clientX, e.clientY);
+    if (!point) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setSelectedNodeId(nodeId);
+    setDragging(null);
+    setConnectionDrag({ fromNodeId: nodeId, ...point });
+    setConnectionTarget(null);
+  };
+
+  const finishConnectionDrag = (nodeId: string) => {
+    if (!connectionDrag) return;
+    addEdge(connectionDrag.fromNodeId, nodeId);
+    setConnectionDrag(null);
+    setConnectionTarget(null);
   };
 
   const removeEdge = (edgeId: string) => {
@@ -768,16 +818,16 @@ function SliceWorkflowGraph({
       ...current,
       nodes: current.nodes.map((node, i) => ({
         ...node,
-        x: 28 + (i % 3) * 218,
-        y: 32 + Math.floor(i / 3) * 134,
+        x: 28 + (i % 3) * 284,
+        y: 32 + Math.floor(i / 3) * 164,
       })),
     }));
   };
 
   const clearGraph = () => {
     onGraphChange({ nodes: [], edges: [] });
-    connectFromRef.current = null;
-    setConnectFrom(null);
+    setConnectionDrag(null);
+    setConnectionTarget(null);
     setSelectedNodeId(null);
   };
 
@@ -794,6 +844,11 @@ function SliceWorkflowGraph({
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (connectionDrag) {
+      const point = canvasPoint(e.clientX, e.clientY);
+      if (point) setConnectionDrag((current) => current ? { ...current, ...point } : current);
+      return;
+    }
     if (!dragging || !canvasRef.current) return;
     const rect = canvasRef.current.getBoundingClientRect();
     const maxX = Math.max(12, rect.width - NODE_WIDTH - 12);
@@ -806,6 +861,16 @@ function SliceWorkflowGraph({
         node.id === dragging.nodeId ? { ...node, x, y } : node
       )),
     }));
+  };
+
+  const handleCanvasPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (connectionDrag) {
+      const targetId = connectionTarget ?? findConnectionTargetAt(connectionDrag.fromNodeId, e.clientX, e.clientY);
+      if (targetId) addEdge(connectionDrag.fromNodeId, targetId);
+    }
+    setDragging(null);
+    setConnectionDrag(null);
+    setConnectionTarget(null);
   };
 
   const edgesWithNodes = graph.edges
@@ -927,8 +992,8 @@ function SliceWorkflowGraph({
             }}
             onDrop={handleDrop}
             onPointerMove={handlePointerMove}
-            onPointerUp={() => setDragging(null)}
-            onPointerCancel={() => setDragging(null)}
+            onPointerUp={handleCanvasPointerUp}
+            onPointerCancel={handleCanvasPointerUp}
           >
             <svg className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden="true">
               <defs>
@@ -936,19 +1001,38 @@ function SliceWorkflowGraph({
                   <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)" />
                 </marker>
               </defs>
-              {edgesWithNodes.map(({ edge, from, to }) => (
-                <line
-                  key={edge.id}
-                  x1={from.x + NODE_WIDTH / 2}
-                  y1={from.y + NODE_HEIGHT / 2}
-                  x2={to.x + NODE_WIDTH / 2}
-                  y2={to.y + NODE_HEIGHT / 2}
-                  stroke="var(--accent)"
-                  strokeWidth={2}
-                  strokeOpacity={0.75}
-                  markerEnd="url(#slice-workflow-arrow)"
-                />
-              ))}
+              {edgesWithNodes.map(({ edge, from, to }) => {
+                const x1 = from.x + NODE_WIDTH;
+                const y1 = from.y + NODE_PORT_Y;
+                const x2 = to.x;
+                const y2 = to.y + NODE_PORT_Y;
+                return (
+                  <path
+                    key={edge.id}
+                    d={connectionPath(x1, y1, x2, y2)}
+                    className="slice-workflow-edge"
+                    markerEnd="url(#slice-workflow-arrow)"
+                  />
+                );
+              })}
+              {connectionDrag && (() => {
+                const from = graph.nodes.find((node) => node.id === connectionDrag.fromNodeId);
+                if (!from) return null;
+                const target = connectionTarget
+                  ? graph.nodes.find((node) => node.id === connectionTarget)
+                  : null;
+                const x1 = from.x + NODE_WIDTH;
+                const y1 = from.y + NODE_PORT_Y;
+                const x2 = target ? target.x : connectionDrag.x;
+                const y2 = target ? target.y + NODE_PORT_Y : connectionDrag.y;
+                return (
+                  <path
+                    d={connectionPath(x1, y1, x2, y2)}
+                    className="slice-workflow-edge preview"
+                    markerEnd="url(#slice-workflow-arrow)"
+                  />
+                );
+              })()}
             </svg>
 
             {graph.nodes.length === 0 && (
@@ -959,16 +1043,25 @@ function SliceWorkflowGraph({
 
             {graph.nodes.map((node) => {
               const slice = sliceById.get(node.slice_id);
-              const isConnecting = connectFrom === node.id;
+              const isConnectionSource = connectionDrag?.fromNodeId === node.id;
+              const isConnectionTarget = connectionTarget === node.id;
               return (
                 <div
                   key={node.id}
                   className={[
-                    "absolute select-none rounded-lg border bg-bg p-3 shadow-sm transition-shadow",
-                    isConnecting ? "border-accent shadow-lg" : "border-border",
+                    "slice-workflow-node absolute select-none rounded-lg border bg-bg p-3 shadow-sm transition-shadow",
+                    isConnectionSource || isConnectionTarget ? "border-accent shadow-lg" : "border-border",
                     dragging?.nodeId === node.id ? "cursor-grabbing" : "cursor-grab",
                   ].join(" ")}
                   style={{ left: node.x, top: node.y, width: NODE_WIDTH, height: NODE_HEIGHT }}
+                  onPointerEnter={() => {
+                    if (connectionDrag && connectionDrag.fromNodeId !== node.id) {
+                      setConnectionTarget(node.id);
+                    }
+                  }}
+                  onPointerLeave={() => {
+                    setConnectionTarget((current) => (current === node.id ? null : current));
+                  }}
                   onPointerDown={(e) => {
                     if (!canvasRef.current) return;
                     const rect = canvasRef.current.getBoundingClientRect();
@@ -979,11 +1072,48 @@ function SliceWorkflowGraph({
                       offsetY: e.clientY - rect.top - node.y,
                     });
                   }}
+                  onPointerUp={(e) => {
+                    if (connectionDrag && connectionDrag.fromNodeId !== node.id) {
+                      e.stopPropagation();
+                      finishConnectionDrag(node.id);
+                    }
+                  }}
                 >
+                  <button
+                    type="button"
+                    className={[
+                      "slice-workflow-port input",
+                      connectionDrag && connectionDrag.fromNodeId !== node.id ? "targetable" : "",
+                      isConnectionTarget ? "active" : "",
+                    ].filter(Boolean).join(" ")}
+                    aria-label={`Connect into ${slice?.name ?? node.slice_id}`}
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }}
+                    onPointerUp={(e) => {
+                      e.stopPropagation();
+                      finishConnectionDrag(node.id);
+                    }}
+                    onPointerEnter={() => {
+                      if (connectionDrag && connectionDrag.fromNodeId !== node.id) {
+                        setConnectionTarget(node.id);
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className={[
+                      "slice-workflow-port output",
+                      isConnectionSource ? "active" : "",
+                    ].filter(Boolean).join(" ")}
+                    aria-label={`Connect from ${slice?.name ?? node.slice_id}`}
+                    onPointerDown={(e) => startConnectionDrag(node.id, e)}
+                  />
                   <div className="flex items-start gap-2">
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-[12px] font-semibold text-fg">{node.label || slice?.name || node.slice_id}</div>
-                      <div className="truncate text-[10px] text-muted">{node.slice_id}</div>
+                      <div className="truncate text-[13px] font-semibold text-fg">{node.label || slice?.name || node.slice_id}</div>
+                      <div className="truncate text-[10.5px] text-muted">{node.slice_id}</div>
                     </div>
                     <button
                       type="button"
@@ -998,23 +1128,13 @@ function SliceWorkflowGraph({
                       </svg>
                     </button>
                   </div>
-                  <div className="mt-3 flex items-center justify-between">
-                    <span className="rounded border border-border px-1.5 py-0.5 text-[10px] text-subtle">
+                  <div className="mt-4 flex flex-wrap items-center gap-1.5">
+                    <span className="slice-workflow-node-pill">
                       {slice?.capability?.mutation ?? "slice"}
                     </span>
-                    <button
-                      type="button"
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onClick={() => connectNode(node.id)}
-                      className={[
-                        "rounded-full border px-2 py-1 text-[10px] font-medium transition-colors",
-                        isConnecting
-                          ? "border-accent bg-accent-soft text-accent"
-                          : "border-border text-muted hover:bg-bg-hover hover:text-fg",
-                      ].join(" ")}
-                    >
-                      Connect
-                    </button>
+                    <span className="slice-workflow-node-pill">
+                      {slice?.capability?.output.kind ?? "output"}
+                    </span>
                   </div>
                   {(node.instructions || node.prompt || node.config) && (
                     <div className="mt-2 truncate text-[10px] text-subtle">

@@ -1953,6 +1953,104 @@ h1, h2, h3, h4, h5, h6 {
   background: var(--bg-subtle);
 }
 
+.slice-workflow-edge {
+  fill: none;
+  stroke: var(--accent);
+  stroke-linecap: round;
+  stroke-width: 2.5px;
+  opacity: 0.78;
+  filter: drop-shadow(0 1px 2px color-mix(in srgb, var(--accent) 12%, transparent));
+}
+
+.slice-workflow-edge.preview {
+  stroke-dasharray: 8 7;
+  opacity: 0.58;
+}
+
+.slice-workflow-node {
+  overflow: visible;
+  border-radius: 10px;
+  box-shadow:
+    0 1px 2px color-mix(in srgb, #000 8%, transparent),
+    0 10px 24px color-mix(in srgb, #000 5%, transparent);
+}
+
+.slice-workflow-node::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  border-radius: 10px 0 0 10px;
+  background: color-mix(in srgb, var(--accent) 66%, transparent);
+}
+
+.slice-workflow-port {
+  position: absolute;
+  top: 50%;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--text-subtle);
+  cursor: crosshair;
+  transform: translateY(-50%);
+  transition: background 100ms ease, border-color 100ms ease, box-shadow 100ms ease, transform 100ms ease;
+}
+
+.slice-workflow-port::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: inherit;
+  background: currentColor;
+  opacity: 0.55;
+}
+
+.slice-workflow-port.input {
+  left: -10px;
+}
+
+.slice-workflow-port.output {
+  right: -10px;
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+  color: var(--accent);
+}
+
+.slice-workflow-port:hover,
+.slice-workflow-port.active,
+.slice-workflow-port.targetable:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 12%, transparent);
+  transform: translateY(-50%) scale(1.08);
+}
+
+.slice-workflow-port.targetable {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+}
+
+.slice-workflow-node-pill {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-height: 22px;
+  padding: 2px 7px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  color: var(--text-subtle);
+  font-size: 10.5px;
+  font-weight: 650;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .slice-workflow-builder.fullscreen .slice-workflow-canvas {
   flex: 1;
   min-height: 0;
