@@ -2,6 +2,7 @@ import Link from "next/link";
 import { listAgents } from "@/lib/runs";
 import { AgentCard } from "./AgentCard";
 import { Button } from "@/app/components/ui";
+import { ImportShareButton } from "@/app/components/share/ImportShareButton";
 
 export const revalidate = 0;
 export const dynamic = "force-dynamic";
@@ -22,6 +23,7 @@ export default async function AgentsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <ImportShareButton />
           <Link href="/chats/new">
             <Button variant="ghost" size="sm">
               Ad-hoc chat

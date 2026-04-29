@@ -1,21 +1,64 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import type { BundledLanguage } from "shiki";
 
 type Props = {
   filePath: string;
   sessionId: string;
+  refreshKey?: string | number;
   onClose: () => void;
+};
+
+type FileKind = "audio" | "binary" | "csv" | "image" | "pdf" | "spreadsheet" | "text" | "video";
+
+type TableSheet = {
+  name: string;
+  rows: string[][];
+  rowCount: number;
+  columnCount: number;
+  truncated: boolean;
+};
+
+type FileContent = {
+  kind: FileKind;
+  mimeType: string;
+  name: string;
+  path: string;
+  resolvedPath: string;
+  size: number;
+  content?: string;
+  truncated?: boolean;
+  sheets?: TableSheet[];
 };
 
 type FileState =
   | { status: "loading" }
   | { status: "error"; message: string }
-  | { status: "ok"; html: string; truncated: boolean; size: number };
+  | { status: "ok"; data: FileContent; html?: string };
+
+type DiffContent = {
+  isGitRepo: boolean;
+  hasChanges: boolean;
+  diff: string;
+  gitRoot?: string;
+  relativePath?: string;
+  status?: string;
+  truncated?: boolean;
+  message?: string;
+};
+
+type DiffState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "error"; message: string }
+  | { status: "ok"; data: DiffContent; html?: string };
+
+type ViewMode = "preview" | "diff";
 
 const EXT_TO_LANG: Record<string, BundledLanguage> = {
   ts: "typescript", tsx: "tsx", js: "javascript", jsx: "jsx",
+  mjs: "javascript", cjs: "javascript", mts: "typescript", cts: "typescript",
   py: "python", rb: "ruby", go: "go", rs: "rust", java: "java",
   c: "c", cpp: "cpp", cs: "csharp", php: "php", swift: "swift",
   kt: "kotlin", scala: "scala", sh: "bash", zsh: "bash", bash: "bash",
@@ -27,6 +70,8 @@ const EXT_TO_LANG: Record<string, BundledLanguage> = {
   exs: "elixir", clj: "clojure", hs: "haskell", ml: "ocaml",
   tf: "hcl", dockerfile: "dockerfile", prisma: "prisma",
 };
+
+const DIFF_LANG = "diff" as BundledLanguage;
 
 function extOf(p: string): string {
   const base = p.split("/").pop() ?? p;
@@ -45,6 +90,17 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function columnLabel(index: number): string {
+  let n = index + 1;
+  let label = "";
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    label = String.fromCharCode(65 + rem) + label;
+    n = Math.floor((n - 1) / 26);
+  }
+  return label;
+}
+
 async function highlight(code: string, lang: BundledLanguage, theme: "dark" | "light"): Promise<string> {
   const { codeToHtml } = await import("shiki");
   // Shiki renders static pre/code/span markup — no user-controlled input reaches this call.
@@ -60,11 +116,22 @@ function getTheme(): "dark" | "light" {
   return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
 }
 
-export function FileViewer({ filePath, sessionId, onClose }: Props) {
+export function FileViewer({ filePath, sessionId, refreshKey, onClose }: Props) {
   const [state, setState] = useState<FileState>({ status: "loading" });
+  const [diffState, setDiffState] = useState<DiffState>({ status: "idle" });
+  const [mode, setMode] = useState<ViewMode>("preview");
+  const [expanded, setExpanded] = useState(false);
+  const [activeSheetIndex, setActiveSheetIndex] = useState(0);
+
+  const rawUrl = useMemo(
+    () => `/api/sessions/${encodeURIComponent(sessionId)}/files?path=${encodeURIComponent(filePath)}`,
+    [filePath, sessionId],
+  );
 
   const load = useCallback(async () => {
     setState({ status: "loading" });
+    setMode("preview");
+    setDiffState({ status: "idle" });
     try {
       const res = await fetch(
         `/api/sessions/${encodeURIComponent(sessionId)}/file-content?path=${encodeURIComponent(filePath)}`
@@ -74,24 +141,53 @@ export function FileViewer({ filePath, sessionId, onClose }: Props) {
         setState({ status: "error", message: err.error ?? `HTTP ${res.status}` });
         return;
       }
-      const data = await res.json() as { content: string; truncated: boolean; size: number };
-      const lang = langOf(filePath);
-      const theme = getTheme();
-      const html = await highlight(data.content, lang, theme);
-      setState({ status: "ok", html, truncated: data.truncated, size: data.size });
+      const data = await res.json() as FileContent;
+      let html: string | undefined;
+      if (data.kind === "text" && typeof data.content === "string") {
+        const lang = langOf(filePath);
+        const theme = getTheme();
+        html = await highlight(data.content, lang, theme);
+      }
+      setActiveSheetIndex(0);
+      setState({ status: "ok", data, html });
     } catch (e) {
       setState({ status: "error", message: e instanceof Error ? e.message : "unknown error" });
     }
-  }, [filePath, sessionId]);
+  }, [filePath, refreshKey, sessionId]);
+
+  const loadDiff = useCallback(async () => {
+    setDiffState({ status: "loading" });
+    try {
+      const res = await fetch(
+        `/api/sessions/${encodeURIComponent(sessionId)}/file-diff?path=${encodeURIComponent(filePath)}`
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "failed" })) as { error?: string };
+        setDiffState({ status: "error", message: err.error ?? `HTTP ${res.status}` });
+        return;
+      }
+      const data = await res.json() as DiffContent;
+      const html = data.diff.trim()
+        ? await highlight(data.diff, DIFF_LANG, getTheme())
+        : undefined;
+      setDiffState({ status: "ok", data, html });
+    } catch (e) {
+      setDiffState({ status: "error", message: e instanceof Error ? e.message : "unknown error" });
+    }
+  }, [filePath, refreshKey, sessionId]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (mode === "diff" && diffState.status === "idle") loadDiff();
+  }, [diffState.status, loadDiff, mode]);
 
   const parts = filePath.split("/");
   const fileName = parts.pop() ?? filePath;
   const dirPart = parts.join("/");
 
   return (
-    <div className="file-viewer">
+    <div className={`file-viewer ${expanded ? "expanded" : ""}`}>
       <div className="file-viewer-header">
         <button
           type="button"
@@ -110,9 +206,59 @@ export function FileViewer({ filePath, sessionId, onClose }: Props) {
         </div>
         {state.status === "ok" && (
           <span className="file-viewer-meta">
-            {formatBytes(state.size)}{state.truncated && " · truncated"}
+            {formatBytes(state.data.size)}{state.data.truncated && " - truncated"}
           </span>
         )}
+        {state.status === "ok" && (
+          <div className="file-viewer-modes" aria-label="File view mode">
+            <button
+              type="button"
+              className={`file-viewer-mode ${mode === "preview" ? "active" : ""}`}
+              onClick={() => setMode("preview")}
+            >
+              Preview
+            </button>
+            <button
+              type="button"
+              className={`file-viewer-mode ${mode === "diff" ? "active" : ""}`}
+              onClick={() => setMode("diff")}
+            >
+              Diff
+            </button>
+          </div>
+        )}
+        <a
+          className="file-viewer-open"
+          href={rawUrl}
+          target="_blank"
+          rel="noreferrer"
+          title="Open raw file"
+        >
+          Open
+        </a>
+        <button
+          type="button"
+          className="file-viewer-expand"
+          onClick={() => setExpanded((value) => !value)}
+          aria-label={expanded ? "Collapse file viewer" : "Expand file viewer"}
+          title={expanded ? "Collapse" : "Expand"}
+        >
+          {expanded ? (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M8 3v5H3" />
+              <path d="M16 3v5h5" />
+              <path d="M8 21v-5H3" />
+              <path d="M16 21v-5h5" />
+            </svg>
+          ) : (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M8 3H3v5" />
+              <path d="M16 3h5v5" />
+              <path d="M8 21H3v-5" />
+              <path d="M16 21h5v-5" />
+            </svg>
+          )}
+        </button>
       </div>
 
       <div className="file-viewer-body">
@@ -136,11 +282,197 @@ export function FileViewer({ filePath, sessionId, onClose }: Props) {
           </div>
         )}
         {state.status === "ok" && (
-          /* Shiki output: static pre/code/span with inline styles — no user script content */
-          /* eslint-disable-next-line react/no-danger */
-          <div className="file-viewer-code" dangerouslySetInnerHTML={{ __html: state.html }} />
+          mode === "diff" ? (
+            <DiffPreview state={diffState} onRetry={loadDiff} />
+          ) : (
+            <FilePreview
+              data={state.data}
+              html={state.html}
+              rawUrl={rawUrl}
+              activeSheetIndex={activeSheetIndex}
+              setActiveSheetIndex={setActiveSheetIndex}
+            />
+          )
         )}
       </div>
+    </div>
+  );
+}
+
+function DiffPreview({ state, onRetry }: { state: DiffState; onRetry: () => void }) {
+  if (state.status === "idle" || state.status === "loading") {
+    return (
+      <div className="file-viewer-status">
+        <svg className="animate-spin" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" strokeOpacity="0.2"/>
+          <path d="M21 12a9 9 0 00-9-9"/>
+        </svg>
+        Loading diff...
+      </div>
+    );
+  }
+
+  if (state.status === "error") {
+    return (
+      <div className="file-viewer-empty">
+        <span>{state.message}</span>
+        <button type="button" className="file-viewer-empty-open" onClick={onRetry}>
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  if (!state.data.isGitRepo || !state.data.hasChanges || !state.html) {
+    return (
+      <EmptyPreview
+        label={state.data.message ?? "No local Git changes for this file."}
+      />
+    );
+  }
+
+  return (
+    <div className="file-viewer-diff-pane">
+      <div className="file-viewer-diff-meta">
+        {state.data.status && <span>{state.data.status}</span>}
+        {state.data.relativePath && <span>{state.data.relativePath}</span>}
+        {state.data.truncated && <span>truncated</span>}
+      </div>
+      {/* Shiki output: static pre/code/span with inline styles; no user script content. */}
+      {/* eslint-disable-next-line react/no-danger */}
+      <div className="file-viewer-code file-viewer-diff" dangerouslySetInnerHTML={{ __html: state.html }} />
+    </div>
+  );
+}
+
+function FilePreview({
+  activeSheetIndex,
+  data,
+  html,
+  rawUrl,
+  setActiveSheetIndex,
+}: {
+  activeSheetIndex: number;
+  data: FileContent;
+  html?: string;
+  rawUrl: string;
+  setActiveSheetIndex: (index: number) => void;
+}) {
+  if (data.kind === "text" && html) {
+    return (
+      /* Shiki output: static pre/code/span with inline styles; no user script content. */
+      /* eslint-disable-next-line react/no-danger */
+      <div className="file-viewer-code" dangerouslySetInnerHTML={{ __html: html }} />
+    );
+  }
+
+  if (data.kind === "csv" || data.kind === "spreadsheet") {
+    const sheets = data.sheets ?? [];
+    const safeIndex = Math.min(activeSheetIndex, Math.max(sheets.length - 1, 0));
+    const sheet = sheets[safeIndex];
+    return (
+      <div className="file-viewer-table-pane">
+        {sheets.length > 1 && (
+          <div className="file-viewer-sheets" role="tablist" aria-label="Workbook sheets">
+            {sheets.map((s, index) => (
+              <button
+                key={`${s.name}-${index}`}
+                type="button"
+                className={`file-viewer-sheet ${index === safeIndex ? "active" : ""}`}
+                onClick={() => setActiveSheetIndex(index)}
+              >
+                {s.name || `Sheet ${index + 1}`}
+              </button>
+            ))}
+          </div>
+        )}
+        {sheet ? <DataTable sheet={sheet} /> : <EmptyPreview label="No rows found in this file." />}
+      </div>
+    );
+  }
+
+  if (data.kind === "pdf") {
+    return <iframe className="file-viewer-frame" src={rawUrl} title={data.name} />;
+  }
+
+  if (data.kind === "image") {
+    return (
+      <div className="file-viewer-media-wrap">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img className="file-viewer-image" src={rawUrl} alt={data.name} />
+      </div>
+    );
+  }
+
+  if (data.kind === "video") {
+    return (
+      <div className="file-viewer-media-wrap">
+        <video className="file-viewer-media" src={rawUrl} controls />
+      </div>
+    );
+  }
+
+  if (data.kind === "audio") {
+    return (
+      <div className="file-viewer-media-wrap">
+        <audio className="file-viewer-audio" src={rawUrl} controls />
+      </div>
+    );
+  }
+
+  return <EmptyPreview label="Preview is not available for this file type." rawUrl={rawUrl} />;
+}
+
+function DataTable({ sheet }: { sheet: TableSheet }) {
+  const columnTotal = Math.max(sheet.columnCount, 1);
+  const columns = Array.from({ length: columnTotal }, (_, index) => columnLabel(index));
+
+  return (
+    <div className="file-viewer-table-wrap">
+      <div className="file-viewer-table-meta">
+        <span>{sheet.rowCount.toLocaleString()} rows</span>
+        <span>{sheet.columnCount.toLocaleString()} columns</span>
+        {sheet.truncated && <span>showing first {sheet.rows.length.toLocaleString()} rows</span>}
+      </div>
+      <table className="file-viewer-table">
+        <thead>
+          <tr>
+            <th className="file-viewer-row-head" aria-label="Row number" />
+            {columns.map((column) => (
+              <th key={column}>{column}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {sheet.rows.map((row, rowIndex) => (
+            <tr key={rowIndex}>
+              <th className="file-viewer-row-head">{rowIndex + 1}</th>
+              {columns.map((column, columnIndex) => (
+                <td key={column}>{row[columnIndex] ?? ""}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function EmptyPreview({ label, rawUrl }: { label: string; rawUrl?: string }) {
+  return (
+    <div className="file-viewer-empty">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+        <path d="M14 2v6h6" />
+        <path d="M8 13h8" />
+        <path d="M8 17h5" />
+      </svg>
+      <span>{label}</span>
+      {rawUrl && (
+        <a className="file-viewer-empty-open" href={rawUrl} target="_blank" rel="noreferrer">
+          Open file
+        </a>
+      )}
     </div>
   );
 }

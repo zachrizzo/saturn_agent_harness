@@ -16,10 +16,12 @@ export function JobsTable({ jobs, runsByJob }: Props) {
     return (
       <Card className="p-8 text-center">
         <div className="text-muted mb-1">No scheduled jobs.</div>
-        <div className="text-xs text-subtle">
-          Add one in <code className="chip">jobs/jobs.json</code> and run{" "}
-          <code className="chip">bin/register-job.sh</code>.
+        <div className="text-xs text-subtle mb-4">
+          Create a job from the dashboard and Saturn will sync it to cron.
         </div>
+        <Link href="/jobs/new" className="btn btn-primary text-[12px] py-1.5 px-3">
+          New job
+        </Link>
       </Card>
     );
   }

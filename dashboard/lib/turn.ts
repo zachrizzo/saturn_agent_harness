@@ -9,6 +9,7 @@ import { toBedrockId } from "./claude-models";
 import type { CLI, Agent } from "./runs";
 import { normalizeReasoningEffortForCli, type ModelReasoningEffort } from "./models";
 import { isBedrockCli, isLocalClaudeCli, isPersonalClaudeCli, normalizeCli } from "./clis";
+import { readBedrockConfig } from "./bedrock-auth";
 
 // MCP tools added to allowedTools for orchestrator sessions
 const ORCHESTRATOR_MCP_TOOLS = [
@@ -36,6 +37,7 @@ export async function spawnTurn(
   const isLocal = isLocalClaudeCli(normalizedCli);
   const isBedrock = isBedrockCli(normalizedCli);
   const isPersonal = isPersonalClaudeCli(normalizedCli);
+  const bedrockConfig = isBedrock ? await readBedrockConfig() : undefined;
   const localModel = model ?? "gemma4:26b-it-q4_K_M";
   const localSmallModel = "gemma4:4b";
   const effectiveReasoningEffort = normalizeReasoningEffortForCli(
@@ -73,8 +75,8 @@ export async function spawnTurn(
       // not CLAUDE_CODE_USE_BEDROCK, so without this claude falls back to OAuth
       // and fails with "Not logged in · Please run /login".
       CLAUDE_CODE_USE_BEDROCK: "1",
-      AWS_PROFILE: "sondermind-development-new",
-      AWS_REGION: "us-east-1",
+      AWS_PROFILE: bedrockConfig?.profile ?? "",
+      AWS_REGION: bedrockConfig?.region ?? "",
     } : isPersonal ? {
       CLAUDE_CODE_USE_BEDROCK: "",
       CLAUDE_CODE_USE_VERTEX: "",

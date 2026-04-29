@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useMemo, useState, type ReactNode } from "react";
 import parser from "cron-parser";
 import type { Job, RunMeta, CLI } from "@/lib/runs";
@@ -62,6 +63,7 @@ function healthVariant(health: Health): "success" | "warn" | "fail" | "default" 
 }
 
 export function JobsWorkspace({ jobs, runsByJob, allRuns }: Props): JSX.Element {
+  const router = useRouter();
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [sort, setSort] = useState<Sort>("priority");
@@ -120,10 +122,19 @@ export function JobsWorkspace({ jobs, runsByJob, allRuns }: Props): JSX.Element 
           <h1>Jobs</h1>
           <p>Watch scheduled automations, spot failures, and run the right job without digging.</p>
         </div>
+        <div className="flex items-center gap-3 flex-wrap">
+        <button
+          type="button"
+          onClick={() => router.push("/jobs/new")}
+          className="btn btn-primary text-[12px] py-1.5 px-3"
+        >
+          + New job
+        </button>
         <div className="jobs-hero-meta">
           <Metric label="Scheduled" value={String(jobs.length)} />
           <Metric label="Running" value={String(runningNow.length)} tone={runningNow.length ? "warn" : undefined} />
           <Metric label="24h success" value={finished24h.length ? `${rate24h}%` : "—"} tone={rate24h >= 80 ? "success" : finished24h.length ? "fail" : undefined} />
+        </div>
         </div>
       </header>
 
@@ -174,10 +185,14 @@ export function JobsWorkspace({ jobs, runsByJob, allRuns }: Props): JSX.Element 
           {jobs.length === 0 ? (
             <Card className="jobs-empty">
               <div>No scheduled jobs.</div>
-              <p>
-                Add one in <code className="chip">jobs/jobs.json</code> and run{" "}
-                <code className="chip">bin/register-job.sh</code>.
-              </p>
+              <p>Create one from this page and Saturn will sync it to cron.</p>
+              <button
+                type="button"
+                onClick={() => router.push("/jobs/new")}
+                className="btn btn-primary text-[12px] py-1.5 px-3"
+              >
+                New job
+              </button>
             </Card>
           ) : rows.length === 0 ? (
             <Card className="jobs-empty">
@@ -317,6 +332,7 @@ function JobRow({ job, runs, latest, rate, health }: JobRowProps): JSX.Element {
       <div className="jobs-row-actions">
         <JobSettingsModal
           jobName={job.name}
+          currentCron={job.cron}
           currentModel={job.model}
           currentCli={job.cli as CLI | undefined}
           currentReasoningEffort={job.reasoningEffort}

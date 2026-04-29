@@ -26,16 +26,15 @@ type Props = {
 };
 
 type CliFilter = CLI | "all";
+type ArchiveFilter = "active" | "archived";
 
-const FOLDER_ORDER: FolderKey[] = [
-  "all",
+const ACTIVE_FOLDER_ORDER: FolderKey[] = [
   "needs-reply",
   "live",
   "failing",
   "pinned",
   "ad-hoc",
   "from-agent",
-  "archived",
 ];
 
 async function bulkPatch(ids: string[], patch: Record<string, unknown>) {
@@ -48,6 +47,7 @@ async function bulkPatch(ids: string[], patch: Record<string, unknown>) {
 
 export function ChatsInbox({ initialSessions, counts }: Props) {
   const router = useRouter();
+  const [archiveFilter, setArchiveFilter] = useState<ArchiveFilter>("active");
   const [folder, setFolder] = useState<FolderKey>("all");
   const [query, setQuery] = useState("");
   const [cli, setCli] = useState<CliFilter>("all");
@@ -58,7 +58,11 @@ export function ChatsInbox({ initialSessions, counts }: Props) {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return initialSessions.filter((s) => {
-      if (!matchesFolder(s, folder)) return false;
+      if (archiveFilter === "archived") {
+        if (!s.archived) return false;
+      } else if (!matchesFolder(s, folder)) {
+        return false;
+      }
       if (unreadOnly && !s.unread) return false;
       if (cli !== "all") {
         if (s.cli === "mixed" || s.cli === "unknown") return false;
@@ -70,7 +74,7 @@ export function ChatsInbox({ initialSessions, counts }: Props) {
         s.preview.toLowerCase().includes(q)
       );
     });
-  }, [initialSessions, folder, cli, query, unreadOnly]);
+  }, [initialSessions, archiveFilter, folder, cli, query, unreadOnly]);
 
   const buckets = useMemo(() => bucketInboxSessions(filtered), [filtered]);
 
@@ -84,6 +88,12 @@ export function ChatsInbox({ initialSessions, counts }: Props) {
   };
 
   const clearSelection = () => setSelected(new Set());
+
+  const changeArchiveFilter = (next: ArchiveFilter) => {
+    setArchiveFilter(next);
+    setFolder("all");
+    clearSelection();
+  };
 
   const runBulk = async (patch: Record<string, unknown>) => {
     if (selected.size === 0) return;
@@ -104,6 +114,14 @@ export function ChatsInbox({ initialSessions, counts }: Props) {
   const selectAll = () => {
     setSelected(new Set(filtered.map((s) => s.id)));
   };
+
+  const emptyTitle = archiveFilter === "archived" ? "No archived chats" : "No matching chats";
+  const emptyBody =
+    archiveFilter === "archived"
+      ? counts.archived > 0
+        ? "Try clearing search, CLI, or unread filters."
+        : "Archived chats will show up here after you archive them."
+      : "Try a different folder or clear the filters.";
 
   const filterChips: Array<{ label: string; value: CliFilter }> = [
     { label: "All CLIs", value: "all" },
@@ -127,18 +145,39 @@ export function ChatsInbox({ initialSessions, counts }: Props) {
             />
           </label>
           <div className="filters">
-            {FOLDER_ORDER.map((key) => (
-              <button
-                key={key}
-                type="button"
-                className={`chip-filter ${folder === key ? "on" : ""}`.trim()}
-                onClick={() => setFolder(key)}
-              >
-                {FOLDER_LABELS[key]}
-                <span className="x">{counts[key]}</span>
-              </button>
-            ))}
+            <button
+              type="button"
+              className={`chip-filter ${archiveFilter === "active" ? "on" : ""}`.trim()}
+              onClick={() => changeArchiveFilter("active")}
+            >
+              Active
+              <span className="x">{counts.all}</span>
+            </button>
+            <button
+              type="button"
+              className={`chip-filter ${archiveFilter === "archived" ? "on" : ""}`.trim()}
+              onClick={() => changeArchiveFilter("archived")}
+            >
+              <IconArchive className="w-[12px] h-[12px]" />
+              Archived
+              <span className="x">{counts.archived}</span>
+            </button>
           </div>
+          {archiveFilter === "active" && (
+            <div className="filters">
+              {ACTIVE_FOLDER_ORDER.map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  className={`chip-filter ${folder === key ? "on" : ""}`.trim()}
+                  onClick={() => setFolder(key)}
+                >
+                  {FOLDER_LABELS[key]}
+                  <span className="x">{counts[key]}</span>
+                </button>
+              ))}
+            </div>
+          )}
           <div className="filters">
             {filterChips.map((f) => (
               <button
@@ -208,10 +247,10 @@ export function ChatsInbox({ initialSessions, counts }: Props) {
               type="button"
               className="bulk-action"
               disabled={busy}
-              onClick={() => runBulk({ archived: true })}
+              onClick={() => runBulk({ archived: archiveFilter !== "archived" })}
             >
               <IconArchive className="w-[12px] h-[12px]" />
-              Archive
+              {archiveFilter === "archived" ? "Unarchive" : "Archive"}
             </button>
             <span className="spacer" />
             <button type="button" className="bulk-action" onClick={selectAll} disabled={busy}>
@@ -227,9 +266,9 @@ export function ChatsInbox({ initialSessions, counts }: Props) {
         <div className="chats-list">
           {filtered.length === 0 ? (
             <div className="empty-inbox">
-              <h3>No matching chats</h3>
+              <h3>{emptyTitle}</h3>
               <div className="text-[12px]">
-                Try a different folder or clear the filters.
+                {emptyBody}
               </div>
             </div>
           ) : (

@@ -1,13 +1,15 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
+import parser from "cron-parser";
 import type { Model } from "@/lib/models";
 import { formatModelOption, reasoningEffortOptionsForCli, type ModelReasoningEffort } from "@/lib/models";
 import { Portal } from "./Portal";
-import { Button, Card, Select } from "./ui";
+import { Button, Card, Input, Select } from "./ui";
 import type { CLI } from "@/lib/runs";
 import { CLI_LABELS, CLI_VALUES, DEFAULT_CLI, normalizeCli } from "@/lib/clis";
+import { IconSettings } from "@/app/components/shell/icons";
 
 function saveLabel(saving: boolean, saved: boolean): string {
   if (saving) return "Saving…";
@@ -15,15 +17,26 @@ function saveLabel(saving: boolean, saved: boolean): string {
   return "Save";
 }
 
+const CRON_PRESETS = [
+  { label: "Hourly", value: "0 * * * *" },
+  { label: "Every 6h", value: "0 */6 * * *" },
+  { label: "Daily 9am", value: "0 9 * * *" },
+  { label: "Weekdays 9am", value: "0 9 * * 1-5" },
+  { label: "Weekly", value: "0 9 * * 1" },
+];
+
 type Props = {
   jobName: string;
+  currentCron: string;
   currentModel?: string;
   currentCli?: CLI;
   currentReasoningEffort?: ModelReasoningEffort;
 };
 
-export function JobSettingsModal({ jobName, currentModel, currentCli = DEFAULT_CLI, currentReasoningEffort }: Props) {
+export function JobSettingsModal({ jobName, currentCron, currentModel, currentCli = DEFAULT_CLI, currentReasoningEffort }: Props) {
+  const cronInputId = `job-cron-${jobName}`;
   const [isOpen, setIsOpen] = useState(false);
+  const [cron, setCron] = useState(currentCron);
   const [cli, setCli] = useState<CLI>(normalizeCli(currentCli));
   const [model, setModel] = useState(currentModel ?? "");
   const [reasoningEffort, setReasoningEffort] = useState<ModelReasoningEffort | "">(currentReasoningEffort ?? "");
@@ -56,7 +69,18 @@ export function JobSettingsModal({ jobName, currentModel, currentCli = DEFAULT_C
       .finally(() => { if (myId === fetchIdRef.current) setLoading(false); });
   }, [cli, isOpen]);
 
+  const cronPreview = useMemo(() => {
+    const value = cron.trim();
+    if (!value) return "";
+    try {
+      return `Next fire: ${parser.parseExpression(value).next().toDate().toLocaleString()}`;
+    } catch {
+      return "Invalid cron expression";
+    }
+  }, [cron]);
+
   const handleOpen = () => {
+    setCron(currentCron);
     setCli(normalizeCli(currentCli));
     setModel(currentModel ?? "");
     setReasoningEffort(currentReasoningEffort ?? "");
@@ -66,13 +90,30 @@ export function JobSettingsModal({ jobName, currentModel, currentCli = DEFAULT_C
   };
 
   const handleSave = async () => {
+    const normalizedCron = cron.trim();
+    if (!normalizedCron) {
+      setError("Cron schedule is required");
+      return;
+    }
+    try {
+      parser.parseExpression(normalizedCron);
+    } catch {
+      setError("Invalid cron expression");
+      return;
+    }
+
     setSaving(true);
     setError(null);
     try {
       const res = await fetch(`/api/jobs/${encodeURIComponent(jobName)}/settings`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: model || null, cli, reasoningEffort: reasoningEffort || null }),
+        body: JSON.stringify({
+          cron: normalizedCron,
+          model: model || null,
+          cli,
+          reasoningEffort: reasoningEffort || null,
+        }),
       });
       if (!res.ok) throw new Error((await res.json()).error ?? "Failed");
       setSaved(true);
@@ -93,10 +134,7 @@ export function JobSettingsModal({ jobName, currentModel, currentCli = DEFAULT_C
         title="Job settings"
         aria-label="Job settings"
       >
-        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-        </svg>
+        <IconSettings />
       </Button>
 
       {isOpen && (
@@ -117,6 +155,46 @@ export function JobSettingsModal({ jobName, currentModel, currentCli = DEFAULT_C
                     {error}
                   </div>
                 )}
+
+                <div>
+                  <label htmlFor={cronInputId} className="label block mb-2">Schedule</label>
+                  <Input
+                    id={cronInputId}
+                    value={cron}
+                    onChange={(e) => {
+                      setCron(e.target.value);
+                      setSaved(false);
+                    }}
+                    disabled={saving}
+                    className="mono"
+                    placeholder="0 9 * * *"
+                  />
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {CRON_PRESETS.map((preset) => (
+                      <button
+                        key={preset.value}
+                        type="button"
+                        onClick={() => {
+                          setCron(preset.value);
+                          setSaved(false);
+                        }}
+                        disabled={saving}
+                        className={`px-2.5 py-1 rounded border text-[11px] transition-colors ${
+                          cron.trim() === preset.value
+                            ? "bg-accent-soft border-accent text-accent"
+                            : "bg-bg-elev border-border text-muted hover:bg-bg-hover hover:text-fg"
+                        }`}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
+                  {cronPreview ? (
+                    <p className={`mt-1.5 text-[11px] ${cronPreview.startsWith("Invalid") ? "text-[var(--fail)]" : "text-subtle"}`}>
+                      {cronPreview}
+                    </p>
+                  ) : null}
+                </div>
 
                 <div>
                   <span className="label block mb-2">CLI</span>

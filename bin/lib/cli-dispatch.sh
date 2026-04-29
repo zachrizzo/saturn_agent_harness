@@ -83,14 +83,18 @@ build_cli_args() {
       ;;
 
     claude-bedrock|claude-personal|claude-local)  # Claude Code binary
-      # --print has no TTY to answer permission prompts, so always bypass.
-      # Plan-mode approval is handled at the prompt layer via /plan (soft gate).
+      # --print has no TTY to answer permission prompts, so normal turns bypass.
+      # Native slash handlers can set CLAUDE_PERMISSION_MODE=plan for plan mode.
       RUN_ARGS+=(
         --print
         --output-format stream-json
         --verbose
-        --dangerously-skip-permissions
       )
+      if [[ -n "${CLAUDE_PERMISSION_MODE:-}" ]]; then
+        RUN_ARGS+=(--permission-mode "$CLAUDE_PERMISSION_MODE")
+      else
+        RUN_ARGS+=(--dangerously-skip-permissions)
+      fi
       if [[ -n "$session_id" ]]; then
         if [[ "$is_resume" == "yes" ]]; then
           RUN_ARGS+=(--resume "$session_id")

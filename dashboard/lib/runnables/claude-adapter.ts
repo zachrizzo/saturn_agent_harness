@@ -16,6 +16,7 @@ import { normalizeReasoningEffortForCli, type ModelReasoningEffort } from "../mo
 import { isBedrockCli, isLocalClaudeCli, isPersonalClaudeCli, normalizeCli } from "../clis";
 import type { CLI } from "../clis";
 import { toBedrockId } from "../claude-models";
+import { readBedrockConfig } from "../bedrock-auth";
 
 type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -29,15 +30,16 @@ type ClaudeInternal = {
   abort?: AbortController;
 };
 
-function providerOptions(cli: CLI, model?: string): Pick<Options, "env" | "model" | "settingSources"> {
+async function providerOptions(cli: CLI, model?: string): Promise<Pick<Options, "env" | "model" | "settingSources">> {
   const env: Record<string, string | undefined> = { ...process.env };
   let effectiveModel = model;
   let settingSources: SettingSource[] | undefined;
 
   if (isBedrockCli(cli)) {
+    const bedrockConfig = await readBedrockConfig();
     env.CLAUDE_CODE_USE_BEDROCK = env.CLAUDE_CODE_USE_BEDROCK || "1";
-    env.AWS_PROFILE = env.AWS_PROFILE || "sondermind-development-new";
-    env.AWS_REGION = env.AWS_REGION || "us-east-1";
+    env.AWS_PROFILE = bedrockConfig.profile;
+    env.AWS_REGION = bedrockConfig.region;
     effectiveModel = toBedrockId(model);
   } else if (isLocalClaudeCli(cli)) {
     env.CLAUDE_CODE_USE_BEDROCK = "0";
@@ -126,7 +128,7 @@ export class ClaudeAdapter implements RunnableAdapter {
       overrides?.reasoningEffort ?? internal.reasoningEffort,
     ) as ClaudeEffort | undefined;
     const allowedTools = overrides?.allowedTools ?? internal.allowedTools;
-    const provider = providerOptions(internal.cli, model);
+    const provider = await providerOptions(internal.cli, model);
 
     yield { kind: "turn_start", ts: new Date().toISOString(), model: provider.model };
 

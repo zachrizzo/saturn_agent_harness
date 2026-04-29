@@ -9,6 +9,7 @@ import { toClaudeAlias } from "@/lib/claude-models";
 import { CLI_LABELS, CLI_SHORT_LABELS } from "@/lib/clis";
 import { Button, Chip, Input, Textarea } from "@/app/components/ui";
 import { IconClock, IconEdit, IconFork } from "@/app/components/shell/icons";
+import { ShareExportButton } from "@/app/components/share/ShareExportButton";
 
 type Props = { agent: Agent };
 
@@ -170,6 +171,10 @@ export function AgentCard({ agent }: Props) {
           </div>
         </div>
         <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+          <ShareExportButton
+            endpoint={`/api/share/agents/${encodeURIComponent(agent.id)}`}
+            filename={`saturn-agent-${agent.id}`}
+          />
           <Link href={`/agents/${agent.id}/edit`} title="Edit agent">
             <Button size="sm" variant="ghost">
               <IconEdit className="w-3.5 h-3.5" />

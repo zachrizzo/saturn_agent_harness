@@ -40,10 +40,19 @@ export type RecentChatItem = {
   agent?: string;
   preview: string;
   relTime: string;
+  projectName?: string | null;
+  projectPath?: string | null;
   isMultiCli?: boolean;
   /** Orchestrator/swarm sessions get a small badge in the recent list. */
   isSwarm?: boolean;
   lastReplyAt?: string | null;
+};
+
+type RecentChatGroup = {
+  key: string;
+  label: string;
+  path: string | null;
+  items: RecentChatItem[];
 };
 
 function sameRecents(a: RecentChatItem[], b: RecentChatItem[]): boolean {
@@ -55,6 +64,8 @@ function sameRecents(a: RecentChatItem[], b: RecentChatItem[]): boolean {
       && item.agent === other.agent
       && item.preview === other.preview
       && item.relTime === other.relTime
+      && item.projectName === other.projectName
+      && item.projectPath === other.projectPath
       && item.isMultiCli === other.isMultiCli
       && item.isSwarm === other.isSwarm
       && item.lastReplyAt === other.lastReplyAt;
@@ -94,6 +105,34 @@ function hasUnread(item: RecentChatItem, seenMap: Record<string, string>): boole
   const seen = seenMap[item.id];
   if (!seen) return true;
   return item.lastReplyAt > seen;
+}
+
+function formatProjectName(name: string): string {
+  const segment = name.includes("/") ? name.split("/").filter(Boolean).pop() ?? name : name;
+  return segment.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function groupRecentChats(items: RecentChatItem[]): RecentChatGroup[] {
+  const groups: RecentChatGroup[] = [];
+  const byKey = new Map<string, RecentChatGroup>();
+
+  for (const item of items) {
+    const key = item.projectPath || item.projectName || "__no_project__";
+    let group = byKey.get(key);
+    if (!group) {
+      group = {
+        key,
+        label: item.projectName ? formatProjectName(item.projectName) : "No project",
+        path: item.projectPath ?? null,
+        items: [],
+      };
+      byKey.set(key, group);
+      groups.push(group);
+    }
+    group.items.push(item);
+  }
+
+  return groups;
 }
 
 const MultiCliIcon = (
@@ -180,6 +219,8 @@ function useRecents(initial: RecentChatItem[]): RecentChatItem[] {
           agent: s.agent,
           preview: s.preview,
           relTime: s.relTime,
+          projectName: s.projectName,
+          projectPath: s.projectPath,
           isMultiCli: s.multi,
           isSwarm: s.isSwarm,
           lastReplyAt: s.lastFinishedAt ?? null,
@@ -243,7 +284,9 @@ export function Sidebar({ recents: initialRecents, onNavigate }: SidebarProps): 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname]);
 
-  const unreadCount = recents.filter((r) => hasUnread(r, seenMap)).length;
+  const visibleRecents = recents.filter((r) => !hiddenIds.has(r.id));
+  const unreadCount = visibleRecents.filter((r) => hasUnread(r, seenMap)).length;
+  const recentGroups = groupRecentChats(visibleRecents);
 
   return (
     <nav className="flex flex-col gap-4 p-3 w-full h-full">
@@ -278,82 +321,102 @@ export function Sidebar({ recents: initialRecents, onNavigate }: SidebarProps): 
             +
           </Link>
         </div>
-        <ul className="flex flex-col gap-0.5 overflow-y-auto">
-          {recents.filter((r) => !hiddenIds.has(r.id)).length === 0 ? (
-            <li className="px-2.5 py-1.5 text-[12px] text-subtle">No chats yet.</li>
+        <div className="flex flex-col gap-2 overflow-y-auto">
+          {visibleRecents.length === 0 ? (
+            <div className="px-2.5 py-1.5 text-[12px] text-subtle">No chats yet.</div>
           ) : (
-            recents.filter((r) => !hiddenIds.has(r.id)).map((r) => {
-              const active = pathname === `/chats/${r.id}` || pathname === `/chat/${r.id}`;
-              const unread = !active && hasUnread(r, seenMap);
-              const isArchiving = archiving === r.id;
-              return (
-                <li key={r.id} className="group" style={{ position: "relative" }}>
-                  <Link
-                    href={`/chats/${r.id}`}
-                    onClick={() => {
-                      recordSeen(r.id);
-                      onNavigate?.();
-                    }}
-                    className={linkClass("flex flex-col gap-0.5 pr-7", active)}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                        {unread && (
-                          <span
-                            className="shrink-0 w-2 h-2 rounded-full bg-accent"
-                            aria-label="unread reply"
-                          />
-                        )}
-                        {r.isSwarm && (
-                          <span
-                            className="shrink-0 text-[8.5px] font-semibold uppercase tracking-wider px-1 py-[1px] rounded"
-                            style={{
-                              color: "var(--purple)",
-                              background: "color-mix(in srgb, var(--purple) 18%, transparent)",
-                              letterSpacing: "0.05em",
-                            }}
-                            title="Swarm / orchestrator"
-                          >
-                            swarm
+            recentGroups.map((group) => (
+              <section key={group.key} className="min-w-0">
+                <div
+                  className="flex items-center gap-1.5 px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted"
+                  style={group.path ? { color: "color-mix(in srgb, var(--teal) 82%, var(--text-muted))" } : undefined}
+                  title={group.path ?? undefined}
+                >
+                  {group.path && (
+                    <span
+                      aria-hidden="true"
+                      className="h-1.5 w-1.5 shrink-0 rounded-full"
+                      style={{ background: "color-mix(in srgb, var(--teal) 75%, transparent)" }}
+                    />
+                  )}
+                  <span className="truncate">{group.label}</span>
+                </div>
+                <ul className="flex flex-col gap-0.5">
+                  {group.items.map((r) => {
+                    const active = pathname === `/chats/${r.id}` || pathname === `/chat/${r.id}`;
+                    const unread = !active && hasUnread(r, seenMap);
+                    const isArchiving = archiving === r.id;
+                    return (
+                      <li key={r.id} className="group" style={{ position: "relative" }}>
+                        <Link
+                          href={`/chats/${r.id}`}
+                          onClick={() => {
+                            recordSeen(r.id);
+                            onNavigate?.();
+                          }}
+                          className={linkClass("flex flex-col gap-0.5 pr-7", active)}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                              {unread && (
+                                <span
+                                  className="shrink-0 w-2 h-2 rounded-full bg-accent"
+                                  aria-label="unread reply"
+                                />
+                              )}
+                              {r.isSwarm && (
+                                <span
+                                  className="shrink-0 text-[8.5px] font-semibold uppercase tracking-wider px-1 py-[1px] rounded"
+                                  style={{
+                                    color: "var(--purple)",
+                                    background: "color-mix(in srgb, var(--purple) 18%, transparent)",
+                                    letterSpacing: "0.05em",
+                                  }}
+                                  title="Swarm / orchestrator"
+                                >
+                                  swarm
+                                </span>
+                              )}
+                              <span className={[
+                                "truncate text-[13px]",
+                                unread ? "text-fg font-medium" : "text-fg",
+                              ].join(" ")}>
+                                {r.title}
+                              </span>
+                              {r.isMultiCli && MultiCliIcon}
+                            </div>
+                            <span className={[
+                              "shrink-0 text-[11px]",
+                              unread ? "text-accent font-medium" : "text-subtle",
+                            ].join(" ")}>
+                              {r.relTime}
+                            </span>
+                          </div>
+                          {r.agent && r.agent !== "Ad-hoc" && (
+                            <span className="text-[10.5px] text-subtle truncate">
+                              {r.agent}
+                            </span>
+                          )}
+                          <span className={[
+                            "truncate text-[12px]",
+                            unread ? "text-muted" : "text-subtle",
+                          ].join(" ")}>
+                            {r.preview}
                           </span>
-                        )}
-                        <span className={[
-                          "truncate text-[13px]",
-                          unread ? "text-fg font-medium" : "text-fg",
-                        ].join(" ")}>
-                          {r.title}
-                        </span>
-                        {r.isMultiCli && MultiCliIcon}
-                      </div>
-                      <span className={[
-                        "shrink-0 text-[11px]",
-                        unread ? "text-accent font-medium" : "text-subtle",
-                      ].join(" ")}>
-                        {r.relTime}
-                      </span>
-                    </div>
-                    {r.agent && r.agent !== "Ad-hoc" && (
-                      <span className="text-[10.5px] text-subtle truncate">
-                        {r.agent}
-                      </span>
-                    )}
-                    <span className={[
-                      "truncate text-[12px]",
-                      unread ? "text-muted" : "text-subtle",
-                    ].join(" ")}>
-                      {r.preview}
-                    </span>
-                  </Link>
-                  <ArchiveButton
-                    id={r.id}
-                    archiving={isArchiving}
-                    onArchive={archiveChat}
-                  />
-                </li>
-              );
-            })
+                        </Link>
+                        <ArchiveButton
+                          id={r.id}
+                          archiving={isArchiving}
+                          onArchive={archiveChat}
+                        />
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            ))
           )}
-        </ul>
+        </div>
         <div className="px-2.5 pt-1">
           <Link
             href="/chats"

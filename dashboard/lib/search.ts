@@ -126,6 +126,14 @@ export function buildIndex(
     keywords: ["tasks", "queue", "todo", "work"],
   });
   items.push({
+    id: "action:new-task",
+    title: "New task",
+    subtitle: "Create a shared task",
+    kind: "action",
+    href: "/tasks?new=1",
+    keywords: ["new", "task", "create", "ticket", "todo", "work"],
+  });
+  items.push({
     id: "action:settings",
     title: "Settings",
     subtitle: "Defaults, models, effort, MCP, and local config",

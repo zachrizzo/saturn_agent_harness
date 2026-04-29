@@ -22,6 +22,12 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function parseVariables(template: string): string[] {
+  const matches = template.match(/\{\{([^}]+)\}\}/g) ?? [];
+  const names = matches.map((m) => m.slice(2, -2).trim()).filter(Boolean);
+  return [...new Set(names)];
+}
+
 function validateCapability(value: unknown): value is SliceCapability {
   if (!isObject(value)) return false;
   if (typeof value.mutation !== "string") return false;
@@ -40,6 +46,34 @@ function validatePromptTemplate(value: unknown): value is SlicePromptTemplate {
   return true;
 }
 
+function normalizePromptTemplate(value: unknown, prompt: unknown): SlicePromptTemplate | null {
+  if (isObject(value) && typeof value.system === "string") {
+    const variables = Array.isArray(value.variables)
+      ? value.variables.filter((v): v is string => typeof v === "string")
+      : parseVariables(value.system);
+    const required = Array.isArray(value.required)
+      ? value.required.filter((v): v is string => typeof v === "string")
+      : variables;
+
+    return {
+      system: value.system,
+      variables,
+      required,
+    };
+  }
+
+  if (typeof prompt === "string") {
+    const variables = parseVariables(prompt);
+    return {
+      system: prompt,
+      variables,
+      required: variables,
+    };
+  }
+
+  return null;
+}
+
 function validateSandbox(value: unknown): value is SliceSandbox {
   if (!isObject(value)) return false;
   if (typeof value.mode !== "string") return false;
@@ -48,18 +82,39 @@ function validateSandbox(value: unknown): value is SliceSandbox {
 }
 
 export async function POST(req: NextRequest) {
-  const body = (await req.json()) as Partial<Slice>;
-  const { id, name, cli, capability, prompt_template, sandbox } = body;
+  const body = (await req.json()) as Partial<Slice> & { prompt?: string };
+  const { prompt, ...sliceBody } = body;
+  const id = typeof body.id === "string" ? body.id.trim() : "";
+  const name = typeof body.name === "string" ? body.name.trim() : "";
 
-  if (!id || !name || !cli || !capability || !prompt_template || !sandbox) {
+  if (!id || !name) {
     return NextResponse.json(
-      { error: "id, name, cli, capability, prompt_template, sandbox are required" },
+      { error: "id and name are required" },
       { status: 400 }
     );
   }
   if (!/^[a-z0-9][a-z0-9-_]*$/i.test(id)) {
     return NextResponse.json({ error: "id must be alphanumeric with - or _" }, { status: 400 });
   }
+
+  const prompt_template = normalizePromptTemplate(body.prompt_template, prompt);
+  if (!prompt_template || !prompt_template.system.trim()) {
+    return NextResponse.json({ error: "prompt_template.system is required" }, { status: 400 });
+  }
+
+  const capability: SliceCapability =
+    body.capability === undefined
+      ? {
+          mutation: "read-only",
+          scope: ["repo"],
+          output: { kind: "markdown" },
+          interactivity: "one-shot",
+          cost_tier: "cheap",
+        }
+      : body.capability;
+  const sandbox: SliceSandbox =
+    body.sandbox === undefined ? { mode: "none", net: "deny" } : body.sandbox;
+
   if (!validateCapability(capability)) {
     return NextResponse.json({ error: "capability is malformed" }, { status: 400 });
   }
@@ -71,14 +126,15 @@ export async function POST(req: NextRequest) {
   }
 
   // Normalize Bedrock IDs to short aliases before writing to slices.json.
-  if (body.model) body.model = toClaudeAlias(body.model) ?? body.model;
+  const model = body.model ? toClaudeAlias(body.model) ?? body.model : body.model;
 
   try {
     const slice = await createSlice({
-      ...body,
+      ...sliceBody,
       id,
       name,
-      cli: normalizeCli(cli),
+      cli: normalizeCli(body.cli),
+      model,
       capability,
       prompt_template,
       sandbox,

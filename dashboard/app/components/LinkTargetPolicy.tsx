@@ -2,68 +2,49 @@
 
 import { useEffect } from "react";
 
-const SAME_TAB_ATTR = "data-same-tab";
-const SAFE_REL_VALUES = ["noopener", "noreferrer"];
+const SAFE_REL = ["noopener", "noreferrer"];
+const PROSE = ".prose-dashboard";
 
-function shouldUseSameTab(anchor: HTMLAnchorElement) {
+function applyToLink(anchor: HTMLAnchorElement) {
   const href = anchor.getAttribute("href");
-  return (
+  if (
     !href ||
     href.startsWith("#") ||
+    href.startsWith("/") ||
     href.trim().toLowerCase().startsWith("javascript:") ||
-    anchor.hasAttribute("download") ||
-    anchor.hasAttribute(SAME_TAB_ATTR)
-  );
-}
-
-function applyNewTabPolicy(anchor: HTMLAnchorElement) {
-  if (shouldUseSameTab(anchor)) return;
+    anchor.hasAttribute("download")
+  ) return;
   if (!anchor.target) anchor.target = "_blank";
   if (anchor.target !== "_blank") return;
-
   const rel = new Set(anchor.rel.split(/\s+/).filter(Boolean));
-  for (const value of SAFE_REL_VALUES) rel.add(value);
+  for (const v of SAFE_REL) rel.add(v);
   anchor.rel = Array.from(rel).join(" ");
 }
 
-function applyNewTabPolicyWithin(root: ParentNode) {
-  if (root instanceof HTMLAnchorElement) applyNewTabPolicy(root);
-  root.querySelectorAll?.("a[href]").forEach((anchor) => {
-    applyNewTabPolicy(anchor as HTMLAnchorElement);
-  });
+function processContainer(root: ParentNode) {
+  if (root instanceof HTMLAnchorElement) applyToLink(root);
+  root.querySelectorAll("a[href]").forEach((a) => applyToLink(a as HTMLAnchorElement));
 }
 
 export function LinkTargetPolicy() {
   useEffect(() => {
-    applyNewTabPolicyWithin(document.body);
+    document.querySelectorAll(PROSE).forEach((el) => processContainer(el));
 
     const observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
         for (const node of mutation.addedNodes) {
-          if (node instanceof HTMLElement) applyNewTabPolicyWithin(node);
+          if (!(node instanceof HTMLElement)) continue;
+          if (node.closest(PROSE)) {
+            processContainer(node);
+          } else {
+            node.querySelectorAll(`${PROSE} a[href]`).forEach((a) => applyToLink(a as HTMLAnchorElement));
+          }
         }
       }
     });
 
     observer.observe(document.body, { childList: true, subtree: true });
-
-    const handleClick = (event: MouseEvent) => {
-      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
-        return;
-      }
-
-      const target = event.target;
-      if (!(target instanceof Element)) return;
-      const anchor = target.closest<HTMLAnchorElement>("a[href]");
-      if (!anchor) return;
-      applyNewTabPolicy(anchor);
-    };
-
-    document.addEventListener("click", handleClick, true);
-    return () => {
-      observer.disconnect();
-      document.removeEventListener("click", handleClick, true);
-    };
+    return () => observer.disconnect();
   }, []);
 
   return null;

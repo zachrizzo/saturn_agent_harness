@@ -6,6 +6,12 @@ import { promisify } from "node:util";
 import { automationsRoot, runsRoot } from "./paths";
 import { qrSvgDataUri } from "./qr";
 import { listSessions, type SessionMeta } from "./runs";
+import {
+  cleanTelegramBotUsername,
+  telegramAppBotLink,
+  telegramBotUsernameIssue,
+  telegramWebBotLink,
+} from "./telegram-links";
 
 const execFileAsync = promisify(execFile);
 
@@ -252,17 +258,19 @@ export async function getDispatchOverview(): Promise<DispatchOverview> {
   ]);
 
   const startParameter = "saturn";
-  const botUsername = (plist.botUsername ?? state.botUsername)?.replace(/^@/, "");
-  const deepLink = botUsername ? `https://t.me/${botUsername}?start=${startParameter}` : undefined;
+  const botUsername = cleanTelegramBotUsername(plist.botUsername ?? state.botUsername ?? "");
+  const validBotUsername = botUsername && !telegramBotUsernameIssue(botUsername) ? botUsername : undefined;
+  const deepLink = validBotUsername ? telegramWebBotLink(validBotUsername, startParameter) : undefined;
+  const qrLink = validBotUsername ? telegramAppBotLink(validBotUsername, startParameter) : undefined;
 
   return {
     service,
     plist,
     telegram: {
       startParameter,
-      botUsername,
+      botUsername: botUsername || undefined,
       deepLink,
-      qrDataUri: deepLink ? qrSvgDataUri(deepLink) : undefined,
+      qrDataUri: qrLink ? qrSvgDataUri(qrLink) : undefined,
     },
     state,
     logs: {

@@ -396,6 +396,9 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
 
       if (cmd.transform === "replace") {
         setMessage(cmd.instruction);
+      } else if (cmd.transform === "literal") {
+        const afterSlash = message.replace(/^\/\S*\s*/, "").trimStart();
+        setMessage(afterSlash ? `${cmd.instruction} ${afterSlash}` : cmd.instruction);
       } else {
         // "prefix" — keep any text after the /command token
         const afterSlash = message.replace(/^\/\S*\s*/, "");

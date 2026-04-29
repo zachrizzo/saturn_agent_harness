@@ -40,6 +40,20 @@ function agentKind(agent: Agent): string {
   return agent.kind === "orchestrator" ? "Swarm" : "Chat";
 }
 
+function setupStep(ok: boolean, label: string, detail: string): JSX.Element {
+  return (
+    <div className={ok ? "dispatch-step done" : "dispatch-step"}>
+      <span className="dispatch-step-marker" aria-hidden="true">
+        {ok ? "✓" : ""}
+      </span>
+      <div className="min-w-0">
+        <div className="dispatch-step-label">{label}</div>
+        <div className="dispatch-step-detail">{detail}</div>
+      </div>
+    </div>
+  );
+}
+
 const TELEGRAM_COMMANDS = [
   ["/new <task>", "Start a fresh Saturn session from Telegram."],
   ["/reset", "Clear the current Telegram chat's session mapping."],
@@ -59,14 +73,43 @@ export default async function DispatchPage() {
 
   const configured = overview.plist.tokenConfigured
     && (overview.plist.allowAll || overview.plist.allowedChatCount > 0);
+  const nextStep = !overview.telegram.botUsername
+    ? {
+        label: "Start here",
+        title: "Create or enter a bot username",
+        body: "Use BotFather to create the bot, then paste the username to generate the phone link and QR code.",
+      }
+    : !overview.plist.tokenConfigured
+      ? {
+          label: "Needs bridge token",
+          title: "Install the Telegram bridge",
+          body: "The bot username is known, but the local LaunchAgent still needs the token before Saturn can receive messages.",
+        }
+      : !configured
+        ? {
+            label: "Needs allowed chat",
+            title: "Allow a chat id",
+            body: "Add at least one allowed Telegram chat id, or configure the bridge to allow all chats.",
+          }
+        : !overview.service.running
+          ? {
+              label: "Ready to start",
+              title: "Start the LaunchAgent",
+              body: "The bot is configured. Start the bridge so Telegram messages can create Saturn chats.",
+            }
+          : {
+              label: "Ready",
+              title: "Dispatch is listening",
+              body: "Open the bot on your phone and send a task. Saturn will route it into Chats.",
+            };
 
   return (
-    <div className="space-y-6">
-      <header className="flex flex-wrap items-start justify-between gap-4">
+    <div className="dispatch-page space-y-6">
+      <header className="dispatch-header">
         <div>
           <h1 className="text-[22px] font-semibold tracking-tight">Dispatch</h1>
           <p className="text-[13px] text-muted mt-1">
-            Scan the Telegram QR code, press Start, then message Saturn from your phone.
+            Connect Telegram to Saturn so phone messages can start and continue dashboard chats.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -75,34 +118,48 @@ export default async function DispatchPage() {
         </div>
       </header>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-[10px]">
-        <div className="kpi">
-          <span className="accent-line" />
-          <div className="kpi-label">LaunchAgent</div>
-          <div className="kpi-value text-[20px]">{overview.service.loaded ? "Loaded" : "Missing"}</div>
-          <div className="kpi-delta">{overview.service.pid ? `pid ${overview.service.pid}` : overview.service.error ?? "not running"}</div>
+      <section className="dispatch-command-center">
+        <div className="dispatch-next-card">
+          <div className="dispatch-next-label">{nextStep.label}</div>
+          <h2>{nextStep.title}</h2>
+          <p>{nextStep.body}</p>
+          <div className="dispatch-setup-list" aria-label="Telegram setup checklist">
+            {setupStep(Boolean(overview.telegram.botUsername), "Bot username", overview.telegram.botUsername ? `@${overview.telegram.botUsername}` : "Paste it below")}
+            {setupStep(overview.plist.tokenConfigured, "Bot token", overview.plist.tokenConfigured ? "Saved in LaunchAgent" : "Missing from bridge")}
+            {setupStep(overview.plist.allowAll || overview.plist.allowedChatCount > 0, "Allowed chats", overview.plist.allowAll ? "All chats allowed" : `${overview.plist.allowedChatCount} chat${overview.plist.allowedChatCount === 1 ? "" : "s"}`)}
+            {setupStep(overview.service.running, "Bridge service", overview.service.running ? `Running${overview.service.pid ? ` as pid ${overview.service.pid}` : ""}` : "Stopped")}
+          </div>
         </div>
-        <div className="kpi">
-          <span className="accent-line" />
-          <div className="kpi-label">Telegram chats</div>
-          <div className="kpi-value">{overview.state.chats.length}</div>
-          <div className="kpi-delta">{overview.state.exists ? `offset ${overview.state.offset}` : "no state file"}</div>
-        </div>
-        <div className="kpi">
-          <span className="accent-line" />
-          <div className="kpi-label">Allowed chats</div>
-          <div className="kpi-value">{overview.plist.allowAll ? "All" : overview.plist.allowedChatCount}</div>
-          <div className="kpi-delta">{overview.plist.tokenConfigured ? "bot token set" : "bot token missing"}</div>
-        </div>
-        <div className="kpi">
-          <span className="accent-line" />
-          <div className="kpi-label">Default route</div>
-          <div className="kpi-value text-[20px]">{overview.plist.defaultAgentId ?? "Ad-hoc"}</div>
-          <div className="kpi-delta">{overview.plist.adhocModel ?? overview.plist.adhocCli ?? "dashboard defaults"}</div>
-        </div>
-      </div>
 
-      <section className="grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
+        <div className="dispatch-metrics-grid">
+          <div className="kpi">
+            <span className="accent-line" />
+            <div className="kpi-label">LaunchAgent</div>
+            <div className="kpi-value text-[20px]">{overview.service.loaded ? "Loaded" : "Missing"}</div>
+            <div className="kpi-delta">{overview.service.pid ? `pid ${overview.service.pid}` : overview.service.error ?? "not running"}</div>
+          </div>
+          <div className="kpi">
+            <span className="accent-line" />
+            <div className="kpi-label">Telegram chats</div>
+            <div className="kpi-value">{overview.state.chats.length}</div>
+            <div className="kpi-delta">{overview.state.exists ? `offset ${overview.state.offset}` : "no state file"}</div>
+          </div>
+          <div className="kpi">
+            <span className="accent-line" />
+            <div className="kpi-label">Allowed chats</div>
+            <div className="kpi-value">{overview.plist.allowAll ? "All" : overview.plist.allowedChatCount}</div>
+            <div className="kpi-delta">{overview.plist.tokenConfigured ? "bot token set" : "bot token missing"}</div>
+          </div>
+          <div className="kpi">
+            <span className="accent-line" />
+            <div className="kpi-label">Default route</div>
+            <div className="kpi-value text-[20px]">{overview.plist.defaultAgentId ?? "Ad-hoc"}</div>
+            <div className="kpi-delta">{overview.plist.adhocModel ?? overview.plist.adhocCli ?? "dashboard defaults"}</div>
+          </div>
+        </div>
+      </section>
+
+      <section className="dispatch-connect-grid">
         <DispatchQrCard
           initialBotUsername={overview.telegram.botUsername}
           startParameter={overview.telegram.startParameter}
@@ -113,17 +170,25 @@ export default async function DispatchPage() {
             <h2>Phone workflow</h2>
             <span className="right">OpenClaw-style</span>
           </div>
-          <div className="grid gap-3 md:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-2">
             <div className="rounded-lg border border-border bg-bg-subtle p-4">
-              <div className="text-[13px] font-medium">1. Scan</div>
-              <div className="text-[12px] text-muted mt-1">Open the bot link in Telegram from the QR code.</div>
+              <div className="text-[13px] font-medium">1. Create bot</div>
+              <div className="text-[12px] text-muted mt-1">
+                Open <a href="https://t.me/BotFather" target="_blank" rel="noreferrer" className="text-accent hover:underline">@BotFather</a>, send <code className="mono text-fg">/newbot</code>, choose a username ending in <code className="mono text-fg">bot</code>, and copy the token.
+              </div>
             </div>
             <div className="rounded-lg border border-border bg-bg-subtle p-4">
-              <div className="text-[13px] font-medium">2. Start</div>
-              <div className="text-[12px] text-muted mt-1">Press Start. Telegram sends <code className="mono text-fg">/start {overview.telegram.startParameter}</code>.</div>
+              <div className="text-[13px] font-medium">2. Configure bridge</div>
+              <div className="text-[12px] text-muted mt-1">
+                Install with <code className="mono text-fg">TELEGRAM_BOT_TOKEN</code>, <code className="mono text-fg">TELEGRAM_BOT_USERNAME</code>, and allowed chat ids.
+              </div>
             </div>
             <div className="rounded-lg border border-border bg-bg-subtle p-4">
-              <div className="text-[13px] font-medium">3. Message</div>
+              <div className="text-[13px] font-medium">3. Start</div>
+              <div className="text-[12px] text-muted mt-1">Scan the QR or open the bot link, then press Start. Telegram sends <code className="mono text-fg">/start {overview.telegram.startParameter}</code>.</div>
+            </div>
+            <div className="rounded-lg border border-border bg-bg-subtle p-4">
+              <div className="text-[13px] font-medium">4. Message</div>
               <div className="text-[12px] text-muted mt-1">Send a normal task. Follow-ups queue while Saturn is working.</div>
             </div>
           </div>
@@ -133,7 +198,7 @@ export default async function DispatchPage() {
         </div>
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(360px,0.9fr)]">
+      <section className="grid gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(360px,0.9fr)]">
         <div className="card p-5 space-y-4">
           <div className="sect-head">
             <h2>Telegram bridge</h2>
@@ -168,7 +233,7 @@ export default async function DispatchPage() {
           {!overview.service.loaded && (
             <div className="rounded-lg border border-border bg-bg-subtle p-4 text-[12px] text-muted space-y-2">
               <div className="text-fg font-medium">Install the Telegram Dispatch LaunchAgent</div>
-              <pre className="mono text-[11px] whitespace-pre-wrap overflow-x-auto">{`TELEGRAM_BOT_TOKEN="123:abc" TELEGRAM_ALLOWED_CHAT_IDS="123456789" bin/install-telegram-service.sh`}</pre>
+              <pre className="mono text-[11px] whitespace-pre-wrap overflow-x-auto">{`TELEGRAM_BOT_TOKEN="123:abc" TELEGRAM_BOT_USERNAME="your_saturn_bot" TELEGRAM_ALLOWED_CHAT_IDS="123456789" bin/install-telegram-service.sh`}</pre>
             </div>
           )}
 

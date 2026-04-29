@@ -7,6 +7,8 @@ import type { Slice, SliceMutationTier, SliceCostTier } from "@/lib/slices";
 import { toClaudeAlias } from "@/lib/claude-models";
 import { CLI_LABELS, CLI_SHORT_LABELS, normalizeCli } from "@/lib/clis";
 import { Button, Card, Chip } from "@/app/components/ui";
+import { ShareExportButton } from "@/app/components/share/ShareExportButton";
+import { IconBash, IconDispatch, IconEdit, IconFork, IconSlice } from "@/app/components/shell/icons";
 
 function mutationVariant(tier: SliceMutationTier): "success" | "warn" | "fail" | "default" {
   switch (tier) {
@@ -25,6 +27,13 @@ function costVariant(tier: SliceCostTier): "success" | "accent" | "warn" | "defa
     case "premium": return "warn";
     default: return "default";
   }
+}
+
+function formatTier(value: string): string {
+  return value
+    .split("-")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 }
 
 export function SliceCard({ slice }: { slice: Slice }) {
@@ -59,61 +68,107 @@ export function SliceCard({ slice }: { slice: Slice }) {
   const mutation = slice.capability.mutation;
   const costTier = slice.capability.cost_tier;
   const cli = normalizeCli(slice.cli);
+  const modelLabel = slice.model ? toClaudeAlias(slice.model) ?? slice.model : "CLI default";
+  const scopeLabel = slice.capability.scope?.length
+    ? slice.capability.scope.map(formatTier).join(", ")
+    : "Repo";
+  const outputLabel = formatTier(slice.capability.output?.kind ?? "markdown");
+  const toolCount = slice.allowedTools?.length ?? 0;
 
   return (
-    <Card className="overflow-hidden">
-      <header className="px-4 py-3 flex items-center gap-2 flex-wrap border-b border-border">
-        <Link
-          href={`/slices/${encodeURIComponent(slice.id)}/edit`}
-          className="text-base font-semibold hover:text-accent transition"
-        >
-          {slice.name}
-        </Link>
-        <Chip variant={mutationVariant(mutation)} className="text-[10px]">
-          {mutation}
-        </Chip>
-        <Chip variant={costVariant(costTier)} className="text-[10px]">
-          {costTier}
-        </Chip>
-        <Chip className="text-[10px]" title={CLI_LABELS[cli]}>{CLI_SHORT_LABELS[cli]}</Chip>
-        {slice.model && (
-          <Chip className="mono text-[10px] max-w-[160px] truncate" title={slice.model}>
-            {toClaudeAlias(slice.model) ?? slice.model}
-          </Chip>
-        )}
-      </header>
-
-      {slice.description && (
-        <div className="px-4 py-2 text-xs text-muted border-b border-border line-clamp-2">
-          {slice.description}
+    <Card interactive className="slice-card">
+      <div className="slice-card-main">
+        <div className="slice-card-icon" aria-hidden="true">
+          <IconSlice className="w-4 h-4" />
         </div>
-      )}
 
-      {slice.tags && slice.tags.length > 0 && (
-        <div className="px-4 py-2 flex flex-wrap gap-1 border-b border-border">
-          {slice.tags.map((t) => (
-            <Chip key={t} className="text-[10px]">{t}</Chip>
-          ))}
+        <div className="slice-card-content">
+          <header className="slice-card-header">
+            <div className="min-w-0">
+              <Link
+                href={`/slices/${encodeURIComponent(slice.id)}/edit`}
+                className="slice-card-title"
+              >
+                {slice.name}
+              </Link>
+              <div className="slice-card-id mono">{slice.id}</div>
+            </div>
+            <span className="slice-card-version mono">v{slice.version}</span>
+          </header>
+
+          <div className="slice-card-chips">
+            <Chip variant={mutationVariant(mutation)}>
+              {formatTier(mutation)}
+            </Chip>
+            <Chip variant={costVariant(costTier)}>
+              {formatTier(costTier)}
+            </Chip>
+            <Chip title={CLI_LABELS[cli]}>{CLI_SHORT_LABELS[cli]}</Chip>
+          </div>
+
+          {slice.description ? (
+            <p className="slice-card-description">{slice.description}</p>
+          ) : (
+            <p className="slice-card-description muted">No description</p>
+          )}
+
+          <dl className="slice-card-meta">
+            <div>
+              <dt>Model</dt>
+              <dd className="mono" title={slice.model ?? undefined}>{modelLabel}</dd>
+            </div>
+            <div>
+              <dt>Scope</dt>
+              <dd>{scopeLabel}</dd>
+            </div>
+            <div>
+              <dt>Output</dt>
+              <dd>{outputLabel}</dd>
+            </div>
+            <div>
+              <dt>Tools</dt>
+              <dd>{toolCount === 0 ? "Default" : toolCount}</dd>
+            </div>
+          </dl>
+
+          {slice.tags && slice.tags.length > 0 && (
+            <div className="slice-card-tags">
+              {slice.tags.slice(0, 5).map((t) => (
+                <span key={t}>{t}</span>
+              ))}
+              {slice.tags.length > 5 && <span>+{slice.tags.length - 5}</span>}
+            </div>
+          )}
         </div>
-      )}
+      </div>
 
-      <div className="px-4 py-3 flex items-center gap-2 flex-wrap">
-        <Link href={`/slices/${encodeURIComponent(slice.id)}/edit`}>
-          <Button variant="default" size="sm">Edit</Button>
+      <div className="slice-card-actions">
+        <Link href={`/slices/${encodeURIComponent(slice.id)}/edit`} className="btn slice-card-action">
+          <IconEdit className="w-3.5 h-3.5" />
+          Edit
         </Link>
-        <Link href={`/slices/${encodeURIComponent(slice.id)}/test`}>
-          <Button variant="default" size="sm">Test</Button>
+        <Link href={`/slices/${encodeURIComponent(slice.id)}/test`} className="btn slice-card-action">
+          <IconBash className="w-3.5 h-3.5" />
+          Test
         </Link>
+        <span className="slice-card-share">
+          <IconDispatch className="w-3.5 h-3.5" />
+          <ShareExportButton
+            endpoint={`/api/share/slices/${encodeURIComponent(slice.id)}`}
+            filename={`saturn-slice-${slice.id}`}
+          />
+        </span>
         <Button
           type="button"
           variant="default"
           size="sm"
           onClick={handleDuplicate}
           disabled={duplicating}
+          className="slice-card-action"
         >
-          {duplicating ? "Duplicating…" : "Duplicate"}
+          <IconFork className="w-3.5 h-3.5" />
+          {duplicating ? "Duplicating..." : "Duplicate"}
         </Button>
-        <span className="ml-auto text-[11px] text-subtle mono">v{slice.version}</span>
       </div>
     </Card>
   );

@@ -4,5 +4,7 @@
   "defaultModels": {},
   "defaultReasoningEfforts": {},
   "defaultMcpTools": false,
+  "bedrockProfile": "sondermind-development-new",
+  "bedrockRegion": "us-east-1",
   "hiddenMcpImageServers": []
 }

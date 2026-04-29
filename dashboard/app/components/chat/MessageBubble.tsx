@@ -30,8 +30,11 @@ type AssistantProps = {
   kind: "assistant";
   events: StreamEvent[];
   streaming?: boolean;
+  liveActivity?: string;
+  liveDetail?: string;
   sessionId?: string;
   hiddenMcpImageServers?: string[];
+  onOpenFile?: (path: string) => void;
 };
 
 type Props = UserProps | AssistantProps;
@@ -187,6 +190,54 @@ const MEDIA_EXTENSIONS = [
 ];
 
 const MEDIA_EXTENSION_PATTERN = MEDIA_EXTENSIONS.join("|");
+
+const FILE_REF_EXTENSIONS = [
+  "avif", "bmp", "c", "clj", "cpp", "cs", "css", "csv", "cts", "doc", "docx",
+  "ex", "exs", "fish", "gif", "go", "gql", "graphql", "h", "hpp", "hs",
+  "htm", "html", "java", "jpeg", "jpg", "js", "json", "jsonc", "jsx", "kt",
+  "less", "lua", "mjs", "md", "mdx", "ml", "mts", "pdf", "php", "png", "ppt",
+  "pptx", "prisma", "ps1", "py", "r", "rb", "rs", "sass", "scala", "scss",
+  "sh", "sql", "svg", "svelte", "swift", "toml", "ts", "tsx", "tsv", "txt",
+  "vue", "webp", "xls", "xlsx", "xml", "yaml", "yml", "zsh",
+];
+const FILE_REF_EXTENSION_PATTERN = FILE_REF_EXTENSIONS.join("|");
+
+function normalizeFileRef(value: string): string {
+  return value.trim().replace(/^<|>$/g, "").replace(/[),.;:]+$/g, "");
+}
+
+function isExternalHref(value: string): boolean {
+  return /^(https?:|mailto:|tel:|#|data:|blob:)/i.test(value);
+}
+
+function looksLikeFileRef(value: string): boolean {
+  const cleaned = normalizeFileRef(value);
+  if (!cleaned || /[\r\n]/.test(cleaned) || isExternalHref(cleaned)) return false;
+  return new RegExp(`\\.(?:${FILE_REF_EXTENSION_PATTERN})(?:$|[?#])`, "i").test(cleaned);
+}
+
+function FileRefButton({
+  path,
+  children,
+  onOpenFile,
+}: {
+  path: string;
+  children: React.ReactNode;
+  onOpenFile: (path: string) => void;
+}) {
+  const cleaned = normalizeFileRef(path);
+  return (
+    <button
+      type="button"
+      className="chat-file-ref"
+      onClick={() => onOpenFile(cleaned)}
+      title="Open in Files"
+      aria-label={`Open ${cleaned} in Files`}
+    >
+      {children}
+    </button>
+  );
+}
 
 function isExternalMediaSrc(src: string): boolean {
   return /^(https?:|data:|blob:|\/api\/)/i.test(src);
@@ -365,7 +416,60 @@ function shouldHideMcpMedia(
   return Boolean(server && hiddenMcpImageServers.includes(server));
 }
 
-function AssistantBlock({ events, streaming, sessionId, hiddenMcpImageServers }: AssistantProps) {
+function LiveThinkingRow({ activity, detail }: { activity?: string; detail?: string }) {
+  const statusParts = ["Thinking", activity, detail].filter(Boolean);
+
+  return (
+    <div
+      className="live-thinking-row"
+      role="status"
+      aria-live="polite"
+      aria-label={statusParts.join(", ")}
+    >
+      <span className="live-thinking-orb" aria-hidden="true" />
+      <span className="live-thinking-copy">
+        <span className="live-thinking-label">Thinking</span>
+        {activity && <span className="live-thinking-activity">{activity}</span>}
+      </span>
+      {detail && <span className="live-thinking-detail">{detail}</span>}
+      <span className="live-thinking-dots" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </span>
+    </div>
+  );
+}
+
+function PlanChecklist({ items }: { items: Extract<StreamEvent, { kind: "todo_list" }>["items"] }) {
+  return (
+    <div className="plan-checklist" aria-label="Plan">
+      <div className="plan-checklist-title">Plan</div>
+      <div className="plan-checklist-items">
+        {items.map((item, index) => (
+          <div key={`${index}-${item.text}`} className="plan-checklist-item">
+            <span className={item.completed ? "plan-checklist-box done" : "plan-checklist-box"} aria-hidden="true">
+              {item.completed ? "✓" : ""}
+            </span>
+            <span className={item.completed ? "plan-checklist-text done" : "plan-checklist-text"}>
+              {item.text}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AssistantBlock({
+  events,
+  streaming,
+  liveActivity,
+  liveDetail,
+  sessionId,
+  hiddenMcpImageServers,
+  onOpenFile,
+}: AssistantProps) {
   const [hovered, setHovered] = useState(false);
 
   // Collect all text for copy
@@ -418,6 +522,11 @@ function AssistantBlock({ events, streaming, sessionId, hiddenMcpImageServers }:
       return;
     }
     if (ev.kind === "tool_result") return;
+    if (ev.kind === "todo_list") {
+      flushToolRow();
+      rendered.push(<PlanChecklist key={i} items={ev.items} />);
+      return;
+    }
     if (ev.kind === "tool_use") {
       const res = toolResults.get(ev.id);
       const mediaSet = collectMediaRefs(ev.input);
@@ -489,6 +598,29 @@ function AssistantBlock({ events, streaming, sessionId, hiddenMcpImageServers }:
           <ReactMarkdown
             remarkPlugins={MARKDOWN_PLUGINS}
             components={{
+              a: ({ href, children, ...props }) => {
+                const target = String(href ?? "");
+                if (onOpenFile && target && looksLikeFileRef(target)) {
+                  return (
+                    <FileRefButton path={target} onOpenFile={onOpenFile}>
+                      {children}
+                    </FileRefButton>
+                  );
+                }
+                return <a href={href} {...props}>{children}</a>;
+              },
+              code: ({ className, children, ...props }) => {
+                const text = String(children).replace(/\n$/, "");
+                const isBlock = Boolean(className) || text.includes("\n");
+                if (!isBlock && onOpenFile && looksLikeFileRef(text)) {
+                  return (
+                    <FileRefButton path={text} onOpenFile={onOpenFile}>
+                      {text}
+                    </FileRefButton>
+                  );
+                }
+                return <code className={className} {...props}>{children}</code>;
+              },
               img: ({ src, alt }) => (
                 <MediaPreview src={String(src ?? "")} alt={alt ?? undefined} sessionId={sessionId} />
               ),
@@ -534,15 +666,10 @@ function AssistantBlock({ events, streaming, sessionId, hiddenMcpImageServers }:
   if (rendered.length === 0 && streaming) {
     return (
       <div
-        className="assistant-streaming-empty relative pl-4 border-l-2 text-[13px] text-muted"
+        className="assistant-streaming-empty relative pl-4 border-l-2"
         style={{ borderLeftColor: "var(--accent)" }}
       >
-        <span className="assistant-streaming-dots" aria-hidden="true">
-          <span />
-          <span />
-          <span />
-        </span>
-        <span>Thinking</span>
+        <LiveThinkingRow activity={liveActivity} detail={liveDetail} />
       </div>
     );
   }
@@ -556,7 +683,7 @@ function AssistantBlock({ events, streaming, sessionId, hiddenMcpImageServers }:
     >
       {rendered}
       {streaming && (
-        <span className="assistant-stream-cursor" aria-hidden="true" />
+        <LiveThinkingRow activity={liveActivity} detail={liveDetail} />
       )}
       {allText && (
         <div

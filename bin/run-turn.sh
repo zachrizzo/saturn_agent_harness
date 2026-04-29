@@ -70,6 +70,27 @@ if [[ -z "$USER_MESSAGE" ]]; then
   exit 4
 fi
 
+PROMPT_USER_MESSAGE="$USER_MESSAGE"
+NATIVE_SLASH_COMMAND=""
+NATIVE_MCP_ARGS=""
+
+case "$USER_MESSAGE" in
+  /plan|/plan\ *)
+    NATIVE_SLASH_COMMAND="plan"
+    if [[ "$ENGINE" == "claude" ]]; then
+      export CLAUDE_PERMISSION_MODE="plan"
+      PROMPT_USER_MESSAGE="$(printf '%s' "${USER_MESSAGE#/plan}" | sed 's/^[[:space:]]*//')"
+      if [[ -z "$PROMPT_USER_MESSAGE" ]]; then
+        PROMPT_USER_MESSAGE="Plan the next steps and wait for my approval before making changes."
+      fi
+    fi
+    ;;
+  /mcp|/mcp\ *)
+    NATIVE_SLASH_COMMAND="mcp"
+    NATIVE_MCP_ARGS="$(printf '%s' "${USER_MESSAGE#/mcp}" | sed 's/^[[:space:]]*//')"
+    ;;
+esac
+
 META_FILE="$SESSION_DIR/meta.json"
 STREAM_FILE="$SESSION_DIR/stream.jsonl"
 STDERR_FILE="$SESSION_DIR/stderr.log"
@@ -102,7 +123,7 @@ BUILD_TRANSCRIPT="no"
 if [[ "$CLI" == "$PREV_CLI" && -n "$PREV_CLI_SESSION_ID" ]]; then
   RESUME_ID="$PREV_CLI_SESSION_ID"
   IS_RESUME="yes"
-  PROMPT_TO_SEND="$USER_MESSAGE"
+  PROMPT_TO_SEND="$PROMPT_USER_MESSAGE"
 elif [[ "$NUM_PRIOR_TURNS" -gt 0 ]]; then
   # Switching CLI (or prior turn has no session id) — build a transcript replay
   BUILD_TRANSCRIPT="yes"
@@ -172,9 +193,9 @@ if [[ "$BUILD_TRANSCRIPT" == "first" ]]; then
 
 ---
 
-User: $USER_MESSAGE"
+User: $PROMPT_USER_MESSAGE"
   else
-    PROMPT_TO_SEND="${SATURN_CLI_INSTRUCTIONS:+${SATURN_CLI_INSTRUCTIONS}$'\n\n'}$USER_MESSAGE"
+    PROMPT_TO_SEND="${SATURN_CLI_INSTRUCTIONS:+${SATURN_CLI_INSTRUCTIONS}$'\n\n'}$PROMPT_USER_MESSAGE"
   fi
 elif [[ "$BUILD_TRANSCRIPT" == "yes" ]]; then
   TRANSCRIPT="$(jq -r '
@@ -187,6 +208,10 @@ elif [[ "$BUILD_TRANSCRIPT" == "yes" ]]; then
       + "\n\nAssistant: "
       + (if (($turn.final_text // "") | length) > 0
          then $turn.final_text
+              + (if ($turn.status // "") == "aborted"
+                 then "\n\n[assistant response was interrupted before completion]"
+                 else ""
+                 end)
          else "[no final assistant response recorded; turn status was \($turn.status // "unknown")]"
          end)
   ' "$META_FILE")"
@@ -217,7 +242,7 @@ $TRANSCRIPT
 ---
 
 Newest user request:
-$USER_MESSAGE"
+$PROMPT_USER_MESSAGE"
 fi
 
 # ─── Mark session running + write turn stub immediately ───────────────────────
@@ -257,6 +282,138 @@ jq -nc \
 # ─── cd into the agent's working directory ────────────────────────────────────
 if [[ -n "$AGENT_CWD" && -d "$AGENT_CWD" ]]; then
   cd "$AGENT_CWD"
+fi
+
+emit_native_mcp_turn() {
+  local parse_file parse_err_file
+  local parse_failed="0"
+  local -a mcp_argv
+  parse_file="$(mktemp -t saturn-mcp-args).txt"
+  parse_err_file="$(mktemp -t saturn-mcp-args-err).txt"
+
+  if [[ -n "$NATIVE_MCP_ARGS" ]]; then
+    if ! python3 - "$NATIVE_MCP_ARGS" > "$parse_file" 2> "$parse_err_file" <<'PY'
+import shlex
+import sys
+
+try:
+    for part in shlex.split(sys.argv[1]):
+        print(part)
+except ValueError as exc:
+    print(str(exc), file=sys.stderr)
+    sys.exit(2)
+PY
+    then
+      parse_failed="1"
+    fi
+  fi
+
+  mcp_argv=()
+  if [[ "$parse_failed" == "0" ]]; then
+    while IFS= read -r arg; do
+      [[ -n "$arg" ]] && mcp_argv+=("$arg")
+    done < "$parse_file"
+  fi
+  rm -f "$parse_file"
+
+  local output exit_code command_display final_text status mcp_cli_session_id
+  local -a mcp_cmd
+  if [[ "$parse_failed" == "1" ]]; then
+    output="$(cat "$parse_err_file" 2>/dev/null || true)"
+    [[ -n "$output" ]] || output="Could not parse /mcp arguments."
+    exit_code=2
+    command_display="/mcp $NATIVE_MCP_ARGS"
+  else
+    if [[ ${#mcp_argv[@]} -eq 0 ]]; then
+      mcp_argv=(list)
+    fi
+
+    if [[ "$ENGINE" == "codex" ]]; then
+      mcp_cmd=(codex mcp "${mcp_argv[@]}")
+    else
+      mcp_cmd=(claude mcp "${mcp_argv[@]}")
+      case "$CLI" in
+        claude-bedrock) setup_bedrock_env ;;
+        claude-personal) unset CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ;;
+        claude-local)
+          export CLAUDE_CODE_USE_BEDROCK="0"
+          export ANTHROPIC_BASE_URL="http://0.0.0.0:4000"
+          export ANTHROPIC_AUTH_TOKEN="sk-local-proxy-key"
+          ;;
+      esac
+    fi
+
+    command_display="$(printf '%q ' "${mcp_cmd[@]}")"
+    command_display="${command_display% }"
+    set +e
+    output="$("${mcp_cmd[@]}" 2>&1)"
+    exit_code=$?
+    set -e
+  fi
+  rm -f "$parse_err_file"
+
+  [[ -n "$output" ]] || output="(no output)"
+  if [[ "$exit_code" -eq 0 ]]; then
+    final_text="Ran native MCP command: \`$command_display\`
+
+\`\`\`text
+$output
+\`\`\`"
+    status="success"
+  else
+    final_text="Native MCP command failed: \`$command_display\`
+
+\`\`\`text
+$output
+\`\`\`"
+    status="failed"
+  fi
+
+  mcp_cli_session_id=""
+  if [[ "$CLI" == "$PREV_CLI" ]]; then
+    mcp_cli_session_id="$PREV_CLI_SESSION_ID"
+  fi
+
+  FINISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  jq -nc --arg text "$final_text" '{type: "assistant", message: {content: [{type: "text", text: $text}]}}' >> "$STREAM_FILE"
+  jq -nc --argjson is_error "$([[ "$exit_code" -eq 0 ]] && echo false || echo true)" '
+    {type: "result", subtype: (if $is_error then "error" else "success" end), is_error: $is_error}
+  ' >> "$STREAM_FILE"
+
+  jq \
+    --arg turn_id "$TURN_ID" \
+    --arg cli "$CLI" \
+    --arg model "$MODEL" \
+    --arg reasoning_effort "$REASONING_EFFORT" \
+    --arg session_id "$mcp_cli_session_id" \
+    --arg started "$STARTED_AT" \
+    --arg finished "$FINISHED_AT" \
+    --arg user_msg "$USER_MESSAGE" \
+    --arg final "$final_text" \
+    --arg status "$status" \
+    '.turns[-1] = {
+        turn_id: $turn_id,
+        cli: $cli,
+        model: (if $model == "" then null else $model end),
+        reasoningEffort: (if $reasoning_effort == "" then null else $reasoning_effort end),
+        cli_session_id: (if $session_id == "" then null else $session_id end),
+        started_at: $started,
+        finished_at: $finished,
+        status: $status,
+        user_message: $user_msg,
+        final_text: $final
+      }
+      | .status = $status
+      | .finished_at = $finished
+      | del(.last_turn_started_at)' \
+    "$META_FILE" > "${META_FILE}.tmp" && mv "${META_FILE}.tmp" "$META_FILE"
+
+  printf '%s\n' "$final_text" > "$SESSION_DIR/final.md"
+  exit "$exit_code"
+}
+
+if [[ "$NATIVE_SLASH_COMMAND" == "mcp" ]]; then
+  emit_native_mcp_turn
 fi
 
 # ─── Build CLI args + run ─────────────────────────────────────────────────────

@@ -30,6 +30,19 @@ SERVICE_PATH="$NODE_BIN_DIR:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$HOME
 
 mkdir -p "$HOME/Library/LaunchAgents" "$AUTOMATIONS_ROOT/runs" "$AUTOMATIONS_ROOT/telegram"
 
+BOT_USERNAME="${TELEGRAM_BOT_USERNAME:-}"
+BOT_USERNAME="${BOT_USERNAME#@}"
+BOT_USERNAME="${BOT_USERNAME#https://t.me/}"
+BOT_USERNAME="${BOT_USERNAME#http://t.me/}"
+BOT_USERNAME="${BOT_USERNAME%%[/?#]*}"
+if [[ -n "$BOT_USERNAME" ]]; then
+  if [[ ! "$BOT_USERNAME" =~ ^[A-Za-z0-9_]{5,32}$ || ! "$BOT_USERNAME" =~ [Bb][Oo][Tt]$ ]]; then
+    echo "TELEGRAM_BOT_USERNAME must be the BotFather bot username, e.g. saturn_personal_computer_bot." >&2
+    echo "The username in the Telegram QR must point to the actual bot created by BotFather." >&2
+    exit 2
+  fi
+fi
+
 xml() {
   printf '%s' "$1" | saturn_xml_escape
 }
@@ -38,7 +51,7 @@ ROOT_XML="$(xml "$AUTOMATIONS_ROOT")"
 NODE_XML="$(xml "$NODE_BIN")"
 PATH_XML="$(xml "$SERVICE_PATH")"
 TOKEN_XML="$(xml "$TELEGRAM_BOT_TOKEN")"
-BOT_USERNAME_XML="$(xml "${TELEGRAM_BOT_USERNAME:-replace-with-bot-username}")"
+BOT_USERNAME_XML="$(xml "${BOT_USERNAME:-replace-with-bot-username}")"
 ALLOWED_XML="$(xml "${TELEGRAM_ALLOWED_CHAT_IDS:-}")"
 ALLOW_ALL_XML="$(xml "${TELEGRAM_ALLOW_ALL:-0}")"
 BASE_URL_XML="$(xml "${SATURN_BASE_URL:-http://127.0.0.1:3737}")"

@@ -122,6 +122,7 @@ export function JobDetailClient({ job, runs, nextFire, avgDuration, avgTokens }:
         </div>
         <JobSettingsModal
           jobName={job.name}
+          currentCron={job.cron}
           currentModel={job.model}
           currentCli={job.cli}
           currentReasoningEffort={job.reasoningEffort}

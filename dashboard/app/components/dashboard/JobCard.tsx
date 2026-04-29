@@ -115,6 +115,7 @@ export function JobCard({ job, runs, latestOutput }: Props): JSX.Element {
         <div className="flex items-center gap-1.5 shrink-0">
           <JobSettingsModal
             jobName={job.name}
+            currentCron={job.cron}
             currentModel={job.model}
             currentCli={job.cli as CLI | undefined}
             currentReasoningEffort={job.reasoningEffort}

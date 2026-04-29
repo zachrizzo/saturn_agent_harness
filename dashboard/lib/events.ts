@@ -5,6 +5,7 @@ export type StreamEvent =
   | { kind: "system"; raw: unknown }
   | { kind: "user"; raw: unknown }
   | { kind: "assistant_text"; text: string; raw: unknown }
+  | { kind: "todo_list"; items: { text: string; completed: boolean }[]; raw: unknown }
   | { kind: "thinking"; text: string; raw: unknown }
   | { kind: "tool_use"; id: string; name: string; input: unknown; parentToolUseId?: string; raw: unknown }
   | { kind: "tool_result"; toolUseId: string; content: unknown; isError: boolean; parentToolUseId?: string; raw: unknown }
@@ -34,6 +35,31 @@ function asRecord(value: unknown): AnyRecord {
 
 function num(value: unknown): number {
   return typeof value === "number" ? value : 0;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function subAgentDescription(prompt: string, fallback = "Codex sub-agent"): string {
+  const compact = prompt.replace(/\s+/g, " ").trim();
+  const rowMatch = compact.match(/\brows?\s+(\d+)\s*[-–]\s*(\d+)/i);
+  if (rowMatch) return `Rows ${rowMatch[1]}-${rowMatch[2]} spot check`;
+
+  const sentenceMatch = compact.match(/^.+?[.!?](?:\s|$)/);
+  const firstSentence = sentenceMatch?.[0]?.trim() ?? compact;
+  if (!firstSentence) return fallback;
+  return firstSentence.length > 72 ? `${firstSentence.slice(0, 69)}...` : firstSentence;
+}
+
+function agentStatusIsError(status: unknown): boolean {
+  return status === "failed" || status === "error" || status === "cancelled" || status === "canceled";
 }
 
 function tokenBreakdownFromModelUsage(raw: Record<string, unknown>): TokenBreakdown | null {
@@ -167,7 +193,7 @@ export function toEvents(obj: Record<string, unknown>): StreamEvent[] {
     }
     case "result": {
       const totalTokens = tokenBreakdownFromRaw(obj).total;
-      const success = obj.subtype === "success" || !obj.is_error;
+      const success = obj.is_error === true ? false : obj.subtype === "success" || obj.is_error !== true;
       return [{ kind: "result", success, totalTokens, numTurns: Number(obj.num_turns ?? 0), raw: obj }];
     }
     case "item.completed":
@@ -185,7 +211,24 @@ function parseItemEvent(type: string, obj: Record<string, unknown>): StreamEvent
   const itemType = String(item.type ?? "");
   const id = String(item.id ?? "");
 
+  if (itemType === "collab_tool_call") {
+    return parseCollabToolEvent(type, obj, item, id);
+  }
+
   if (type === "item.completed") {
+    if (itemType === "todo_list") {
+      const rawItems = Array.isArray(item.items) ? item.items : [];
+      const items = rawItems
+        .map((rawItem) => {
+          const todo = asRecord(rawItem);
+          return {
+            text: String(todo.text ?? "").trim(),
+            completed: Boolean(todo.completed),
+          };
+        })
+        .filter((todo) => todo.text.length > 0);
+      return items.length > 0 ? [{ kind: "todo_list", items, raw: obj }] : [];
+    }
     if (itemType === "agent_message") {
       const text = String(item.text ?? "");
       return text.trim() ? [{ kind: "assistant_text", text, raw: obj }] : [];
@@ -224,7 +267,87 @@ function parseItemEvent(type: string, obj: Record<string, unknown>): StreamEvent
     return [{ kind: "tool_use", id, name: "Bash", input: { command: item.command }, raw: obj }];
   }
 
+  if (type === "item.updated" && itemType === "todo_list") {
+    const rawItems = Array.isArray(item.items) ? item.items : [];
+    const items = rawItems
+      .map((rawItem) => {
+        const todo = asRecord(rawItem);
+        return {
+          text: String(todo.text ?? "").trim(),
+          completed: Boolean(todo.completed),
+        };
+      })
+      .filter((todo) => todo.text.length > 0);
+    return items.length > 0 ? [{ kind: "todo_list", items, raw: obj }] : [];
+  }
+
   return [];
+}
+
+function parseCollabToolEvent(
+  type: string,
+  obj: Record<string, unknown>,
+  item: AnyRecord,
+  id: string,
+): StreamEvent[] {
+  const tool = String(item.tool ?? "");
+  const prompt = String(item.prompt ?? "");
+  const receiverThreadIds = stringArray(item.receiver_thread_ids);
+  const states = asRecord(item.agents_states);
+  const events: StreamEvent[] = [];
+
+  if (tool === "spawn_agent") {
+    if (type === "item.started" && receiverThreadIds.length === 0) {
+      return [];
+    }
+
+    const agentIds = receiverThreadIds.length > 0 ? receiverThreadIds : [id];
+    for (const agentId of agentIds) {
+      const state = asRecord(states[agentId]);
+      const message = stringValue(state.message);
+      const status = state.status ?? item.status;
+      events.push({
+        kind: "tool_use",
+        id: agentId,
+        name: "Agent",
+        input: {
+          description: subAgentDescription(prompt),
+          prompt,
+          subagent_type: "Codex",
+          collab_tool: tool,
+          receiver_thread_id: agentId,
+        },
+        raw: obj,
+      });
+      if (message) {
+        events.push({
+          kind: "tool_result",
+          toolUseId: agentId,
+          content: message,
+          isError: agentStatusIsError(status),
+          raw: obj,
+        });
+      }
+    }
+    return events;
+  }
+
+  if (tool === "wait" || tool === "wait_agent" || tool === "close_agent") {
+    for (const [agentId, rawState] of Object.entries(states)) {
+      const state = asRecord(rawState);
+      const message = stringValue(state.message);
+      if (!message) continue;
+      events.push({
+        kind: "tool_result",
+        toolUseId: agentId,
+        content: message,
+        isError: agentStatusIsError(state.status),
+        raw: obj,
+      });
+    }
+  }
+
+  return events;
 }
 
 /** Extract a TokenBreakdown from a single raw result/step_finish/turn.completed event object.

@@ -47,13 +47,15 @@ You are setting up Saturn from a clean macOS machine. Do all of this in order an
 4. Put real local secrets/config in ignored files.
    - Edit mcps.json and replace any "replace-me" MCP tokens.
    - Edit settings.json if you want a different default CLI/model.
+   - For Bedrock, set settings.json `bedrockProfile` and `bedrockRegion` to the AWS CLI profile/region this Mac should use. You can also do this later in Saturn Settings.
    - Edit jobs/jobs.json only if this machine should register recurring cron jobs.
    - Run bin/sync-configs.sh after changing mcps.json or skills/.
 
 5. Configure the backend auth paths you plan to use.
    - Bedrock:
-     export AWS_PROFILE="${AWS_PROFILE:-sondermind-development-new}"
-     export AWS_REGION="${AWS_REGION:-us-east-1}"
+     # Use the same profile/region saved in Saturn Settings or settings.json.
+     export AWS_PROFILE="$(jq -r '.bedrockProfile // "sondermind-development-new"' settings.json)"
+     export AWS_REGION="$(jq -r '.bedrockRegion // "us-east-1"' settings.json)"
      aws sso login --profile "$AWS_PROFILE"
    - Personal Claude:
      Start Saturn, choose Personal, then run /login in the chat composer; or open Settings and use Claude Personal auth.
@@ -70,6 +72,7 @@ You are setting up Saturn from a clean macOS machine. Do all of this in order an
      cd "$REPO/dashboard"
      AUTOMATIONS_ROOT="$REPO" npm run dev
      Leave this running and use a second shell for verification.
+   - Open http://127.0.0.1:3737/settings to confirm default backends, Claude Personal auth, and Bedrock AWS profile/region.
 
 7. Verify the dashboard and model APIs.
    curl -fsS http://127.0.0.1:3737/api/models?cli=claude-bedrock >/dev/null
@@ -82,7 +85,7 @@ You are setting up Saturn from a clean macOS machine. Do all of this in order an
    - Register cron from jobs/jobs.json:
      bin/register-job.sh
    - Install Telegram Dispatch after creating a BotFather token:
-     TELEGRAM_BOT_TOKEN="123:abc" TELEGRAM_ALLOWED_CHAT_IDS="123456789" bin/install-telegram-service.sh
+     TELEGRAM_BOT_TOKEN="123:abc" TELEGRAM_BOT_USERNAME="your_saturn_bot" TELEGRAM_ALLOWED_CHAT_IDS="123456789" bin/install-telegram-service.sh
 ```
 
 ---
@@ -100,11 +103,13 @@ Dashboard backend IDs are:
 
 The legacy stored value `claude` is accepted as `claude-bedrock`.
 
+Bedrock uses AWS CLI credentials from the local Mac. Saturn stores only the AWS profile and region in `settings.json` (`bedrockProfile`, `bedrockRegion`) and exposes them in Settings under "Claude Bedrock AWS". The Settings UI also lists profiles returned by `aws configure list-profiles` when the AWS CLI has local profiles configured. Saturn does not store AWS credentials.
+
 For manual terminal testing, Bedrock and local can be run side-by-side after initial setup:
 
 | Terminal | Command | Backend |
 |---|---|---|
-| Terminal 1 | `CLAUDE_CODE_USE_BEDROCK=1 AWS_PROFILE=sondermind-development-new AWS_REGION=us-east-1 claude` | AWS Bedrock |
+| Terminal 1 | `CLAUDE_CODE_USE_BEDROCK=1 AWS_PROFILE=$(jq -r '.bedrockProfile // "sondermind-development-new"' settings.json) AWS_REGION=$(jq -r '.bedrockRegion // "us-east-1"' settings.json) claude` | AWS Bedrock |
 | Terminal 2 | `claude-local` | LM Studio via LiteLLM proxy |
 
 Switch model for a local session:
@@ -216,7 +221,7 @@ It uses Telegram long polling, so the Mac does not need a public webhook URL. In
 
 ### Setup
 
-1. Create a bot with Telegram's `@BotFather` and copy the bot token.
+1. Create a bot with Telegram's `@BotFather` and copy the bot token. The username from BotFather must be a real bot username, usually ending in `bot` (for example `saturn_personal_computer_bot`).
 
 2. Start the dashboard first:
    ```bash
@@ -228,6 +233,7 @@ It uses Telegram long polling, so the Mac does not need a public webhook URL. In
    ```bash
    cd "$REPO"
    TELEGRAM_BOT_TOKEN="123:abc" \
+   TELEGRAM_BOT_USERNAME="your_saturn_bot" \
    TELEGRAM_ALLOW_ALL=1 \
    SATURN_BASE_URL="http://127.0.0.1:3737" \
    node bin/telegram-dispatch.mjs
@@ -238,6 +244,7 @@ It uses Telegram long polling, so the Mac does not need a public webhook URL. In
    ```bash
    cd "$REPO"
    TELEGRAM_BOT_TOKEN="123:abc" \
+   TELEGRAM_BOT_USERNAME="your_saturn_bot" \
    TELEGRAM_ALLOWED_CHAT_IDS="123456789" \
    SATURN_BASE_URL="http://127.0.0.1:3737" \
    SATURN_ADHOC_CLI="claude-bedrock" \
@@ -329,7 +336,9 @@ saturn/
 
 ## Adding a new job
 
-Edit `jobs/jobs.json` to append an object with `name`, `cron`, `prompt`, `allowedTools`, and optional `description`, `cwd`. Then:
+Open `http://127.0.0.1:3737/jobs/new` and fill in the schedule, prompt, runtime, and optional working directory. Saving the form writes `jobs/jobs.json` and syncs the job into crontab.
+
+You can also edit `jobs/jobs.json` manually to append an object with `name`, `cron`, `prompt`, `allowedTools`, and optional `description`, `cwd`. Then:
 
 ```bash
 bin/register-job.sh

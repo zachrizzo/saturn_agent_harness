@@ -68,6 +68,9 @@ export function ChatView({
   const [editingTurnIndex, setEditingTurnIndex] = useState<number | null>(null);
   const turnRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const [inspectorWidth, setInspectorWidth] = useState(420);
+  const [referencedFiles, setReferencedFiles] = useState<string[]>([]);
+  const [fileOpenRequest, setFileOpenRequest] = useState<{ path: string; requestId: number } | null>(null);
+  const fileOpenRequestId = useRef(0);
 
   // Tool selection — drives Inspector content.
   const [activeToolId, setActiveToolId] = useState<string | null>(null);
@@ -386,6 +389,14 @@ export function ChatView({
     composerRef.current?.setDraft("");
   };
 
+  const openFileInInspector = useCallback((path: string) => {
+    const cleaned = path.trim();
+    if (!cleaned) return;
+    setReferencedFiles((current) => current.includes(cleaned) ? current : [cleaned, ...current]);
+    fileOpenRequestId.current += 1;
+    setFileOpenRequest({ path: cleaned, requestId: fileOpenRequestId.current });
+  }, []);
+
   const stopGeneration = async () => {
     try {
       await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/abort`, { method: "POST" });
@@ -575,6 +586,7 @@ export function ChatView({
                     liveDetail={chunk.streaming ? streamActivityDetail : undefined}
                     sessionId={sessionId}
                     hiddenMcpImageServers={hiddenMcpImageServers}
+                    onOpenFile={openFileInInspector}
                   />
                 </div>
               );
@@ -656,6 +668,8 @@ export function ChatView({
           events={events}
           width={inspectorWidth}
           onWidthChange={setInspectorWidth}
+          referencedFiles={referencedFiles}
+          fileOpenRequest={fileOpenRequest}
         />
       </div>
     </ToolSelectionProvider>

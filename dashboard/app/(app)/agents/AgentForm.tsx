@@ -177,61 +177,89 @@ export function AgentForm({ existing }: { existing?: Agent } = {}) {
   };
 
   return (
-    <form onSubmit={(e) => { e.preventDefault(); save(); }} className="space-y-5 max-w-5xl">
+    <form onSubmit={(e) => { e.preventDefault(); save(); }} className="agent-form space-y-5">
       {error && (
         <Card className="p-3 border-[color-mix(in_srgb,var(--fail)_30%,var(--border))] text-[var(--fail)] text-sm">
           {error}
         </Card>
       )}
 
-      <div className="flex gap-2 items-center mb-2">
-        <span className="label">Agent type</span>
-        {(["chat", "orchestrator"] as AgentKind[]).map((k) => (
-          <button
-            key={k}
-            type="button"
-            onClick={() => setKind(k)}
-            className={`px-3 py-1.5 rounded text-[12px] border transition-colors ${
-              kind === k
-                ? "bg-accent-soft border-accent text-accent"
-                : "border-border text-muted hover:bg-bg-hover"
-            }`}
-          >
-            {k === "chat" ? "Chat agent" : "Orchestrator"}
-          </button>
-        ))}
-      </div>
+      <div className="agent-form-layout">
+        <aside className="agent-form-rail" aria-label="Agent setup flow">
+          <div className="agent-form-rail-title">Agent setup</div>
+          <a href="#agent-basics">1. Basics</a>
+          <a href="#agent-model">2. Model</a>
+          <a href="#agent-prompt">3. Prompt</a>
+          {kind === "orchestrator" && <a href="#agent-slices">4. Slices</a>}
+          {kind === "orchestrator" && <a href="#agent-limits">5. Limits</a>}
+          <a href="#agent-runtime">{kind === "orchestrator" ? "6" : "4"}. Runtime</a>
+          <div className="agent-form-rail-summary">
+            <span>{kind === "orchestrator" ? "Orchestrator" : "Chat agent"}</span>
+            <strong>{name.trim() || id.trim() || "Untitled agent"}</strong>
+          </div>
+        </aside>
 
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="ID (unique, no spaces)">
-          <Input
-            value={id}
-            onChange={(e) => setId(e.target.value)}
-            disabled={!!existing}
-            required
-            placeholder="code-reviewer"
-          />
-        </Field>
-        <Field label="Name">
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            required
-            placeholder="Code Reviewer"
-          />
-        </Field>
-      </div>
+        <div className="agent-form-content">
+          <section id="agent-basics" className="agent-form-card">
+            <SectionIntro
+              eyebrow="Step 1"
+              title="Basics"
+              description="Name the agent and choose whether it runs as a direct chat agent or an orchestrator."
+            />
 
-      <Field label="Description">
-        <Input
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          placeholder="Short summary shown on the agent card"
-        />
-      </Field>
+            <div className="flex gap-2 items-center">
+              <span className="label">Agent type</span>
+              {(["chat", "orchestrator"] as AgentKind[]).map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setKind(k)}
+                  className={`px-3 py-1.5 rounded text-[12px] border transition-colors ${
+                    kind === k
+                      ? "bg-accent-soft border-accent text-accent"
+                      : "border-border text-muted hover:bg-bg-hover"
+                  }`}
+                >
+                  {k === "chat" ? "Chat agent" : "Orchestrator"}
+                </button>
+              ))}
+            </div>
 
-      <div className="rounded-xl border border-border bg-bg-subtle p-4 space-y-4">
-        <div className="text-[12px] font-semibold text-fg">CLI Configuration</div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+              <Field label="ID (unique, no spaces)">
+                <Input
+                  value={id}
+                  onChange={(e) => setId(e.target.value)}
+                  disabled={!!existing}
+                  required
+                  placeholder="code-reviewer"
+                />
+              </Field>
+              <Field label="Name">
+                <Input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  required
+                  placeholder="Code Reviewer"
+                />
+              </Field>
+            </div>
+
+            <Field label="Description">
+              <Input
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Short summary shown on the agent card"
+              />
+            </Field>
+          </section>
+
+          <section id="agent-model" className="agent-form-card">
+            <SectionIntro
+              eyebrow="Step 2"
+              title="Model and CLI"
+              description="Pick the CLIs this agent can run on and set model defaults."
+            />
 
         <Field label="Supported CLIs">
           <div className="flex gap-3">
@@ -301,7 +329,7 @@ export function AgentForm({ existing }: { existing?: Agent } = {}) {
             ))}
           </div>
         ) : (
-          <div className="grid grid-cols-[minmax(0,1fr)_9rem] gap-3">
+          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_12rem] gap-3">
             <Field label={`Model (${CLI_LABELS[supportedClis[0] ?? DEFAULT_CLI]})`}>
               <Select
                 value={cliModels[supportedClis[0] ?? DEFAULT_CLI] ?? ""}
@@ -330,27 +358,40 @@ export function AgentForm({ existing }: { existing?: Agent } = {}) {
             </Field>
           </div>
         )}
-      </div>
+          </section>
 
-      <Field label={kind === "orchestrator" ? "Strategy prompt" : "System prompt"}>
-        <Textarea
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          required
-          className="min-h-[160px] mono"
-          placeholder={
-            kind === "orchestrator"
-              ? "You are an orchestrator. Dispatch slices to analyze the codebase…"
-              : "You are a careful code reviewer…"
-          }
-        />
-      </Field>
+          <section id="agent-prompt" className="agent-form-card">
+            <SectionIntro
+              eyebrow="Step 3"
+              title={kind === "orchestrator" ? "Strategy prompt" : "System prompt"}
+              description={kind === "orchestrator"
+                ? "Describe how this orchestrator should delegate, synthesize, and decide when it is done."
+                : "Define the behavior and standards this agent should follow."}
+            />
+            <Field label={kind === "orchestrator" ? "Strategy prompt" : "System prompt"}>
+              <Textarea
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                required
+                className="min-h-[260px] mono"
+                placeholder={
+                  kind === "orchestrator"
+                    ? "You are an orchestrator. Dispatch slices to analyze the codebase…"
+                    : "You are a careful code reviewer…"
+                }
+              />
+            </Field>
+          </section>
 
       {kind === "orchestrator" && (
         <>
           {/* ── Slices section ── */}
-          <div className="rounded-xl border border-border bg-bg-subtle p-4 space-y-3">
-            <div className="text-[12px] font-semibold text-fg">Slices</div>
+          <section id="agent-slices" className="agent-form-card space-y-3">
+            <SectionIntro
+              eyebrow="Step 4"
+              title="Slices"
+              description="Choose the specialist slices this orchestrator can call, then arrange an optional workflow."
+            />
 
             <label className="flex items-center gap-2 cursor-pointer text-[13px]">
               <input
@@ -446,12 +487,18 @@ export function AgentForm({ existing }: { existing?: Agent } = {}) {
                 ))}
               </div>
             </div>
-          </div>
+          </section>
 
           {/* ── Budget section ── */}
-          <div className="rounded-xl border border-border bg-bg-subtle p-4 space-y-3">
+          <section id="agent-limits" className="agent-form-card">
+            <SectionIntro
+              eyebrow="Step 5"
+              title="Limits and failure policy"
+              description="Set guardrails for orchestrated runs so the agent stays predictable."
+            />
+            <div className="rounded-lg border border-border bg-bg-subtle p-4 space-y-3">
             <div className="text-[12px] font-semibold text-fg">Budget</div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 lg:grid-cols-4 gap-3">
               <Field label="Max total tokens">
                 <Input
                   type="number"
@@ -488,9 +535,9 @@ export function AgentForm({ existing }: { existing?: Agent } = {}) {
           </div>
 
           {/* ── Failure policy section ── */}
-          <div className="rounded-xl border border-border bg-bg-subtle p-4 space-y-3">
+          <div className="rounded-lg border border-border bg-bg-subtle p-4 space-y-3">
             <div className="text-[12px] font-semibold text-fg">Failure policy</div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
               <Field label="On budget exceeded">
                 <Select
                   value={onBudgetExceeded}
@@ -512,56 +559,87 @@ export function AgentForm({ existing }: { existing?: Agent } = {}) {
               </Field>
             </div>
           </div>
+          </section>
         </>
       )}
 
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="Working directory (optional)">
-          <DirPicker value={cwd} onChange={setCwd} />
-        </Field>
-        <Field label="Timeout seconds">
-          <Input
-            type="number"
-            value={timeout}
-            onChange={(e) => setTimeoutVal(e.target.value)}
-          />
-        </Field>
-      </div>
+          <section id="agent-runtime" className="agent-form-card">
+            <SectionIntro
+              eyebrow={kind === "orchestrator" ? "Step 6" : "Step 4"}
+              title="Runtime"
+              description="Optional working directory, tool allowlist, tags, and schedule settings."
+            />
 
-      <Field label="Allowed tools (comma-separated, Claude only)">
-        <Input
-          value={allowedTools}
-          onChange={(e) => setAllowedTools(e.target.value)}
-          placeholder="Read, Grep, Bash, mcp__gitlab__*"
-        />
-      </Field>
+            <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_14rem] gap-3">
+              <Field label="Working directory (optional)">
+                <DirPicker value={cwd} onChange={setCwd} />
+              </Field>
+              <Field label="Timeout seconds">
+                <Input
+                  type="number"
+                  value={timeout}
+                  onChange={(e) => setTimeoutVal(e.target.value)}
+                />
+              </Field>
+            </div>
 
-      <Field label="Tags (comma-separated)">
-        <Input
-          value={tags}
-          onChange={(e) => setTags(e.target.value)}
-          placeholder="code, review"
-        />
-      </Field>
+            <Field label="Allowed tools (comma-separated, Claude only)">
+              <Input
+                value={allowedTools}
+                onChange={(e) => setAllowedTools(e.target.value)}
+                placeholder="Read, Grep, Bash, mcp__gitlab__*"
+              />
+            </Field>
 
-      <Field label="Cron schedule (optional — leave blank for on-demand only)">
-        <Input
-          value={cron}
-          onChange={(e) => setCron(e.target.value)}
-          placeholder="0 9 * * *"
-          className="mono"
-        />
-      </Field>
+            <Field label="Tags (comma-separated)">
+              <Input
+                value={tags}
+                onChange={(e) => setTags(e.target.value)}
+                placeholder="code, review"
+              />
+            </Field>
 
-      <div className="flex gap-2 justify-end pt-2">
-        <Button type="button" variant="default" onClick={() => router.push("/agents")}>
-          Cancel
-        </Button>
-        <Button type="submit" variant="primary" disabled={saving}>
-          {saving ? "Saving…" : existing ? "Save changes" : "Create agent"}
-        </Button>
+            <Field label="Cron schedule (optional — leave blank for on-demand only)">
+              <Input
+                value={cron}
+                onChange={(e) => setCron(e.target.value)}
+                placeholder="0 9 * * *"
+                className="mono"
+              />
+            </Field>
+          </section>
+
+          <div className="agent-form-actions">
+            <Button type="button" variant="default" onClick={() => router.push("/agents")}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="primary" disabled={saving}>
+              {saving ? "Saving…" : existing ? "Save changes" : "Create agent"}
+            </Button>
+          </div>
+        </div>
       </div>
     </form>
+  );
+}
+
+function SectionIntro({
+  eyebrow,
+  title,
+  description,
+}: {
+  eyebrow: string;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="agent-form-section-intro">
+      <span>{eyebrow}</span>
+      <div>
+        <h2>{title}</h2>
+        <p>{description}</p>
+      </div>
+    </div>
   );
 }
 
@@ -590,6 +668,7 @@ function SliceWorkflowGraph({
   const [dragging, setDragging] = useState<{ nodeId: string; offsetX: number; offsetY: number } | null>(null);
   const [connectFrom, setConnectFrom] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(graph.nodes[0]?.id ?? null);
+  const [fullscreen, setFullscreen] = useState(false);
 
   const sliceById = useMemo(() => new Map(slices.map((slice) => [slice.id, slice])), [slices]);
   const placedSliceIds = useMemo(() => new Set(graph.nodes.map((node) => node.slice_id)), [graph.nodes]);
@@ -602,6 +681,20 @@ function SliceWorkflowGraph({
     if (selectedNodeId && graph.nodes.some((node) => node.id === selectedNodeId)) return;
     setSelectedNodeId(graph.nodes[0]?.id ?? null);
   }, [graph.nodes, selectedNodeId]);
+
+  useEffect(() => {
+    if (!fullscreen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setFullscreen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [fullscreen]);
 
   const addNode = (sliceId: string, x?: number, y?: number) => {
     const slice = sliceById.get(sliceId);
@@ -725,15 +818,18 @@ function SliceWorkflowGraph({
     .filter((item): item is NonNullable<typeof item> => item !== null);
 
   return (
-    <div className="rounded-lg border border-border bg-bg p-3 space-y-3">
-      <div className="flex items-center gap-2">
-        <div className="text-[12px] font-semibold text-fg">Slice workflow</div>
-        <div className="ml-auto flex gap-2">
+    <div className={fullscreen ? "slice-workflow-builder fullscreen" : "slice-workflow-builder"}>
+      <div className="slice-workflow-header">
+        <div className="min-w-0">
+          <div className="slice-workflow-title">Slice workflow</div>
+          <div className="slice-workflow-subtitle">Drag slices onto the canvas, then connect the order of work.</div>
+        </div>
+        <div className="slice-workflow-actions">
           <button
             type="button"
             onClick={arrangeGraph}
             disabled={graph.nodes.length === 0}
-            className="rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:bg-bg-hover hover:text-fg disabled:opacity-40"
+            className="slice-workflow-action"
           >
             Arrange
           </button>
@@ -741,17 +837,32 @@ function SliceWorkflowGraph({
             type="button"
             onClick={clearGraph}
             disabled={graph.nodes.length === 0}
-            className="rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:bg-bg-hover hover:text-fg disabled:opacity-40"
+            className="slice-workflow-action"
           >
             Clear
+          </button>
+          <button
+            type="button"
+            onClick={() => setFullscreen((value) => !value)}
+            className="slice-workflow-action primary"
+            aria-label={fullscreen ? "Exit full screen workflow" : "Open workflow full screen"}
+          >
+            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              {fullscreen ? (
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M8 3v5H3M16 3v5h5M8 21v-5H3M16 21v-5h5" />
+              ) : (
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
+              )}
+            </svg>
+            {fullscreen ? "Exit full screen" : "Full screen"}
           </button>
         </div>
       </div>
 
-      <div className="grid gap-3 lg:grid-cols-[240px_minmax(0,1fr)]">
-        <div className="rounded-lg border border-border bg-bg-subtle p-2">
+      <div className="slice-workflow-grid">
+        <div className="slice-workflow-palette">
           <div className="mb-2 text-[10px] uppercase tracking-wider text-subtle">Palette</div>
-          <div className="max-h-[360px] space-y-2 overflow-y-auto pr-1">
+          <div className="slice-workflow-palette-list">
             {slices.length === 0 && (
               <div className="rounded-md border border-border bg-bg px-3 py-6 text-center text-[12px] text-subtle">
                 No slices available
@@ -806,10 +917,10 @@ function SliceWorkflowGraph({
           </div>
         </div>
 
-        <div className="min-w-0 space-y-2">
+        <div className="slice-workflow-main">
           <div
             ref={canvasRef}
-            className="relative min-h-[420px] overflow-hidden rounded-lg border border-border bg-bg-subtle"
+            className="slice-workflow-canvas"
             onDragOver={(e) => {
               e.preventDefault();
               e.dataTransfer.dropEffect = "copy";
@@ -943,7 +1054,7 @@ function SliceWorkflowGraph({
           )}
 
           {selectedNode && (
-            <div className="rounded-lg border border-border bg-bg p-3">
+            <div className="slice-workflow-node-editor">
               <div className="mb-3 flex items-center gap-2">
                 <div className="min-w-0 flex-1">
                   <div className="text-[12px] font-semibold text-fg">Node editor</div>

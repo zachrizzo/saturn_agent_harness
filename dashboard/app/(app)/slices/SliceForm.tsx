@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Slice, SliceMutationTier, SliceCostTier, SliceScope, SliceOutputKind, SliceInteractivity, SliceSandboxMode, SliceSandboxNet } from "@/lib/slices";
 import type { CLI } from "@/lib/runs";
@@ -24,11 +24,20 @@ function parseVariables(template: string): string[] {
   return [...new Set(names)];
 }
 
+function slugify(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 export function SliceForm({ existing }: { existing?: Slice } = {}) {
   const router = useRouter();
 
   // Basics
   const [id, setId] = useState(existing?.id ?? "");
+  const [idTouched, setIdTouched] = useState(!!existing);
   const [name, setName] = useState(existing?.name ?? "");
   const [description, setDescription] = useState(existing?.description ?? "");
   const [tags, setTags] = useState((existing?.tags ?? []).join(", "));
@@ -42,7 +51,7 @@ export function SliceForm({ existing }: { existing?: Slice } = {}) {
   // Capability
   const [mutation, setMutation] = useState<SliceMutationTier>(existing?.capability?.mutation ?? "read-only");
   const [scope, setScope] = useState<SliceScope[]>(existing?.capability?.scope ?? ["repo"]);
-  const [outputKind, setOutputKind] = useState<SliceOutputKind>(existing?.capability?.output?.kind ?? "structured");
+  const [outputKind, setOutputKind] = useState<SliceOutputKind>(existing?.capability?.output?.kind ?? "markdown");
   const [interactivity, setInteractivity] = useState<SliceInteractivity>(existing?.capability?.interactivity ?? "one-shot");
   const [costTier, setCostTier] = useState<SliceCostTier>(existing?.capability?.cost_tier ?? "cheap");
 
@@ -54,6 +63,7 @@ export function SliceForm({ existing }: { existing?: Slice } = {}) {
   const [requiredVars, setRequiredVars] = useState<Set<string>>(
     new Set(existing?.prompt_template?.required ?? [])
   );
+  const knownVarsRef = useRef(new Set(existing?.prompt_template?.variables ?? []));
 
   // Sandbox
   const [sandboxMode, setSandboxMode] = useState<SliceSandboxMode>(existing?.sandbox?.mode ?? "none");
@@ -71,6 +81,7 @@ export function SliceForm({ existing }: { existing?: Slice } = {}) {
   // Save state
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(!!existing);
 
   // Fetch models when cli changes
   useEffect(() => {
@@ -82,6 +93,30 @@ export function SliceForm({ existing }: { existing?: Slice } = {}) {
 
   // Auto-detect variables from prompt template
   const detectedVars = useMemo(() => parseVariables(systemPrompt), [systemPrompt]);
+  const detectedVarsKey = detectedVars.join("\u0000");
+
+  useEffect(() => {
+    if (existing || idTouched) return;
+    setId(slugify(name));
+  }, [existing, idTouched, name]);
+
+  useEffect(() => {
+    setRequiredVars((prev) => {
+      const detected = new Set(detectedVars);
+      const next = new Set([...prev].filter((v) => detected.has(v)));
+      let changed = next.size !== prev.size;
+
+      for (const v of detectedVars) {
+        if (!knownVarsRef.current.has(v)) {
+          next.add(v);
+          changed = true;
+        }
+      }
+
+      knownVarsRef.current = detected;
+      return changed ? next : prev;
+    });
+  }, [detectedVarsKey]);
 
   const toggleScope = (s: SliceScope) => {
     setScope((prev) =>
@@ -100,6 +135,10 @@ export function SliceForm({ existing }: { existing?: Slice } = {}) {
 
   const save = async () => {
     setIoSchemaError(null);
+    if (!id.trim() || !name.trim() || !systemPrompt.trim()) {
+      setError("Name, ID, and prompt are required");
+      return;
+    }
 
     // Validate io_schema JSON if provided
     let parsedIoSchema: { output?: unknown } | undefined;
@@ -126,7 +165,7 @@ export function SliceForm({ existing }: { existing?: Slice } = {}) {
         tags: tags.split(",").map((s) => s.trim()).filter(Boolean),
         capability: {
           mutation,
-          scope,
+          scope: scope.length > 0 ? scope : ["repo"],
           output: { kind: outputKind },
           interactivity,
           cost_tier: costTier,
@@ -186,23 +225,28 @@ export function SliceForm({ existing }: { existing?: Slice } = {}) {
 
       {/* ── Section 1: Basics ── */}
       <div className="rounded-xl border border-border bg-bg-subtle p-4 space-y-4">
-        <div className="text-[12px] font-semibold text-fg">Basics</div>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="ID (unique, no spaces)">
-            <Input
-              value={id}
-              onChange={(e) => setId(e.target.value)}
-              disabled={!!existing}
-              required
-              placeholder="security-reviewer"
-            />
-          </Field>
+        <div className="text-[12px] font-semibold text-fg">
+          {existing ? "Basics" : "Essentials"}
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Field label="Name">
             <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
               required
               placeholder="Security Reviewer"
+            />
+          </Field>
+          <Field label="ID">
+            <Input
+              value={id}
+              onChange={(e) => {
+                setIdTouched(true);
+                setId(e.target.value);
+              }}
+              disabled={!!existing}
+              required
+              placeholder="security-reviewer"
             />
           </Field>
         </div>
@@ -213,19 +257,85 @@ export function SliceForm({ existing }: { existing?: Slice } = {}) {
             placeholder="Short summary shown in the catalog"
           />
         </Field>
-        <Field label="Tags (comma-separated)">
-          <Input
-            value={tags}
-            onChange={(e) => setTags(e.target.value)}
-            placeholder="security, code-review"
-          />
-        </Field>
+        {existing ? (
+          <Field label="Tags (comma-separated)">
+            <Input
+              value={tags}
+              onChange={(e) => setTags(e.target.value)}
+              placeholder="security, code-review"
+            />
+          </Field>
+        ) : (
+          <>
+            <Field label="Prompt">
+              <Textarea
+                value={systemPrompt}
+                onChange={(e) => setSystemPrompt(e.target.value)}
+                className="min-h-[240px] mono text-[12px]"
+                placeholder={
+                  "You are a specialist. Focus: {{focus}}.\nReturn a concise markdown result with the most important details first."
+                }
+                required
+              />
+            </Field>
+            {detectedVars.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-[11px] text-muted font-medium">
+                  Variables detected ({detectedVars.length})
+                </div>
+                <div className="space-y-1">
+                  {detectedVars.map((v) => (
+                    <label key={v} className="flex items-center gap-3 text-[12px] cursor-pointer">
+                      <code className="text-[11px] bg-bg border border-border px-1.5 py-0.5 rounded mono flex-1">
+                        {`{{${v}}}`}
+                      </code>
+                      <input
+                        type="checkbox"
+                        checked={requiredVars.has(v)}
+                        onChange={() => toggleRequiredVar(v)}
+                        className="w-3.5 h-3.5 accent-[var(--accent)]"
+                      />
+                      <span className="text-muted">required</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        )}
       </div>
+
+      <details
+        open={advancedOpen}
+        onToggle={(e) => setAdvancedOpen(e.currentTarget.open)}
+        className="space-y-4"
+      >
+        <summary className="cursor-pointer select-none text-[12px] font-medium text-muted hover:text-fg">
+          {existing ? "Configuration" : "Advanced options"}
+          {!existing && (
+            <span className="ml-2 text-subtle font-normal">
+              CLI, tools, sandbox, schema, budget
+            </span>
+          )}
+        </summary>
+        <div className="space-y-4">
+          {!existing && (
+            <div className="rounded-xl border border-border bg-bg-subtle p-4 space-y-3">
+              <div className="text-[12px] font-semibold text-fg">Metadata</div>
+              <Field label="Tags (comma-separated)">
+                <Input
+                  value={tags}
+                  onChange={(e) => setTags(e.target.value)}
+                  placeholder="security, code-review"
+                />
+              </Field>
+            </div>
+          )}
 
       {/* ── Section 2: Execution ── */}
       <div className="rounded-xl border border-border bg-bg-subtle p-4 space-y-4">
         <div className="text-[12px] font-semibold text-fg">Execution</div>
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <Field label="CLI">
             <Select value={cli} onChange={(e) => { setCli(e.target.value as CLI); setModel(""); }}>
               {ALL_CLIS.map((c) => (
@@ -255,7 +365,7 @@ export function SliceForm({ existing }: { existing?: Slice } = {}) {
       {/* ── Section 3: Capability ── */}
       <div className="rounded-xl border border-border bg-bg-subtle p-4 space-y-4">
         <div className="text-[12px] font-semibold text-fg">Capability</div>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Field label="Mutation tier">
             <Select value={mutation} onChange={(e) => setMutation(e.target.value as SliceMutationTier)}>
               {MUTATION_OPTIONS.map((m) => (
@@ -314,46 +424,48 @@ export function SliceForm({ existing }: { existing?: Slice } = {}) {
         </Field>
       </div>
 
-      {/* ── Section 5: Prompt template ── */}
-      <div className="rounded-xl border border-border bg-bg-subtle p-4 space-y-3">
-        <div className="text-[12px] font-semibold text-fg">Prompt template</div>
-        <Field label="System prompt">
-          <Textarea
-            value={systemPrompt}
-            onChange={(e) => setSystemPrompt(e.target.value)}
-            className="min-h-[200px] mono text-[12px]"
-            placeholder={"You are a specialist. Focus: {{focus}}.\nReturn only a fenced ```findings.json``` block."}
-          />
-        </Field>
-        {detectedVars.length > 0 && (
-          <div className="space-y-2">
-            <div className="text-[11px] text-muted font-medium">
-              Variables detected ({detectedVars.length})
+      {existing && (
+        <div className="rounded-xl border border-border bg-bg-subtle p-4 space-y-3">
+          <div className="text-[12px] font-semibold text-fg">Prompt template</div>
+          <Field label="System prompt">
+            <Textarea
+              value={systemPrompt}
+              onChange={(e) => setSystemPrompt(e.target.value)}
+              className="min-h-[200px] mono text-[12px]"
+              placeholder={"You are a specialist. Focus: {{focus}}.\nReturn only a fenced ```findings.json``` block."}
+              required
+            />
+          </Field>
+          {detectedVars.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-[11px] text-muted font-medium">
+                Variables detected ({detectedVars.length})
+              </div>
+              <div className="space-y-1">
+                {detectedVars.map((v) => (
+                  <label key={v} className="flex items-center gap-3 text-[12px] cursor-pointer">
+                    <code className="text-[11px] bg-bg border border-border px-1.5 py-0.5 rounded mono flex-1">
+                      {`{{${v}}}`}
+                    </code>
+                    <input
+                      type="checkbox"
+                      checked={requiredVars.has(v)}
+                      onChange={() => toggleRequiredVar(v)}
+                      className="w-3.5 h-3.5 accent-[var(--accent)]"
+                    />
+                    <span className="text-muted">required</span>
+                  </label>
+                ))}
+              </div>
             </div>
-            <div className="space-y-1">
-              {detectedVars.map((v) => (
-                <label key={v} className="flex items-center gap-3 text-[12px] cursor-pointer">
-                  <code className="text-[11px] bg-bg border border-border px-1.5 py-0.5 rounded mono flex-1">
-                    {`{{${v}}}`}
-                  </code>
-                  <input
-                    type="checkbox"
-                    checked={requiredVars.has(v)}
-                    onChange={() => toggleRequiredVar(v)}
-                    className="w-3.5 h-3.5 accent-[var(--accent)]"
-                  />
-                  <span className="text-muted">required</span>
-                </label>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
 
       {/* ── Section 6: Sandbox ── */}
       <div className="rounded-xl border border-border bg-bg-subtle p-4 space-y-3">
         <div className="text-[12px] font-semibold text-fg">Sandbox</div>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Field label="Mode">
             <Select value={sandboxMode} onChange={(e) => setSandboxMode(e.target.value as SliceSandboxMode)}>
               {SANDBOX_MODE_OPTIONS.map((m) => (
@@ -371,7 +483,7 @@ export function SliceForm({ existing }: { existing?: Slice } = {}) {
         </div>
         {showSandboxWarning && (
           <div className="rounded-lg border border-[color-mix(in_srgb,var(--warn)_40%,var(--border))] bg-[color-mix(in_srgb,var(--warn)_8%,var(--bg))] px-3 py-2 text-[12px] text-[var(--warn)]">
-            ⚠ writes-source slices should use worktree sandbox to avoid modifying files directly.
+            Warning: writes-source slices should use worktree sandbox to avoid modifying files directly.
           </div>
         )}
       </div>
@@ -404,6 +516,8 @@ export function SliceForm({ existing }: { existing?: Slice } = {}) {
           />
         </Field>
       </div>
+        </div>
+      </details>
 
       <div className="flex gap-2 justify-end pt-2">
         <Button type="button" variant="default" onClick={() => router.push("/slices")}>

@@ -17,6 +17,8 @@ async function getRecents(): Promise<RecentChatItem[]> {
     agent: s.agent,
     preview: s.preview,
     relTime: s.relTime,
+    projectName: s.projectName,
+    projectPath: s.projectPath,
     isMultiCli: s.multi,
     isSwarm: s.isSwarm,
     lastReplyAt: s.lastFinishedAt ?? null,

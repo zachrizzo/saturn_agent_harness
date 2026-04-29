@@ -3,6 +3,7 @@ import { settingsFile } from "./paths";
 import { normalizeReasoningEffortForCli, type ModelReasoningEffort } from "./models";
 import { DEFAULT_CLI, isCli, normalizeCli } from "./clis";
 import type { CLI } from "./clis";
+import { DEFAULT_BEDROCK_PROFILE, DEFAULT_BEDROCK_REGION } from "./bedrock-config";
 
 export type AppSettings = {
   defaultCli: CLI;
@@ -10,6 +11,8 @@ export type AppSettings = {
   defaultReasoningEfforts: Partial<Record<CLI, ModelReasoningEffort>>;
   defaultMcpTools: boolean;
   hiddenMcpImageServers: string[];
+  bedrockProfile: string;
+  bedrockRegion: string;
   defaultCwd?: string;
 };
 
@@ -21,6 +24,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   defaultReasoningEfforts: {},
   defaultMcpTools: false,
   hiddenMcpImageServers: [],
+  bedrockProfile: DEFAULT_BEDROCK_PROFILE,
+  bedrockRegion: DEFAULT_BEDROCK_REGION,
 };
 
 function isEffort(value: unknown): value is ModelReasoningEffort {
@@ -68,6 +73,12 @@ export function normalizeAppSettings(input: unknown): AppSettings {
   const defaultCwd = typeof rec.defaultCwd === "string" && rec.defaultCwd.trim()
     ? rec.defaultCwd.trim()
     : undefined;
+  const bedrockProfile = typeof rec.bedrockProfile === "string" && rec.bedrockProfile.trim()
+    ? rec.bedrockProfile.trim()
+    : process.env.AWS_PROFILE || DEFAULT_APP_SETTINGS.bedrockProfile;
+  const bedrockRegion = typeof rec.bedrockRegion === "string" && rec.bedrockRegion.trim()
+    ? rec.bedrockRegion.trim()
+    : process.env.AWS_REGION || DEFAULT_APP_SETTINGS.bedrockRegion;
 
   return {
     defaultCli,
@@ -75,6 +86,8 @@ export function normalizeAppSettings(input: unknown): AppSettings {
     defaultReasoningEfforts: cleanEffortMap(rec.defaultReasoningEfforts),
     defaultMcpTools: typeof rec.defaultMcpTools === "boolean" ? rec.defaultMcpTools : DEFAULT_APP_SETTINGS.defaultMcpTools,
     hiddenMcpImageServers: cleanStringList(rec.hiddenMcpImageServers),
+    bedrockProfile,
+    bedrockRegion,
     ...(defaultCwd ? { defaultCwd } : {}),
   };
 }

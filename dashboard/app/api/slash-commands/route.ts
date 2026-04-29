@@ -12,7 +12,7 @@ export type SlashCommand = {
   description: string;
   kind: "builtin" | "skill" | "command";
   clis: string[];
-  transform: "prefix" | "replace";
+  transform: "prefix" | "replace" | "literal";
   instruction: string;
   action?: "claude-personal-login";
 };
@@ -31,11 +31,20 @@ const BUILTIN_COMMANDS: SlashCommand[] = [
   {
     name: "plan",
     label: "/plan",
-    description: "Think through the approach step-by-step before acting. Present a plan and wait for approval.",
+    description: "Use the selected CLI's native plan mode for this turn.",
     kind: "builtin",
     clis: ["claude-bedrock", "claude-personal", "claude-local", "codex"],
-    transform: "prefix",
-    instruction: "[Plan mode] Think through the full approach step-by-step. Write out a numbered plan with clear steps before doing anything. Do NOT start executing yet — present the plan and wait for the user to say 'go' or approve it.\n\n",
+    transform: "literal",
+    instruction: "/plan",
+  },
+  {
+    name: "mcp",
+    label: "/mcp",
+    description: "Run the selected CLI's native MCP manager command.",
+    kind: "builtin",
+    clis: ["claude-bedrock", "claude-personal", "claude-local", "codex"],
+    transform: "literal",
+    instruction: "/mcp",
   },
   {
     name: "think",

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { exec } from "child_process";
+import { execFile } from "child_process";
 import { promisify } from "util";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -8,10 +8,11 @@ import type { Model } from "@/lib/models";
 import { claudeContextWindow, fallbackClaudeModels } from "@/lib/claude-models";
 import { REASONING_EFFORTS_BY_CLI } from "@/lib/models";
 import { normalizeCli } from "@/lib/clis";
+import { readBedrockConfig } from "@/lib/bedrock-auth";
 
 export const dynamic = "force-dynamic";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 function cleanBedrockName(raw: string): string {
   return raw.replace(/^(US\s+|Global\s+|GLOBAL\s+)/i, "").replace(/^Anthropic\s+/i, "").trim();
@@ -39,14 +40,13 @@ function claudeReasoningEfforts(id: string, name: string) {
 }
 
 async function getClaudeModels(): Promise<Model[]> {
-  const awsProfile = process.env.AWS_PROFILE || "sondermind-development-new";
-  const awsRegion = process.env.AWS_REGION || "us-east-1";
-  const env = { ...process.env, AWS_PROFILE: awsProfile, AWS_REGION: awsRegion };
+  const { profile: awsProfile, region: awsRegion } = await readBedrockConfig();
+  const env = { ...process.env, AWS_PROFILE: awsProfile, AWS_REGION: awsRegion, AWS_PAGER: "" };
 
   const [profilesOut, foundationOut] = await Promise.all([
-    execAsync(`AWS_PROFILE=${awsProfile} aws bedrock list-inference-profiles --region ${awsRegion} --output json`, { env })
+    execFileAsync("aws", ["bedrock", "list-inference-profiles", "--profile", awsProfile, "--region", awsRegion, "--output", "json", "--no-cli-pager"], { env })
       .catch(() => ({ stdout: '{"inferenceProfileSummaries":[]}' })),
-    execAsync(`AWS_PROFILE=${awsProfile} aws bedrock list-foundation-models --by-provider Anthropic --region ${awsRegion} --output json`, { env })
+    execFileAsync("aws", ["bedrock", "list-foundation-models", "--by-provider", "Anthropic", "--profile", awsProfile, "--region", awsRegion, "--output", "json", "--no-cli-pager"], { env })
       .catch(() => ({ stdout: '{"modelSummaries":[]}' })),
   ]);
 

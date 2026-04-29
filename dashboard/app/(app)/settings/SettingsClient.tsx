@@ -6,7 +6,7 @@ import type { AppSettings } from "@/lib/settings";
 import type { Model, ModelReasoningEffort } from "@/lib/models";
 import { formatModelOption, formatReasoningEffort, reasoningEffortOptionsForCli } from "@/lib/models";
 import type { WorkingDirectoryEntry } from "@/lib/working-directories";
-import { Button, Select } from "@/app/components/ui";
+import { Button, Input, Select } from "@/app/components/ui";
 import { DirPicker } from "@/app/components/DirPicker";
 import { CLI_LABELS, CLI_VALUES } from "@/lib/clis";
 import { IconUser } from "@/app/components/shell/icons";
@@ -15,6 +15,7 @@ type Props = {
   initialSettings: AppSettings;
   workingDirectories: WorkingDirectoryEntry[];
   mcpServers: Array<{ name: string; type: string; target: string; envKeys: string[] }>;
+  awsProfiles: string[];
 };
 
 const CLIS: CLI[] = [...CLI_VALUES];
@@ -26,8 +27,9 @@ type ClaudePersonalAuthStatus = {
   error?: string;
 };
 
-export function SettingsClient({ initialSettings, workingDirectories, mcpServers }: Props) {
+export function SettingsClient({ initialSettings, workingDirectories, mcpServers, awsProfiles }: Props) {
   const [settings, setSettings] = useState<AppSettings>(initialSettings);
+  const [savedSettings, setSavedSettings] = useState<AppSettings>(initialSettings);
   const [modelsByCli, setModelsByCli] = useState<Partial<Record<CLI, Model[]>>>({});
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -78,6 +80,15 @@ export function SettingsClient({ initialSettings, workingDirectories, mcpServers
       : undefined;
   }, [modelsByCli, settings.defaultCli, settings.defaultModels]);
 
+  const hasChanges = useMemo(
+    () => JSON.stringify(settings) !== JSON.stringify(savedSettings),
+    [settings, savedSettings],
+  );
+
+  useEffect(() => {
+    if (hasChanges && message === "Saved") setMessage(null);
+  }, [hasChanges, message]);
+
   const updateModel = (cli: CLI, value: string) => {
     setSettings((prev) => {
       const defaultModels = { ...prev.defaultModels };
@@ -108,6 +119,7 @@ export function SettingsClient({ initialSettings, workingDirectories, mcpServers
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "failed to save settings");
       setSettings(data.settings);
+      setSavedSettings(data.settings);
       setMessage("Saved");
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "failed to save settings");
@@ -126,6 +138,14 @@ export function SettingsClient({ initialSettings, workingDirectories, mcpServers
       }
       return { ...prev, defaultCwd: trimmed };
     });
+  };
+
+  const updateBedrockProfile = (value: string) => {
+    setSettings((prev) => ({ ...prev, bedrockProfile: value }));
+  };
+
+  const updateBedrockRegion = (value: string) => {
+    setSettings((prev) => ({ ...prev, bedrockRegion: value }));
   };
 
   const setMcpImagesVisible = (serverName: string, visible: boolean) => {
@@ -181,8 +201,8 @@ export function SettingsClient({ initialSettings, workingDirectories, mcpServers
                 {message}
               </span>
             )}
-            <Button type="button" variant="primary" size="sm" onClick={save} disabled={saving}>
-              {saving ? "Saving..." : "Save settings"}
+            <Button type="button" variant="primary" size="sm" onClick={save} disabled={saving || !hasChanges}>
+              {saving ? "Saving..." : hasChanges ? "Save settings" : "Settings saved"}
             </Button>
           </div>
         </div>
@@ -215,6 +235,67 @@ export function SettingsClient({ initialSettings, workingDirectories, mcpServers
               {authLaunching ? "Opening..." : "Open Claude login"}
             </Button>
           </div>
+        </div>
+
+        <div className="rounded-lg border border-border bg-bg-subtle p-4 space-y-3">
+          <div>
+            <div className="text-[13px] font-medium">Claude Bedrock AWS</div>
+            <div className="text-[12px] text-subtle mt-1">
+              Saturn stores the AWS profile and region only. Credentials stay in the AWS CLI.
+            </div>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="block space-y-1">
+              <span className="text-[11px] text-muted uppercase tracking-wider">AWS profile</span>
+              <Input
+                list="bedrock-profile-options"
+                value={settings.bedrockProfile}
+                onChange={(e) => updateBedrockProfile(e.target.value)}
+                placeholder="sondermind-development-new"
+                spellCheck={false}
+              />
+              {awsProfiles.length > 0 && (
+                <datalist id="bedrock-profile-options">
+                  {awsProfiles.map((profile) => (
+                    <option key={profile} value={profile} />
+                  ))}
+                </datalist>
+              )}
+            </label>
+            <label className="block space-y-1">
+              <span className="text-[11px] text-muted uppercase tracking-wider">AWS region</span>
+              <Input
+                value={settings.bedrockRegion}
+                onChange={(e) => updateBedrockRegion(e.target.value)}
+                placeholder="us-east-1"
+                spellCheck={false}
+              />
+            </label>
+          </div>
+          <div className="text-[11px] text-subtle">
+            Login command: <code className="mono break-all">AWS_PROFILE={settings.bedrockProfile || "profile"} AWS_REGION={settings.bedrockRegion || "region"} aws sso login --profile {settings.bedrockProfile || "profile"}</code>
+          </div>
+          {awsProfiles.length > 0 && (
+            <div className="space-y-1">
+              <div className="text-[11px] text-muted uppercase tracking-wider">Configured profiles</div>
+              <div className="flex flex-wrap gap-2">
+                {awsProfiles.map((profile) => (
+                  <button
+                    key={profile}
+                    type="button"
+                    onClick={() => updateBedrockProfile(profile)}
+                    className={[
+                      "chip mono max-w-[320px] truncate hover:bg-bg-hover",
+                      settings.bedrockProfile === profile ? "border-accent text-accent" : "",
+                    ].join(" ")}
+                    title={profile}
+                  >
+                    {profile}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="space-y-2">

@@ -13,7 +13,7 @@ export default async function AgentEditPage({ params }: { params: Promise<{ id: 
   }
 
   return (
-    <div className="space-y-6 max-w-3xl">
+    <div className="space-y-6 agent-editor-page">
       <header>
         <h1 className="text-2xl font-semibold tracking-tight">Edit agent</h1>
         <p className="text-[13px] text-muted mt-1 mono">{agent.id}</p>

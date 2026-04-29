@@ -4,7 +4,9 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import type { Slice, SliceMutationTier, SliceCostTier } from "@/lib/slices";
 import { SliceCard } from "./SliceCard";
-import { Button, Card, Chip, Input } from "@/app/components/ui";
+import { Button, Card, Input } from "@/app/components/ui";
+import { ImportShareButton } from "@/app/components/share/ImportShareButton";
+import { IconSearch } from "@/app/components/shell/icons";
 
 const MUTATION_TIERS: SliceMutationTier[] = [
   "read-only",
@@ -14,6 +16,21 @@ const MUTATION_TIERS: SliceMutationTier[] = [
 ];
 const COST_TIERS: SliceCostTier[] = ["free", "cheap", "premium"];
 
+const MUTATION_LABELS: Record<SliceMutationTier | "all", string> = {
+  all: "All",
+  "read-only": "Read only",
+  "writes-scratch": "Scratch writes",
+  "writes-source": "Source writes",
+  "executes-side-effects": "Side effects",
+};
+
+const COST_LABELS: Record<SliceCostTier | "all", string> = {
+  all: "All",
+  free: "Free",
+  cheap: "Cheap",
+  premium: "Premium",
+};
+
 export default function SlicesPage() {
   const [slices, setSlices] = useState<Slice[]>([]);
   const [loading, setLoading] = useState(true);
@@ -21,7 +38,8 @@ export default function SlicesPage() {
   const [mutationFilter, setMutationFilter] = useState<SliceMutationTier | "all">("all");
   const [costFilter, setCostFilter] = useState<SliceCostTier | "all">("all");
 
-  useEffect(() => {
+  const loadSlices = () => {
+    setLoading(true);
     fetch("/api/slices")
       .then((r) => r.json())
       .then((data) => {
@@ -29,6 +47,10 @@ export default function SlicesPage() {
         setLoading(false);
       })
       .catch(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    loadSlices();
   }, []);
 
   const filtered = slices.filter((s) => {
@@ -45,6 +67,24 @@ export default function SlicesPage() {
     return true;
   });
 
+  const mutationCounts = Object.fromEntries(
+    (["all", ...MUTATION_TIERS] as const).map((tier) => [
+      tier,
+      tier === "all"
+        ? slices.length
+        : slices.filter((slice) => slice.capability.mutation === tier).length,
+    ])
+  ) as Record<SliceMutationTier | "all", number>;
+
+  const costCounts = Object.fromEntries(
+    (["all", ...COST_TIERS] as const).map((tier) => [
+      tier,
+      tier === "all"
+        ? slices.length
+        : slices.filter((slice) => slice.capability.cost_tier === tier).length,
+    ])
+  ) as Record<SliceCostTier | "all", number>;
+
   return (
     <div className="space-y-6">
       <section className="flex items-end justify-between gap-4">
@@ -55,52 +95,63 @@ export default function SlicesPage() {
           </p>
         </div>
         <div className="flex gap-2">
+          <ImportShareButton onImported={loadSlices} />
           <Link href="/slices/new">
             <Button variant="primary">New slice</Button>
           </Link>
         </div>
       </section>
 
-      <div className="space-y-2">
-        <Input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search by name, description, or tag…"
-          className="max-w-sm"
-        />
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-[11px] text-subtle uppercase tracking-wider">Mutation:</span>
-          {(["all", ...MUTATION_TIERS] as const).map((tier) => (
-            <button
-              key={tier}
-              type="button"
-              onClick={() => setMutationFilter(tier)}
-              className={`px-2.5 py-1 rounded text-[11px] border transition-colors ${
-                mutationFilter === tier
-                  ? "bg-accent-soft border-accent text-accent"
-                  : "border-border text-muted hover:bg-bg-hover"
-              }`}
-            >
-              {tier === "all" ? "All" : tier}
-            </button>
-          ))}
+      <div className="slice-catalog-toolbar">
+        <div className="slice-search-row">
+          <label className="slice-search" aria-label="Search slices">
+            <IconSearch className="w-4 h-4" />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search slices"
+            />
+          </label>
+
+          <div className="slice-results-count">
+            {filtered.length} / {slices.length}
+          </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-[11px] text-subtle uppercase tracking-wider">Cost:</span>
-          {(["all", ...COST_TIERS] as const).map((tier) => (
-            <button
-              key={tier}
-              type="button"
-              onClick={() => setCostFilter(tier)}
-              className={`px-2.5 py-1 rounded text-[11px] border transition-colors ${
-                costFilter === tier
-                  ? "bg-accent-soft border-accent text-accent"
-                  : "border-border text-muted hover:bg-bg-hover"
-              }`}
-            >
-              {tier === "all" ? "All" : tier}
-            </button>
-          ))}
+
+        <div className="slice-filter-groups">
+          <div className="slice-filter-group" aria-label="Access filter">
+            <span className="slice-filter-label">Access</span>
+            <div className="slice-segmented">
+              {(["all", ...MUTATION_TIERS] as const).map((tier) => (
+                <button
+                  key={tier}
+                  type="button"
+                  onClick={() => setMutationFilter(tier)}
+                  className={mutationFilter === tier ? "active" : ""}
+                >
+                  <span>{MUTATION_LABELS[tier]}</span>
+                  <span className="slice-filter-count">{mutationCounts[tier]}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="slice-filter-group" aria-label="Cost filter">
+            <span className="slice-filter-label">Cost</span>
+            <div className="slice-segmented">
+              {(["all", ...COST_TIERS] as const).map((tier) => (
+                <button
+                  key={tier}
+                  type="button"
+                  onClick={() => setCostFilter(tier)}
+                  className={costFilter === tier ? "active" : ""}
+                >
+                  <span>{COST_LABELS[tier]}</span>
+                  <span className="slice-filter-count">{costCounts[tier]}</span>
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
 

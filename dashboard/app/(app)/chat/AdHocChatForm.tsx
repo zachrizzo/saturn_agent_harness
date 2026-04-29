@@ -53,7 +53,10 @@ export function AdHocChatForm() {
           },
         }),
       });
-      if (!res.ok) throw new Error((await res.json()).error ?? "failed");
+      if (!res.ok) {
+        const data = await res.json().catch(() => null) as { error?: string } | null;
+        throw new Error(data?.error ?? `Request failed (${res.status})`);
+      }
       const { session_id } = await res.json();
       router.push(`/chat/${session_id}`);
     } catch (e) {

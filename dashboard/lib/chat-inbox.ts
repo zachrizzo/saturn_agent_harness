@@ -21,6 +21,8 @@ export type InboxSession = {
   agent: string;
   cli: InboxCli;
   model: string | null;
+  projectName: string | null;
+  projectPath: string | null;
   preview: string;
   who: "you" | "agent";
   relTime: string;
@@ -113,6 +115,13 @@ function lastActivityIso(s: SessionMeta, last: TurnRecord | undefined): string {
   return last?.finished_at ?? last?.started_at ?? s.started_at;
 }
 
+function projectNameFromCwd(cwd: string | undefined): string | null {
+  const normalized = cwd?.trim().replace(/\\/g, "/");
+  if (!normalized) return null;
+  const parts = normalized.split("/").filter(Boolean);
+  return parts.at(-1) ?? normalized;
+}
+
 export function formatRelative(ms: number): string {
   const sec = Math.max(0, Math.round(ms / 1000));
   if (sec < 60) return `${sec}s`;
@@ -187,6 +196,7 @@ export function toInboxSession(s: SessionMeta, nowMs: number = Date.now()): Inbo
   const needsReply = who === "agent" && s.status !== "running";
   const isSwarm = s.agent_snapshot?.kind === "orchestrator";
   const tags = deriveTags(s, s.status, multi, isSwarm);
+  const projectPath = s.agent_snapshot?.cwd?.trim() || null;
 
   return {
     id: s.session_id,
@@ -195,6 +205,8 @@ export function toInboxSession(s: SessionMeta, nowMs: number = Date.now()): Inbo
     agent: s.agent_snapshot?.name ?? "Ad-hoc",
     cli,
     model: pickModel(s),
+    projectName: projectNameFromCwd(projectPath ?? undefined),
+    projectPath,
     preview,
     who,
     relTime: formatRelative(nowMs - lastMs),

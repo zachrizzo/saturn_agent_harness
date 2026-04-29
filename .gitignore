@@ -9,13 +9,13 @@
 .playwright-mcp/
 
 # Runtime data and private history
-output/
-runs/
-sessions/
-tasks/
-slice-fixtures/
-telegram/state.json
-telegram/*.log
+/output/
+/runs/
+/sessions/
+/tasks/
+/slice-fixtures/
+/telegram/state.json
+/telegram/*.log
 
 # Local source-of-truth configs. Commit the matching *.example.json files instead.
 agents.json
