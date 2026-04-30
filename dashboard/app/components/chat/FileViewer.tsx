@@ -52,9 +52,24 @@ type DiffState =
   | { status: "idle" }
   | { status: "loading" }
   | { status: "error"; message: string }
-  | { status: "ok"; data: DiffContent; html?: string };
+  | { status: "ok"; data: DiffContent };
 
 type ViewMode = "preview" | "diff";
+type DiffLineKind = "add" | "del" | "ctx";
+
+type ParsedDiffRow =
+  | { kind: "section"; text: string }
+  | { kind: "file"; text: string }
+  | { kind: "meta"; text: string }
+  | { kind: "hunk"; text: string }
+  | { kind: "line"; lineKind: DiffLineKind; text: string; oldLine?: number; newLine?: number };
+
+type ParsedDiff = {
+  rows: ParsedDiffRow[];
+  additions: number;
+  deletions: number;
+  files: number;
+};
 
 const EXT_TO_LANG: Record<string, BundledLanguage> = {
   ts: "typescript", tsx: "tsx", js: "javascript", jsx: "jsx",
@@ -70,8 +85,6 @@ const EXT_TO_LANG: Record<string, BundledLanguage> = {
   exs: "elixir", clj: "clojure", hs: "haskell", ml: "ocaml",
   tf: "hcl", dockerfile: "dockerfile", prisma: "prisma",
 };
-
-const DIFF_LANG = "diff" as BundledLanguage;
 
 function extOf(p: string): string {
   const base = p.split("/").pop() ?? p;
@@ -99,6 +112,76 @@ function columnLabel(index: number): string {
     n = Math.floor((n - 1) / 26);
   }
   return label;
+}
+
+function formatDiffPath(raw: string): string {
+  const match = /^diff --git a\/(.+) b\/(.+)$/.exec(raw);
+  if (match) return match[2];
+  return raw.replace(/^diff --git\s+/, "");
+}
+
+function parseUnifiedDiff(diff: string): ParsedDiff {
+  const rows: ParsedDiffRow[] = [];
+  let oldLine = 0;
+  let newLine = 0;
+  let additions = 0;
+  let deletions = 0;
+  let files = 0;
+
+  for (const raw of diff.split(/\r?\n/)) {
+    if (!raw) continue;
+
+    if (raw.startsWith("## ")) {
+      rows.push({ kind: "section", text: raw.replace(/^##\s*/, "") });
+      continue;
+    }
+
+    if (raw.startsWith("diff --git ")) {
+      files += 1;
+      rows.push({ kind: "file", text: formatDiffPath(raw) });
+      continue;
+    }
+
+    if (raw.startsWith("@@")) {
+      const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
+      if (match) {
+        oldLine = Number(match[1]);
+        newLine = Number(match[2]);
+      }
+      rows.push({ kind: "hunk", text: raw });
+      continue;
+    }
+
+    if (raw.startsWith("--- ") || raw.startsWith("+++ ") || raw.startsWith("index ") || raw.startsWith("new file mode ") || raw.startsWith("deleted file mode ") || raw.startsWith("similarity index ") || raw.startsWith("rename from ") || raw.startsWith("rename to ") || raw.startsWith("\\ ")) {
+      rows.push({ kind: "meta", text: raw });
+      continue;
+    }
+
+    if (raw.startsWith("+")) {
+      rows.push({ kind: "line", lineKind: "add", text: raw.slice(1), newLine });
+      newLine += 1;
+      additions += 1;
+      continue;
+    }
+
+    if (raw.startsWith("-")) {
+      rows.push({ kind: "line", lineKind: "del", text: raw.slice(1), oldLine });
+      oldLine += 1;
+      deletions += 1;
+      continue;
+    }
+
+    if (raw.startsWith(" ")) {
+      rows.push({ kind: "line", lineKind: "ctx", text: raw.slice(1), oldLine, newLine });
+      oldLine += 1;
+      newLine += 1;
+      continue;
+    }
+
+    rows.push({ kind: "meta", text: raw });
+  }
+
+  return { rows, additions, deletions, files };
 }
 
 async function highlight(code: string, lang: BundledLanguage, theme: "dark" | "light"): Promise<string> {
@@ -167,10 +250,7 @@ export function FileViewer({ filePath, sessionId, refreshKey, onClose }: Props) 
         return;
       }
       const data = await res.json() as DiffContent;
-      const html = data.diff.trim()
-        ? await highlight(data.diff, DIFF_LANG, getTheme())
-        : undefined;
-      setDiffState({ status: "ok", data, html });
+      setDiffState({ status: "ok", data });
     } catch (e) {
       setDiffState({ status: "error", message: e instanceof Error ? e.message : "unknown error" });
     }
@@ -323,7 +403,7 @@ function DiffPreview({ state, onRetry }: { state: DiffState; onRetry: () => void
     );
   }
 
-  if (!state.data.isGitRepo || !state.data.hasChanges || !state.html) {
+  if (!state.data.isGitRepo || !state.data.hasChanges || !state.data.diff.trim()) {
     return (
       <EmptyPreview
         label={state.data.message ?? "No local Git changes for this file."}
@@ -331,16 +411,69 @@ function DiffPreview({ state, onRetry }: { state: DiffState; onRetry: () => void
     );
   }
 
+  const parsed = parseUnifiedDiff(state.data.diff);
+
   return (
     <div className="file-viewer-diff-pane">
       <div className="file-viewer-diff-meta">
         {state.data.status && <span>{state.data.status}</span>}
         {state.data.relativePath && <span>{state.data.relativePath}</span>}
+        {parsed.files > 0 && <span>{parsed.files.toLocaleString()} {parsed.files === 1 ? "file" : "files"}</span>}
+        <span className="file-viewer-diff-stat add">+{parsed.additions.toLocaleString()}</span>
+        <span className="file-viewer-diff-stat del">-{parsed.deletions.toLocaleString()}</span>
         {state.data.truncated && <span>truncated</span>}
       </div>
-      {/* Shiki output: static pre/code/span with inline styles; no user script content. */}
-      {/* eslint-disable-next-line react/no-danger */}
-      <div className="file-viewer-code file-viewer-diff" dangerouslySetInnerHTML={{ __html: state.html }} />
+      <StructuredDiff parsed={parsed} />
+    </div>
+  );
+}
+
+function StructuredDiff({ parsed }: { parsed: ParsedDiff }) {
+  if (parsed.rows.length === 0) {
+    return <EmptyPreview label="No textual diff is available for this file." />;
+  }
+
+  return (
+    <div className="file-viewer-diff" role="region" aria-label="File diff">
+      <div className="file-viewer-diff-table">
+        {parsed.rows.map((row, index) => {
+          if (row.kind === "section") {
+            return (
+              <div key={index} className="file-viewer-diff-section">
+                {row.text}
+              </div>
+            );
+          }
+
+          if (row.kind === "file") {
+            return (
+              <div key={index} className="file-viewer-diff-file">
+                {row.text}
+              </div>
+            );
+          }
+
+          if (row.kind === "line") {
+            return (
+              <div key={index} className={`file-viewer-diff-row ${row.lineKind}`}>
+                <span className="file-viewer-diff-gutter old">{row.oldLine ?? ""}</span>
+                <span className="file-viewer-diff-gutter new">{row.newLine ?? ""}</span>
+                <span className="file-viewer-diff-sign">{row.lineKind === "add" ? "+" : row.lineKind === "del" ? "-" : ""}</span>
+                <span className="file-viewer-diff-code">{row.text}</span>
+              </div>
+            );
+          }
+
+          return (
+            <div key={index} className={`file-viewer-diff-row ${row.kind}`}>
+              <span className="file-viewer-diff-gutter old" />
+              <span className="file-viewer-diff-gutter new" />
+              <span className="file-viewer-diff-sign" />
+              <span className="file-viewer-diff-code">{row.text}</span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

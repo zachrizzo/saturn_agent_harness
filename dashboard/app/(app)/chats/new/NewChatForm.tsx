@@ -11,7 +11,11 @@ import { DEFAULT_CLAUDE_ALIAS, toBedrockId } from "@/lib/claude-models";
 import type { AppSettings } from "@/lib/settings";
 import { DEFAULT_CLI, isBedrockCli, normalizeCli } from "@/lib/clis";
 
-export function NewChatForm() {
+type Props = {
+  initialAgentId?: string;
+};
+
+export function NewChatForm({ initialAgentId }: Props) {
   const router = useRouter();
   const composerRef = useRef<ComposerHandle>(null);
   const [cwd, setCwd] = useState("");
@@ -22,7 +26,7 @@ export function NewChatForm() {
 
   // Agent selector
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [selectedAgentId, setSelectedAgentId] = useState<string>("");
+  const [selectedAgentId, setSelectedAgentId] = useState<string>(initialAgentId ?? "");
 
   // Per-session overrides (orchestrator only)
   const [showOverrides, setShowOverrides] = useState(false);
@@ -37,6 +41,13 @@ export function NewChatForm() {
       .then((data) => setAgents(data.agents ?? []))
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!initialAgentId || selectedAgentId) return;
+    if (agents.some((agent) => agent.id === initialAgentId)) {
+      setSelectedAgentId(initialAgentId);
+    }
+  }, [agents, initialAgentId, selectedAgentId]);
 
   useEffect(() => {
     fetch("/api/settings")

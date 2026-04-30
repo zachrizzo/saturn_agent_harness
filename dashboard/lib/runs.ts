@@ -12,6 +12,16 @@ export type { CLI } from "./clis";
 
 export type AgentKind = "chat" | "orchestrator";
 export type MutationTier = "read-only" | "writes-scratch" | "writes-source";
+export type PlanAction = "start" | "revise" | "approve";
+
+export type PlanModeState = {
+  status: "awaiting_approval";
+  cli: CLI;
+  turn_id?: string;
+  started_at: string;
+  updated_at: string;
+  last_plan?: string;
+};
 
 export type OrchestratorBudget = {
   max_total_tokens?: number;
@@ -110,6 +120,8 @@ export type TurnRecord = {
   cli: CLI;
   model?: string;
   reasoningEffort?: ModelReasoningEffort;
+  plan_action?: PlanAction;
+  plan_mode?: "plan" | "default";
   cli_session_id?: string;   // underlying CLI's own session id, for native resume
   started_at: string;
   finished_at?: string;
@@ -138,6 +150,7 @@ export type SessionMeta = {
     session_id: string;
     at_turn: number;
   };
+  plan_mode?: PlanModeState;
   // Inbox-triage state. All optional — sessions written before this existed
   // just read back as undefined and default to "not pinned / not archived".
   pinned?: boolean;

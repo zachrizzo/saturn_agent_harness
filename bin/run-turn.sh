@@ -55,6 +55,12 @@ if [[ ! -d "$SESSION_DIR" ]]; then
   exit 3
 fi
 
+META_FILE="$SESSION_DIR/meta.json"
+STREAM_FILE="$SESSION_DIR/stream.jsonl"
+STDERR_FILE="$SESSION_DIR/stderr.log"
+TURN_FILE="$SESSION_DIR/turn.jsonl"   # temp: just this turn's output, merged in after
+LOCK_FILE="$SESSION_DIR/turn.lock"
+
 CLI="$(normalize_cli_id "${CLI:-claude-bedrock}")"
 MODEL="${MODEL:-}"
 REASONING_EFFORT="${REASONING_EFFORT:-}"
@@ -73,16 +79,21 @@ fi
 PROMPT_USER_MESSAGE="$USER_MESSAGE"
 NATIVE_SLASH_COMMAND=""
 NATIVE_MCP_ARGS=""
+PLAN_ACTION="${SATURN_PLAN_ACTION:-}"
+PLAN_MODE_FOR_TURN=""
+CODEX_COLLAB_MODE=""
+CURRENT_PLAN_STATUS="$(jq -r '.plan_mode.status // ""' "$META_FILE" 2>/dev/null || true)"
 
 case "$USER_MESSAGE" in
   /plan|/plan\ *)
+    PLAN_ACTION="start"
     NATIVE_SLASH_COMMAND="plan"
+    PROMPT_USER_MESSAGE="$(printf '%s' "${USER_MESSAGE#/plan}" | sed 's/^[[:space:]]*//')"
+    if [[ -z "$PROMPT_USER_MESSAGE" ]]; then
+      PROMPT_USER_MESSAGE="Plan the next steps and wait for my approval before making changes."
+    fi
     if [[ "$ENGINE" == "claude" ]]; then
       export CLAUDE_PERMISSION_MODE="plan"
-      PROMPT_USER_MESSAGE="$(printf '%s' "${USER_MESSAGE#/plan}" | sed 's/^[[:space:]]*//')"
-      if [[ -z "$PROMPT_USER_MESSAGE" ]]; then
-        PROMPT_USER_MESSAGE="Plan the next steps and wait for my approval before making changes."
-      fi
     fi
     ;;
   /mcp|/mcp\ *)
@@ -91,11 +102,26 @@ case "$USER_MESSAGE" in
     ;;
 esac
 
-META_FILE="$SESSION_DIR/meta.json"
-STREAM_FILE="$SESSION_DIR/stream.jsonl"
-STDERR_FILE="$SESSION_DIR/stderr.log"
-TURN_FILE="$SESSION_DIR/turn.jsonl"   # temp: just this turn's output, merged in after
-LOCK_FILE="$SESSION_DIR/turn.lock"
+if [[ "$NATIVE_SLASH_COMMAND" == "" && "$CURRENT_PLAN_STATUS" == "awaiting_approval" ]]; then
+  if [[ "$PLAN_ACTION" == "approve" ]]; then
+    PLAN_MODE_FOR_TURN="default"
+  else
+    PLAN_ACTION="revise"
+    NATIVE_SLASH_COMMAND="plan"
+    PROMPT_USER_MESSAGE="${PROMPT_USER_MESSAGE:-Revise the proposed plan.}"
+  fi
+fi
+
+if [[ "$NATIVE_SLASH_COMMAND" == "plan" ]]; then
+  PLAN_MODE_FOR_TURN="plan"
+  if [[ "$ENGINE" == "claude" ]]; then
+    export CLAUDE_PERMISSION_MODE="plan"
+  elif [[ "$ENGINE" == "codex" ]]; then
+    CODEX_COLLAB_MODE="plan"
+  fi
+elif [[ "$PLAN_ACTION" == "approve" && "$CURRENT_PLAN_STATUS" == "awaiting_approval" && "$ENGINE" == "codex" ]]; then
+  CODEX_COLLAB_MODE="default"
+fi
 
 # ─── Gather agent + previous-turn context ─────────────────────────────────────
 AGENT_PROMPT="$(jq -r '.agent_snapshot.prompt // ""' "$META_FILE")"
@@ -271,6 +297,7 @@ TURN_ID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
 
 jq --arg status "running" --arg started "$STARTED_AT" --arg turn_id "$TURN_ID" \
   --arg cli "$CLI" --arg model "$MODEL" --arg reasoning_effort "$REASONING_EFFORT" --arg user_msg "$USER_MESSAGE" \
+  --arg plan_action "$PLAN_ACTION" --arg plan_mode "$PLAN_MODE_FOR_TURN" \
   '.status = $status
   | .last_turn_started_at = $started
   | .turns += [{
@@ -278,6 +305,8 @@ jq --arg status "running" --arg started "$STARTED_AT" --arg turn_id "$TURN_ID" \
       cli: $cli,
       model: (if $model == "" then null else $model end),
       reasoningEffort: (if $reasoning_effort == "" then null else $reasoning_effort end),
+      plan_action: (if $plan_action == "" then null else $plan_action end),
+      plan_mode: (if $plan_mode == "" then null else $plan_mode end),
       cli_session_id: null,
       started_at: $started,
       finished_at: null,
@@ -294,7 +323,9 @@ jq -nc \
   --arg started_at "$STARTED_AT" \
   --arg cli "$CLI" \
   --arg model "$MODEL" \
-  '{type: $type, session_id: $session_id, turn_id: $turn_id, started_at: $started_at, cli: $cli, model: (if $model == "" then null else $model end)}' \
+  --arg plan_action "$PLAN_ACTION" \
+  --arg plan_mode "$PLAN_MODE_FOR_TURN" \
+  '{type: $type, session_id: $session_id, turn_id: $turn_id, started_at: $started_at, cli: $cli, model: (if $model == "" then null else $model end), plan_action: (if $plan_action == "" then null else $plan_action end), plan_mode: (if $plan_mode == "" then null else $plan_mode end)}' \
   >> "$STREAM_FILE"
 
 # ─── cd into the agent's working directory ────────────────────────────────────
@@ -435,7 +466,19 @@ if [[ "$NATIVE_SLASH_COMMAND" == "mcp" ]]; then
 fi
 
 # ─── Build CLI args + run ─────────────────────────────────────────────────────
-build_cli_args "$CLI" "$MODEL" "$AGENT_ALLOWED_TOOLS" "$RESUME_ID" "$IS_RESUME" "$REASONING_EFFORT"
+if [[ "$ENGINE" == "codex" && -n "$CODEX_COLLAB_MODE" ]]; then
+  export CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+  RUN_CMD="node"
+  RUN_ARGS=("$AUTOMATIONS_ROOT/bin/codex-app-server-turn.mjs" "--mode" "$CODEX_COLLAB_MODE")
+  if [[ -n "$RESUME_ID" && "$IS_RESUME" == "yes" ]]; then
+    RUN_ARGS+=(--thread-id "$RESUME_ID")
+  fi
+  [[ -n "$MODEL" ]] && RUN_ARGS+=(--model "$MODEL")
+  [[ -n "$REASONING_EFFORT" ]] && RUN_ARGS+=(--effort "$REASONING_EFFORT")
+  [[ -n "$AGENT_CWD" ]] && RUN_ARGS+=(--cwd "$AGENT_CWD")
+else
+  build_cli_args "$CLI" "$MODEL" "$AGENT_ALLOWED_TOOLS" "$RESUME_ID" "$IS_RESUME" "$REASONING_EFFORT"
+fi
 
 # If an MCP config was generated for this session (orchestrator), pass it to Claude
 if [[ -n "${MCP_CONFIG_PATH:-}" && -f "$MCP_CONFIG_PATH" && "$ENGINE" == "claude" ]]; then
@@ -510,11 +553,25 @@ case "$ENGINE" in
     fi
     ;;
   codex)
-    # Codex exec emits {"type":"item.completed","item":{"type":"agent_message","text":"..."}}
-    FINAL_TEXT="$(jq -rs '
-      [.[] | select(.type == "item.completed") | .item | select(.type == "agent_message") | .text // ""]
-      | if length > 0 then .[-1] else "" end
-    ' "$TURN_FILE" 2>/dev/null || true)"
+    # Codex exec emits agent_message; app-server plan mode emits agentMessage/plan.
+    if [[ "$PLAN_MODE_FOR_TURN" == "plan" ]]; then
+      FINAL_TEXT="$(jq -rs '
+        [.[] | select(.type == "item.completed") | .item | select(.type == "plan") | .text // ""]
+        | if length > 0 then .[-1] else "" end
+      ' "$TURN_FILE" 2>/dev/null || true)"
+    fi
+    if [[ -z "$FINAL_TEXT" ]]; then
+      FINAL_TEXT="$(jq -rs '
+        [
+          .[]
+          | select(.type == "item.completed")
+          | .item
+          | select(.type == "agent_message" or .type == "agentMessage" or .type == "plan")
+          | .text // ""
+        ]
+        | if length > 0 then .[-1] else "" end
+      ' "$TURN_FILE" 2>/dev/null || true)"
+    fi
     ;;
 esac
 
@@ -604,11 +661,15 @@ jq \
   --arg user_msg "$USER_MESSAGE" \
   --arg final "$FINAL_TEXT" \
   --arg status "$STATUS" \
+  --arg plan_action "$PLAN_ACTION" \
+  --arg plan_mode "$PLAN_MODE_FOR_TURN" \
   '.turns[-1] = {
       turn_id: $turn_id,
       cli: $cli,
       model: (if $model == "" then null else $model end),
       reasoningEffort: (if $reasoning_effort == "" then null else $reasoning_effort end),
+      plan_action: (if $plan_action == "" then null else $plan_action end),
+      plan_mode: (if $plan_mode == "" then null else $plan_mode end),
       cli_session_id: (if $session_id == "" then null else $session_id end),
       started_at: $started,
       finished_at: $finished,
@@ -616,6 +677,20 @@ jq \
       user_message: $user_msg,
       final_text: $final
     }
+    | if $status == "success" and ($plan_action == "start" or $plan_action == "revise") then
+        .plan_mode = {
+          status: "awaiting_approval",
+          cli: $cli,
+          turn_id: $turn_id,
+          started_at: (if $plan_action == "start" then $started else (.plan_mode.started_at // $started) end),
+          updated_at: $finished,
+          last_plan: $final
+        }
+      elif $status == "success" and $plan_action == "approve" then
+        del(.plan_mode)
+      else
+        .
+      end
     | .status = $status
     | .finished_at = $finished
     | del(.last_turn_started_at)' \

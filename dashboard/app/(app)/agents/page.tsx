@@ -61,7 +61,7 @@ export default async function AgentsPage() {
                   {scheduled.length} {scheduled.length === 1 ? "agent" : "agents"} on cron
                 </span>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="agents-grid">
                 {scheduled.map((a) => (
                   <AgentCard key={a.id} agent={a} />
                 ))}
@@ -74,7 +74,7 @@ export default async function AgentsPage() {
                 <h2>On-demand</h2>
                 <span className="right">Start a chat manually</span>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="agents-grid">
                 {onDemand.map((a) => (
                   <AgentCard key={a.id} agent={a} />
                 ))}

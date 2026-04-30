@@ -5,6 +5,7 @@ export type StreamEvent =
   | { kind: "system"; raw: unknown }
   | { kind: "user"; raw: unknown }
   | { kind: "assistant_text"; text: string; raw: unknown }
+  | { kind: "plan_text"; text: string; raw: unknown }
   | { kind: "todo_list"; items: { text: string; completed: boolean }[]; raw: unknown }
   | { kind: "thinking"; text: string; raw: unknown }
   | { kind: "tool_use"; id: string; name: string; input: unknown; parentToolUseId?: string; raw: unknown }
@@ -45,6 +46,18 @@ function stringArray(value: unknown): string[] {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function normalizeItemType(type: string): string {
+  const map: Record<string, string> = {
+    agentMessage: "agent_message",
+    commandExecution: "command_execution",
+    fileChange: "file_change",
+    mcpToolCall: "mcp_tool_call",
+    collabAgentToolCall: "collab_tool_call",
+    todoList: "todo_list",
+  };
+  return map[type] ?? type;
 }
 
 function subAgentDescription(prompt: string, fallback = "Codex sub-agent"): string {
@@ -156,6 +169,8 @@ export function toEvents(obj: Record<string, unknown>): StreamEvent[] {
       const totalTokens = tokenBreakdownFromRaw(obj).total;
       return [{ kind: "result", success: true, totalTokens, numTurns: 1, raw: obj }];
     }
+    case "plan.delta":
+      return [];
     case "user": {
       const message = asRecord(obj.message);
       const content = Array.isArray(message.content) ? message.content : [];
@@ -208,7 +223,8 @@ export function toEvents(obj: Record<string, unknown>): StreamEvent[] {
 function parseItemEvent(type: string, obj: Record<string, unknown>): StreamEvent[] {
   const item = obj.item as AnyRecord | undefined;
   if (!item) return [];
-  const itemType = String(item.type ?? "");
+  if (item.saturn_final_only === true) return [];
+  const itemType = normalizeItemType(String(item.type ?? ""));
   const id = String(item.id ?? "");
 
   if (itemType === "collab_tool_call") {
@@ -223,11 +239,15 @@ function parseItemEvent(type: string, obj: Record<string, unknown>): StreamEvent
           const todo = asRecord(rawItem);
           return {
             text: String(todo.text ?? "").trim(),
-            completed: Boolean(todo.completed),
+            completed: Boolean(todo.completed) || todo.status === "completed",
           };
         })
         .filter((todo) => todo.text.length > 0);
       return items.length > 0 ? [{ kind: "todo_list", items, raw: obj }] : [];
+    }
+    if (itemType === "plan") {
+      const text = String(item.text ?? "");
+      return text.trim() ? [{ kind: "plan_text", text, raw: obj }] : [];
     }
     if (itemType === "agent_message") {
       const text = String(item.text ?? "");
@@ -241,8 +261,8 @@ function parseItemEvent(type: string, obj: Record<string, unknown>): StreamEvent
       return [{
         kind: "tool_result",
         toolUseId: id,
-        content: item.aggregated_output,
-        isError: num(item.exit_code) !== 0,
+        content: item.aggregated_output ?? item.aggregatedOutput,
+        isError: num(item.exit_code ?? item.exitCode) !== 0,
         raw: obj,
       }];
     }
@@ -274,7 +294,7 @@ function parseItemEvent(type: string, obj: Record<string, unknown>): StreamEvent
         const todo = asRecord(rawItem);
         return {
           text: String(todo.text ?? "").trim(),
-          completed: Boolean(todo.completed),
+          completed: Boolean(todo.completed) || todo.status === "completed",
         };
       })
       .filter((todo) => todo.text.length > 0);
@@ -290,10 +310,11 @@ function parseCollabToolEvent(
   item: AnyRecord,
   id: string,
 ): StreamEvent[] {
-  const tool = String(item.tool ?? "");
+  const rawTool = String(item.tool ?? "");
+  const tool = rawTool === "spawnAgent" ? "spawn_agent" : rawTool;
   const prompt = String(item.prompt ?? "");
-  const receiverThreadIds = stringArray(item.receiver_thread_ids);
-  const states = asRecord(item.agents_states);
+  const receiverThreadIds = stringArray(item.receiver_thread_ids ?? item.receiverThreadIds);
+  const states = asRecord(item.agents_states ?? item.agentsStates);
   const events: StreamEvent[] = [];
 
   if (tool === "spawn_agent") {

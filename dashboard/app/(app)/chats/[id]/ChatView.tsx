@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import type { SessionMeta, CLI } from "@/lib/runs";
+import type { SessionMeta, CLI, PlanAction } from "@/lib/runs";
 import type { ModelReasoningEffort } from "@/lib/models";
 import type { StreamEvent } from "@/lib/events";
 import { toClaudeAlias } from "@/lib/claude-models";
@@ -307,6 +307,8 @@ export function ChatView({
     return buildTurnChunks(meta, events);
   }, [events, meta.turns, meta.status]);
 
+  const awaitingPlanApproval = meta.plan_mode?.status === "awaiting_approval";
+
   const doFork = async (message: string, atTurn?: number) => {
     const res = await fetch(
       `/api/sessions/${encodeURIComponent(sessionId)}/fork`,
@@ -413,7 +415,10 @@ export function ChatView({
     model?: string,
     mcpTools?: boolean,
     reasoningEffort?: ModelReasoningEffort,
+    planAction?: PlanAction,
   ) => {
+    const effectivePlanAction =
+      planAction ?? (metaRef.current.plan_mode?.status === "awaiting_approval" ? "revise" : undefined);
     setMeta((m) => ({
       ...m,
       status: "running",
@@ -423,6 +428,7 @@ export function ChatView({
           cli,
           model,
           reasoningEffort,
+          plan_action: effectivePlanAction,
           started_at: new Date().toISOString(),
           user_message: message,
         },
@@ -436,7 +442,7 @@ export function ChatView({
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message, cli, model, mcpTools, reasoningEffort }),
+          body: JSON.stringify({ message, cli, model, mcpTools, reasoningEffort, planAction: effectivePlanAction }),
         }
       );
       if (!res.ok) {
@@ -452,6 +458,21 @@ export function ChatView({
       setStreaming(false);
       alert(e instanceof Error ? e.message : "Failed to send");
     }
+  };
+
+  const approvePlan = () => {
+    void sendMessage(
+      "The proposed plan is approved. Implement it now.",
+      currentCli,
+      currentModel,
+      undefined,
+      currentReasoningEffort,
+      "approve",
+    );
+  };
+
+  const revisePlan = () => {
+    composerRef.current?.setDraft("Revise the plan: ");
   };
 
   const lastTurn = meta.turns[meta.turns.length - 1];
@@ -495,6 +516,11 @@ export function ChatView({
             {streaming && (
               <Chip variant="warn" dot>
                 live
+              </Chip>
+            )}
+            {awaitingPlanApproval && !streaming && (
+              <Chip variant="accent" dot>
+                plan ready
               </Chip>
             )}
             <div className="ml-auto flex items-center gap-2">
@@ -612,6 +638,22 @@ export function ChatView({
           )}
 
           <div className="pt-2">
+            {awaitingPlanApproval && !streaming && editingTurnIndex === null && (
+              <div className="plan-approval-banner">
+                <div className="plan-approval-copy">
+                  <div className="plan-approval-title">Plan ready</div>
+                  <div className="plan-approval-subtitle">Approve to leave plan mode, or send a note to revise it.</div>
+                </div>
+                <div className="plan-approval-actions">
+                  <Button size="sm" variant="primary" onClick={approvePlan}>
+                    Approve & implement
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={revisePlan}>
+                    Revise plan
+                  </Button>
+                </div>
+              </div>
+            )}
             {editingTurnIndex !== null && (
               <div
                 className="mx-4 mb-2 px-3 py-2 rounded-xl border flex items-center gap-2 text-[12px]"

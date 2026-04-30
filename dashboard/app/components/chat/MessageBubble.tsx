@@ -461,6 +461,109 @@ function PlanChecklist({ items }: { items: Extract<StreamEvent, { kind: "todo_li
   );
 }
 
+type TextSegment = { kind: "text" | "plan"; text: string };
+
+function splitProposedPlanBlocks(text: string): TextSegment[] {
+  const segments: TextSegment[] = [];
+  const pattern = /<proposed_plan>\s*([\s\S]*?)\s*<\/proposed_plan>/gi;
+  let cursor = 0;
+  for (const match of text.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    const before = text.slice(cursor, index);
+    if (before.trim()) segments.push({ kind: "text", text: before });
+    const plan = match[1] ?? "";
+    if (plan.trim()) segments.push({ kind: "plan", text: plan.trim() });
+    cursor = index + match[0].length;
+  }
+  const tail = text.slice(cursor);
+  if (tail.trim()) segments.push({ kind: "text", text: tail });
+  return segments.length > 0 ? segments : [{ kind: "text", text }];
+}
+
+function markdownComponents(sessionId?: string, onOpenFile?: (path: string) => void) {
+  return {
+    a: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => {
+      const target = String(href ?? "");
+      if (onOpenFile && target && looksLikeFileRef(target)) {
+        return (
+          <FileRefButton path={target} onOpenFile={onOpenFile}>
+            {children}
+          </FileRefButton>
+        );
+      }
+      return <a href={href} {...props}>{children}</a>;
+    },
+    code: ({ className, children, ...props }: React.HTMLAttributes<HTMLElement> & { className?: string }) => {
+      const text = String(children).replace(/\n$/, "");
+      const isBlock = Boolean(className) || text.includes("\n");
+      if (!isBlock && onOpenFile && looksLikeFileRef(text)) {
+        return (
+          <FileRefButton path={text} onOpenFile={onOpenFile}>
+            {text}
+          </FileRefButton>
+        );
+      }
+      return <code className={className} {...props}>{children}</code>;
+    },
+    img: ({ src, alt }: React.ImgHTMLAttributes<HTMLImageElement>) => (
+      <MediaPreview src={String(src ?? "")} alt={alt ?? undefined} sessionId={sessionId} />
+    ),
+    // Use div instead of p when a paragraph contains only an image to avoid invalid HTML
+    p: ({ children, ...props }: React.HTMLAttributes<HTMLParagraphElement>) => {
+      const childArr = Array.isArray(children) ? children : [children];
+      const hasImg = childArr.some((c) => c && typeof c === "object" && (c as React.ReactElement).type === "img");
+      return hasImg ? <div {...(props as React.HTMLAttributes<HTMLDivElement>)}>{children}</div> : <p {...props}>{children}</p>;
+    },
+  };
+}
+
+function MarkdownArticle({
+  text,
+  sessionId,
+  onOpenFile,
+}: {
+  text: string;
+  sessionId?: string;
+  onOpenFile?: (path: string) => void;
+}) {
+  const mediaRefs = extractMediaRefsFromText(text);
+  return (
+    <article className="prose-dashboard leading-relaxed">
+      <ReactMarkdown
+        remarkPlugins={MARKDOWN_PLUGINS}
+        components={markdownComponents(sessionId, onOpenFile)}
+      >
+        {text}
+      </ReactMarkdown>
+      <MediaPreviewGrid refs={mediaRefs} sessionId={sessionId} />
+    </article>
+  );
+}
+
+function PlanProposal({
+  text,
+  sessionId,
+  onOpenFile,
+}: {
+  text: string;
+  sessionId?: string;
+  onOpenFile?: (path: string) => void;
+}) {
+  return (
+    <div className="plan-proposal" aria-label="Proposed plan">
+      <div className="plan-proposal-title">Proposed plan</div>
+      <div className="plan-proposal-body prose-dashboard">
+        <ReactMarkdown
+          remarkPlugins={MARKDOWN_PLUGINS}
+          components={markdownComponents(sessionId, onOpenFile)}
+        >
+          {text}
+        </ReactMarkdown>
+      </div>
+    </div>
+  );
+}
+
 function AssistantBlock({
   events,
   streaming,
@@ -474,8 +577,8 @@ function AssistantBlock({
 
   // Collect all text for copy
   const allText = events
-    .filter((ev) => ev.kind === "assistant_text")
-    .map((ev) => (ev as Extract<StreamEvent, { kind: "assistant_text" }>).text)
+    .filter((ev) => ev.kind === "assistant_text" || ev.kind === "plan_text")
+    .map((ev) => (ev as Extract<StreamEvent, { kind: "assistant_text" | "plan_text" }>).text)
     .join("\n\n");
 
   // Group sub-agent child events by their parentToolUseId
@@ -591,51 +694,36 @@ function AssistantBlock({
       return;
     }
     flushToolRow();
-    if (ev.kind === "assistant_text") {
-      const mediaRefs = extractMediaRefsFromText(ev.text);
+    if (ev.kind === "plan_text") {
       rendered.push(
-        <article key={i} className="prose-dashboard leading-relaxed">
-          <ReactMarkdown
-            remarkPlugins={MARKDOWN_PLUGINS}
-            components={{
-              a: ({ href, children, ...props }) => {
-                const target = String(href ?? "");
-                if (onOpenFile && target && looksLikeFileRef(target)) {
-                  return (
-                    <FileRefButton path={target} onOpenFile={onOpenFile}>
-                      {children}
-                    </FileRefButton>
-                  );
-                }
-                return <a href={href} {...props}>{children}</a>;
-              },
-              code: ({ className, children, ...props }) => {
-                const text = String(children).replace(/\n$/, "");
-                const isBlock = Boolean(className) || text.includes("\n");
-                if (!isBlock && onOpenFile && looksLikeFileRef(text)) {
-                  return (
-                    <FileRefButton path={text} onOpenFile={onOpenFile}>
-                      {text}
-                    </FileRefButton>
-                  );
-                }
-                return <code className={className} {...props}>{children}</code>;
-              },
-              img: ({ src, alt }) => (
-                <MediaPreview src={String(src ?? "")} alt={alt ?? undefined} sessionId={sessionId} />
-              ),
-              // Use div instead of p when a paragraph contains only an image to avoid invalid HTML
-              p: ({ children, ...props }) => {
-                const childArr = Array.isArray(children) ? children : [children];
-                const hasImg = childArr.some((c) => c && typeof c === "object" && (c as React.ReactElement).type === "img");
-                return hasImg ? <div {...(props as React.HTMLAttributes<HTMLDivElement>)}>{children}</div> : <p {...props}>{children}</p>;
-              },
-            }}
-          >
-            {ev.text}
-          </ReactMarkdown>
-          <MediaPreviewGrid refs={mediaRefs} sessionId={sessionId} />
-        </article>
+        <PlanProposal key={i} text={ev.text} sessionId={sessionId} onOpenFile={onOpenFile} />
+      );
+      return;
+    }
+    if (ev.kind === "assistant_text") {
+      const segments = splitProposedPlanBlocks(ev.text);
+      rendered.push(
+        <div key={i} className="assistant-text-stack">
+          {segments.map((segment, index) => (
+            segment.kind === "plan"
+              ? (
+                <PlanProposal
+                  key={`${index}-plan`}
+                  text={segment.text}
+                  sessionId={sessionId}
+                  onOpenFile={onOpenFile}
+                />
+              )
+              : (
+                <MarkdownArticle
+                  key={`${index}-text`}
+                  text={segment.text}
+                  sessionId={sessionId}
+                  onOpenFile={onOpenFile}
+                />
+              )
+          ))}
+        </div>
       );
       return;
     }

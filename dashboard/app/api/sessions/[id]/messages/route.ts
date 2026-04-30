@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSession, type CLI } from "@/lib/runs";
+import { getSession, type CLI, type PlanAction } from "@/lib/runs";
 import { spawnTurn } from "@/lib/turn";
 import { DEFAULT_CLI, normalizeCli } from "@/lib/clis";
 import type { ModelReasoningEffort } from "@/lib/models";
@@ -15,6 +15,7 @@ type Body = {
   model?: string;
   mcpTools?: boolean;
   reasoningEffort?: ModelReasoningEffort;
+  planAction?: PlanAction;
 };
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -42,6 +43,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
   }
 
-  await spawnTurn(id, cli, model, message, agent, body.mcpTools, reasoningEffort);
+  await spawnTurn(id, cli, model, message, agent, body.mcpTools, reasoningEffort, body.planAction);
   return NextResponse.json({ ok: true });
 }

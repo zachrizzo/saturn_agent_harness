@@ -6,7 +6,7 @@ import { binDir, sessionsRoot } from "./paths";
 import { isOrchestrator } from "./session-utils";
 import { mintToken } from "./mcp/auth";
 import { toBedrockId } from "./claude-models";
-import type { CLI, Agent } from "./runs";
+import type { CLI, Agent, PlanAction } from "./runs";
 import { normalizeReasoningEffortForCli, type ModelReasoningEffort } from "./models";
 import { isBedrockCli, isLocalClaudeCli, isPersonalClaudeCli, normalizeCli } from "./clis";
 import { readBedrockConfig } from "./bedrock-auth";
@@ -81,6 +81,7 @@ export async function spawnTurn(
   agentSnapshot?: Agent,
   mcpTools?: boolean,
   reasoningEffort?: ModelReasoningEffort,
+  planAction?: PlanAction,
 ): Promise<void> {
   const script = path.join(binDir(), "run-turn.sh");
   const baseTools = agentSnapshot?.allowedTools ?? [];
@@ -113,6 +114,7 @@ export async function spawnTurn(
     CLI: normalizedCli,  // preserve UI-facing backend; run-turn.sh maps Claude-family backends to the claude binary
     MODEL: effectiveModel ?? "",
     REASONING_EFFORT: effectiveReasoningEffort ?? "",
+    ...(planAction ? { SATURN_PLAN_ACTION: planAction } : {}),
     ...(isLocal ? {
       ...localProxyEnv,
       CLAUDE_LOCAL_SETTINGS: JSON.stringify({
