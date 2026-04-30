@@ -117,9 +117,10 @@ case "$SLICE_CLI" in
     ' "$STREAM_FILE" 2>/dev/null || true)"
     ;;
   codex)
+    # Codex exec emits {"type":"item.completed","item":{"type":"agent_message","text":"..."}}
     FINAL_TEXT="$(jq -rs '
-      [.[] | select(.type == "agent.message" and .role == "assistant") | .content] as $msgs
-      | if ($msgs|length) > 0 then $msgs[-1] else "" end
+      [.[] | select(.type == "item.completed") | .item | select(.type == "agent_message") | .text // ""]
+      | if length > 0 then .[-1] else "" end
     ' "$STREAM_FILE" 2>/dev/null || true)"
     ;;
 esac

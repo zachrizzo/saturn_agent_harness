@@ -188,7 +188,10 @@ export class CodexAdapter implements RunnableAdapter {
             output: u.output_tokens,
             cache_read: u.cached_input_tokens,
             cache_creation: 0,
-            total: u.input_tokens + u.output_tokens + u.cached_input_tokens + u.reasoning_output_tokens,
+            total:
+              Math.max(0, u.input_tokens - u.cached_input_tokens) +
+              u.output_tokens +
+              u.reasoning_output_tokens,
           };
         } else if (ev.type === "turn.failed") {
           yield { kind: "error", error: ev.error.message, fatal: true };

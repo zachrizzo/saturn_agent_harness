@@ -18,6 +18,7 @@ export function AgentCard({ agent }: Props) {
   const [open, setOpen] = useState(false);
   const [message, setMessage] = useState("");
   const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
 
   // Orchestrator-only overrides, collapsed by default.
   const [showOverrides, setShowOverrides] = useState(false);
@@ -31,28 +32,52 @@ export function AgentCard({ agent }: Props) {
   const defaultCli = agentDefaultCli(agent);
   const defaultModel = agent.models?.[defaultCli] ?? agent.model;
 
+  const positiveIntOverride = (value: string, label: string): number | undefined => {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    const parsed = Number(trimmed);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      throw new Error(`${label} must be a whole number greater than 0.`);
+    }
+    return parsed;
+  };
+
   const startChat = async () => {
     if (!message.trim()) return;
-    setStarting(true);
+    setStartError(null);
 
-    const overrides = isOrchestrator
-      ? {
-          ...(overrideModel ? { model: overrideModel } : {}),
-          ...(overridePrompt ? { strategy_prompt: overridePrompt } : {}),
-          ...((overrideMaxTokens || overrideMaxCalls)
+    let overrides: {
+      model?: string;
+      strategy_prompt?: string;
+      budget?: {
+        max_total_tokens?: number;
+        max_slice_calls?: number;
+      };
+    } | undefined;
+
+    try {
+      if (isOrchestrator) {
+        const maxTokens = positiveIntOverride(overrideMaxTokens, "Max tokens");
+        const maxCalls = positiveIntOverride(overrideMaxCalls, "Max slice calls");
+        overrides = {
+          ...(overrideModel.trim() ? { model: overrideModel.trim() } : {}),
+          ...(overridePrompt.trim() ? { strategy_prompt: overridePrompt.trim() } : {}),
+          ...(maxTokens || maxCalls
             ? {
                 budget: {
-                  ...(overrideMaxTokens
-                    ? { max_total_tokens: parseInt(overrideMaxTokens, 10) }
-                    : {}),
-                  ...(overrideMaxCalls
-                    ? { max_slice_calls: parseInt(overrideMaxCalls, 10) }
-                    : {}),
+                  ...(maxTokens ? { max_total_tokens: maxTokens } : {}),
+                  ...(maxCalls ? { max_slice_calls: maxCalls } : {}),
                 },
               }
             : {}),
-        }
-      : undefined;
+        };
+      }
+    } catch (e) {
+      setStartError(e instanceof Error ? e.message : "Invalid run override.");
+      return;
+    }
+
+    setStarting(true);
 
     try {
       const res = await fetch("/api/sessions", {
@@ -76,7 +101,7 @@ export function AgentCard({ agent }: Props) {
       }
       router.push(`/chats/${data.session_id}`);
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Failed to start");
+      setStartError(e instanceof Error ? e.message : "Failed to start");
       setStarting(false);
     }
   };
@@ -198,6 +223,7 @@ export function AgentCard({ agent }: Props) {
           <Textarea
             value={message}
             onChange={(e) => setMessage(e.target.value)}
+            aria-label={`Message for ${agent.name}`}
             placeholder="Start the conversation…"
             className="min-h-[60px] text-[13px]"
             disabled={starting}
@@ -225,31 +251,52 @@ export function AgentCard({ agent }: Props) {
                   <Input
                     value={overrideModel}
                     onChange={(e) => setOverrideModel(e.target.value)}
+                    aria-label="Model override"
                     placeholder="Model override"
                   />
                   <Input
                     type="number"
+                    min={1}
+                    step={1}
                     value={overrideMaxTokens}
                     onChange={(e) => setOverrideMaxTokens(e.target.value)}
+                    aria-label="Max tokens override"
                     placeholder="Max tokens"
                   />
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <Input
                     type="number"
+                    min={1}
+                    step={1}
                     value={overrideMaxCalls}
                     onChange={(e) => setOverrideMaxCalls(e.target.value)}
+                    aria-label="Max slice calls override"
                     placeholder="Max slice calls"
                   />
                 </div>
                 <Textarea
                   value={overridePrompt}
                   onChange={(e) => setOverridePrompt(e.target.value)}
+                  aria-label="Strategy prompt override"
                   className="min-h-[60px] mono text-[12px]"
                   placeholder="Strategy prompt override (leave blank for agent default)"
                 />
               </div>
             </details>
+          )}
+          {startError && (
+            <div
+              className="rounded-md border px-3 py-2 text-[12px]"
+              style={{
+                color: "var(--fail)",
+                borderColor: "color-mix(in srgb, var(--fail) 28%, var(--border))",
+                background: "color-mix(in srgb, var(--fail) 7%, transparent)",
+              }}
+              role="alert"
+            >
+              {startError}
+            </div>
           )}
           <div className="flex items-center justify-between gap-2">
             <span className="text-[11px] text-subtle">

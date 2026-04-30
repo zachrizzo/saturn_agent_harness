@@ -15,6 +15,7 @@ import { DEFAULT_CLI, normalizeCli } from "@/lib/clis";
 import type { ModelReasoningEffort } from "@/lib/models";
 import { assertBedrockReady, isBedrockNotReadyError } from "@/lib/bedrock-auth";
 import { isBedrockCli } from "@/lib/clis";
+import { agentSupportedClis } from "@/lib/session-utils";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -56,6 +57,25 @@ function adhocAgent(config: CreateSessionBody["adhoc_config"]): Agent {
   };
 }
 
+function validatePositiveInteger(value: unknown, field: string): string | null {
+  if (value === undefined) return null;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    return `${field} must be a whole number greater than 0`;
+  }
+  return null;
+}
+
+function validateSessionOverrides(overrides: CreateSessionBody["overrides"]): string | null {
+  const budget = overrides?.budget;
+  if (!budget) return null;
+  return (
+    validatePositiveInteger(budget.max_total_tokens, "overrides.budget.max_total_tokens") ??
+    validatePositiveInteger(budget.max_wallclock_seconds, "overrides.budget.max_wallclock_seconds") ??
+    validatePositiveInteger(budget.max_slice_calls, "overrides.budget.max_slice_calls") ??
+    validatePositiveInteger(budget.max_recursion_depth, "overrides.budget.max_recursion_depth")
+  );
+}
+
 export async function GET() {
   const sessions = await listSessions();
   return NextResponse.json({ sessions });
@@ -77,6 +97,18 @@ export async function POST(req: NextRequest) {
   const model = body.model ?? body.adhoc_config?.model ?? agent.models?.[cli] ?? agent.model;
   const reasoningEffort =
     body.reasoningEffort ?? body.adhoc_config?.reasoningEffort ?? agent.reasoningEfforts?.[cli] ?? agent.reasoningEffort;
+
+  if (body.agent_id && !agentSupportedClis(agent).includes(cli)) {
+    return NextResponse.json(
+      { error: `${cli} is not enabled for agent ${body.agent_id}` },
+      { status: 400 },
+    );
+  }
+
+  const overrideError = validateSessionOverrides(body.overrides);
+  if (overrideError) {
+    return NextResponse.json({ error: overrideError }, { status: 400 });
+  }
 
   if (isBedrockCli(cli)) {
     try {

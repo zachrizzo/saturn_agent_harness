@@ -387,14 +387,28 @@ export function tokenBreakdownFromRaw(raw: Record<string, unknown>): TokenBreakd
             (s, v) => s + (typeof v === "number" ? v : 0), 0)
         : 0;
 
-  // Codex uses cached_input_tokens; Claude uses cache_read_input_tokens
-  const cacheRead = num(usage.cache_read_input_tokens) || num(usage.cached_input_tokens);
+  // Codex reports cached_input_tokens as the cached portion of input_tokens.
+  // Claude reports cache_read_input_tokens as a separate usage bucket.
+  const codexCacheRead = num(usage.cached_input_tokens);
+  const claudeCacheRead = num(usage.cache_read_input_tokens);
+  const cacheRead = claudeCacheRead || codexCacheRead;
 
   // Include reasoning tokens in total (billed on some models/providers)
   const reasoning = num(usage.reasoning_output_tokens);
 
-  const total = input + output + cacheCreation + cacheRead + reasoning;
-  return { input, output, cacheCreation, cacheRead, total, cacheEfficiency: total > 0 ? (cacheRead / total) * 100 : 0 };
+  const billableInput = codexCacheRead > 0
+    ? Math.max(0, input - codexCacheRead)
+    : input + claudeCacheRead;
+  const total = billableInput + output + cacheCreation + reasoning;
+  const cacheEfficiencyBase = total + (codexCacheRead > 0 ? cacheRead : 0);
+  return {
+    input,
+    output,
+    cacheCreation,
+    cacheRead,
+    total,
+    cacheEfficiency: cacheEfficiencyBase > 0 ? (cacheRead / cacheEfficiencyBase) * 100 : 0,
+  };
 }
 
 /** Aggregate token usage across ALL result events in a stream.
