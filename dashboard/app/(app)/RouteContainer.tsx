@@ -3,7 +3,7 @@
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 
-const FULL_BLEED_PREFIXES = ["/chats"];
+const FULL_BLEED_PREFIXES = ["/chats", "/memory"];
 
 /**
  * Wraps page content in the default centered/padded container, unless the

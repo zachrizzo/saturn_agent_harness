@@ -10,6 +10,7 @@ import type { CLI, Agent, PlanAction } from "./runs";
 import { normalizeReasoningEffortForCli, type ModelReasoningEffort } from "./models";
 import { isBedrockCli, isLocalClaudeCli, isPersonalClaudeCli, normalizeCli } from "./clis";
 import { readBedrockConfig } from "./bedrock-auth";
+import { readAppSettings, type AppSettings } from "./settings";
 
 // MCP tools added to allowedTools for orchestrator sessions
 const ORCHESTRATOR_MCP_TOOLS = [
@@ -21,6 +22,77 @@ const ORCHESTRATOR_MCP_TOOLS = [
   "mcp__orchestrator__get_budget",
   "mcp__orchestrator__stop",
 ];
+
+type MemorySettings = AppSettings & {
+  memoryEnabled?: boolean;
+  memoryRecallLimit?: number;
+  memoryAutoCapture?: boolean;
+};
+
+type MemoryModule = {
+  buildMemoryRecallBlock?: (args: {
+    query?: string;
+    message: string;
+    cwd?: string;
+    limit?: number;
+    sessionId: string;
+    agentId?: string;
+    agentName?: string;
+  }) => string | Promise<string>;
+};
+
+async function loadMemoryModule(): Promise<MemoryModule | undefined> {
+  try {
+    return await import("./memory") as MemoryModule;
+  } catch {
+    return undefined;
+  }
+}
+
+async function prepareMemoryEnv(
+  sessionId: string,
+  message: string,
+  agentSnapshot?: Agent,
+): Promise<Record<string, string>> {
+  const extraEnv: Record<string, string> = {};
+  let settings: MemorySettings | undefined;
+
+  try {
+    settings = await readAppSettings() as MemorySettings;
+  } catch {
+    return extraEnv;
+  }
+
+  if (typeof settings.memoryAutoCapture === "boolean") {
+    extraEnv.SATURN_MEMORY_AUTO_CAPTURE = settings.memoryAutoCapture ? "1" : "0";
+  }
+
+  if (!settings.memoryEnabled) return extraEnv;
+
+  try {
+    const memory = await loadMemoryModule();
+    const block = await memory?.buildMemoryRecallBlock?.({
+      query: message,
+      message,
+      cwd: agentSnapshot?.cwd,
+      limit: settings.memoryRecallLimit,
+      sessionId,
+      agentId: agentSnapshot?.id,
+      agentName: agentSnapshot?.name,
+    });
+
+    if (typeof block !== "string" || !block.trim()) return extraEnv;
+
+    const contextPath = path.join(sessionsRoot(), sessionId, "memory-context.txt");
+    await fs.mkdir(path.dirname(contextPath), { recursive: true });
+    await fs.writeFile(contextPath, block.trim(), "utf8");
+    extraEnv.SATURN_MEMORY_CONTEXT_FILE = contextPath;
+  } catch {
+    // Memory recall is best-effort; turns must continue without it.
+  }
+
+  return extraEnv;
+}
 
 function tomlString(value: string): string {
   return JSON.stringify(value);
@@ -114,6 +186,7 @@ export async function spawnTurn(
     CLI: normalizedCli,  // preserve UI-facing backend; run-turn.sh maps Claude-family backends to the claude binary
     MODEL: effectiveModel ?? "",
     REASONING_EFFORT: effectiveReasoningEffort ?? "",
+    ...(await prepareMemoryEnv(sessionId, message, agentSnapshot)),
     ...(planAction ? { SATURN_PLAN_ACTION: planAction } : {}),
     ...(isLocal ? {
       ...localProxyEnv,

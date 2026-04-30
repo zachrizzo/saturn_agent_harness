@@ -13,6 +13,9 @@ export type AppSettings = {
   hiddenMcpImageServers: string[];
   bedrockProfile: string;
   bedrockRegion: string;
+  memoryEnabled: boolean;
+  memoryAutoCapture: boolean;
+  memoryRecallLimit: number;
   defaultCwd?: string;
 };
 
@@ -26,6 +29,9 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   hiddenMcpImageServers: [],
   bedrockProfile: DEFAULT_BEDROCK_PROFILE,
   bedrockRegion: DEFAULT_BEDROCK_REGION,
+  memoryEnabled: true,
+  memoryAutoCapture: true,
+  memoryRecallLimit: 5,
 };
 
 function isEffort(value: unknown): value is ModelReasoningEffort {
@@ -79,6 +85,11 @@ export function normalizeAppSettings(input: unknown): AppSettings {
   const bedrockRegion = typeof rec.bedrockRegion === "string" && rec.bedrockRegion.trim()
     ? rec.bedrockRegion.trim()
     : process.env.AWS_REGION || DEFAULT_APP_SETTINGS.bedrockRegion;
+  const memoryRecallLimit = typeof rec.memoryRecallLimit === "number"
+    && Number.isInteger(rec.memoryRecallLimit)
+    && rec.memoryRecallLimit > 0
+    ? Math.min(rec.memoryRecallLimit, 100)
+    : DEFAULT_APP_SETTINGS.memoryRecallLimit;
 
   return {
     defaultCli,
@@ -88,6 +99,9 @@ export function normalizeAppSettings(input: unknown): AppSettings {
     hiddenMcpImageServers: cleanStringList(rec.hiddenMcpImageServers),
     bedrockProfile,
     bedrockRegion,
+    memoryEnabled: typeof rec.memoryEnabled === "boolean" ? rec.memoryEnabled : DEFAULT_APP_SETTINGS.memoryEnabled,
+    memoryAutoCapture: typeof rec.memoryAutoCapture === "boolean" ? rec.memoryAutoCapture : DEFAULT_APP_SETTINGS.memoryAutoCapture,
+    memoryRecallLimit,
     ...(defaultCwd ? { defaultCwd } : {}),
   };
 }

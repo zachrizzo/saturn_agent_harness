@@ -2,32 +2,18 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import type { Slice, SliceMutationTier, SliceCostTier } from "@/lib/slices";
+import type { Slice } from "@/lib/slices";
 import { SliceCard } from "./SliceCard";
 import { Button, Card, Input } from "@/app/components/ui";
 import { ImportShareButton } from "@/app/components/share/ImportShareButton";
 import { IconSearch } from "@/app/components/shell/icons";
 
-const MUTATION_TIERS: SliceMutationTier[] = [
-  "read-only",
-  "writes-scratch",
-  "writes-source",
-  "executes-side-effects",
-];
-const COST_TIERS: SliceCostTier[] = ["free", "cheap", "premium"];
+type QuickFilter = "all" | "read-only" | "writes" | "premium";
 
-const MUTATION_LABELS: Record<SliceMutationTier | "all", string> = {
+const QUICK_FILTER_LABELS: Record<QuickFilter, string> = {
   all: "All",
-  "read-only": "Read only",
-  "writes-scratch": "Scratch writes",
-  "writes-source": "Source writes",
-  "executes-side-effects": "Side effects",
-};
-
-const COST_LABELS: Record<SliceCostTier | "all", string> = {
-  all: "All",
-  free: "Free",
-  cheap: "Cheap",
+  "read-only": "Read-only",
+  writes: "Writes",
   premium: "Premium",
 };
 
@@ -35,8 +21,7 @@ export default function SlicesPage() {
   const [slices, setSlices] = useState<Slice[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [mutationFilter, setMutationFilter] = useState<SliceMutationTier | "all">("all");
-  const [costFilter, setCostFilter] = useState<SliceCostTier | "all">("all");
+  const [quickFilter, setQuickFilter] = useState<QuickFilter>("all");
 
   const loadSlices = () => {
     setLoading(true);
@@ -62,28 +47,18 @@ export default function SlicesPage() {
     ) {
       return false;
     }
-    if (mutationFilter !== "all" && s.capability.mutation !== mutationFilter) return false;
-    if (costFilter !== "all" && s.capability.cost_tier !== costFilter) return false;
+    if (quickFilter === "read-only" && s.capability.mutation !== "read-only") return false;
+    if (quickFilter === "writes" && s.capability.mutation === "read-only") return false;
+    if (quickFilter === "premium" && s.capability.cost_tier !== "premium") return false;
     return true;
   });
 
-  const mutationCounts = Object.fromEntries(
-    (["all", ...MUTATION_TIERS] as const).map((tier) => [
-      tier,
-      tier === "all"
-        ? slices.length
-        : slices.filter((slice) => slice.capability.mutation === tier).length,
-    ])
-  ) as Record<SliceMutationTier | "all", number>;
-
-  const costCounts = Object.fromEntries(
-    (["all", ...COST_TIERS] as const).map((tier) => [
-      tier,
-      tier === "all"
-        ? slices.length
-        : slices.filter((slice) => slice.capability.cost_tier === tier).length,
-    ])
-  ) as Record<SliceCostTier | "all", number>;
+  const quickFilterCounts: Record<QuickFilter, number> = {
+    all: slices.length,
+    "read-only": slices.filter((slice) => slice.capability.mutation === "read-only").length,
+    writes: slices.filter((slice) => slice.capability.mutation !== "read-only").length,
+    premium: slices.filter((slice) => slice.capability.cost_tier === "premium").length,
+  };
 
   return (
     <div className="space-y-6">
@@ -118,40 +93,18 @@ export default function SlicesPage() {
           </div>
         </div>
 
-        <div className="slice-filter-groups">
-          <div className="slice-filter-group" aria-label="Access filter">
-            <span className="slice-filter-label">Access</span>
-            <div className="slice-segmented">
-              {(["all", ...MUTATION_TIERS] as const).map((tier) => (
-                <button
-                  key={tier}
-                  type="button"
-                  onClick={() => setMutationFilter(tier)}
-                  className={mutationFilter === tier ? "active" : ""}
-                >
-                  <span>{MUTATION_LABELS[tier]}</span>
-                  <span className="slice-filter-count">{mutationCounts[tier]}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="slice-filter-group" aria-label="Cost filter">
-            <span className="slice-filter-label">Cost</span>
-            <div className="slice-segmented">
-              {(["all", ...COST_TIERS] as const).map((tier) => (
-                <button
-                  key={tier}
-                  type="button"
-                  onClick={() => setCostFilter(tier)}
-                  className={costFilter === tier ? "active" : ""}
-                >
-                  <span>{COST_LABELS[tier]}</span>
-                  <span className="slice-filter-count">{costCounts[tier]}</span>
-                </button>
-              ))}
-            </div>
-          </div>
+        <div className="slice-quick-filters" aria-label="Slice filters">
+          {(Object.keys(QUICK_FILTER_LABELS) as QuickFilter[]).map((filter) => (
+            <button
+              key={filter}
+              type="button"
+              onClick={() => setQuickFilter(filter)}
+              className={quickFilter === filter ? "active" : ""}
+            >
+              <span>{QUICK_FILTER_LABELS[filter]}</span>
+              <span>{quickFilterCounts[filter]}</span>
+            </button>
+          ))}
         </div>
       </div>
 
@@ -171,7 +124,11 @@ export default function SlicesPage() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filtered.map((s) => (
-            <SliceCard key={s.id} slice={s} />
+            <SliceCard
+              key={s.id}
+              slice={s}
+              onDeleted={(id) => setSlices((prev) => prev.filter((slice) => slice.id !== id))}
+            />
           ))}
         </div>
       )}

@@ -2,11 +2,15 @@
 
 const fs = require("node:fs/promises");
 
-const RESOURCES = new Set(["tasks", "agents", "slices", "jobs"]);
+const RESOURCES = new Set(["tasks", "agents", "slices", "jobs", "memory"]);
 const CONTROL_FLAGS = new Set(["json", "file", "dry-run", "base-url", "compact", "help"]);
 const QUERY_FLAG_MAP = new Map([
+  ["q", "q"],
   ["status", "status"],
   ["priority", "priority"],
+  ["scope", "scope"],
+  ["cwd", "cwd"],
+  ["type", "type"],
   ["tag", "tag"],
   ["limit", "limit"],
   ["linked-session-id", "linked_session_id"],
@@ -24,6 +28,7 @@ Resources:
   agents  list|get|create|update
   slices  list|get|create|update
   jobs    list|get|create|update
+  memory  list|get|create|update|delete|graph|recall|capture
 
 Payloads:
   --json '<json>'       JSON payload for create/update/claim/release
@@ -42,6 +47,10 @@ Examples:
   saturn agents create --file agent.json
   saturn slices update repo-scan --json '{"description":"Repo scanner"}'
   saturn jobs create --json '{"name":"daily-summary","cron":"0 9 * * *","prompt":"Summarize"}'
+  saturn memory list --q "auth decision" --scope project --cwd "$PWD"
+  saturn memory create --json '{"title":"Retry policy","type":"Decisions","scope":"project","cwd":"/path/to/project","content":"Use [[Backoff]] for transient failures."}'
+  saturn memory graph --scope global
+  saturn memory recall --json '{"message":"What did we decide about retries?","cwd":"/path/to/project"}'
 `;
 }
 
@@ -209,7 +218,7 @@ async function main() {
 
   if (action === "list") {
     method = "GET";
-    const query = resource === "tasks" ? queryFromFlags(flags) : "";
+    const query = resource === "tasks" || resource === "memory" ? queryFromFlags(flags) : "";
     path = resourcePath(resource) + (query ? `?${query}` : "");
   } else if (action === "get") {
     if (!target) fail(`${resource} get requires an id or name`);
@@ -221,9 +230,26 @@ async function main() {
     body = await payloadFrom(flags, true);
   } else if (action === "update") {
     if (!target) fail(`${resource} update requires an id or name`);
-    method = resource === "tasks" ? "PATCH" : "PUT";
+    method = resource === "tasks" || resource === "memory" ? "PATCH" : "PUT";
     path = resourcePath(resource, target);
     body = await payloadFrom(flags, true);
+  } else if (resource === "memory" && action === "delete") {
+    if (!target) fail("memory delete requires a note id");
+    method = "DELETE";
+    path = resourcePath(resource, target);
+  } else if (resource === "memory" && action === "graph") {
+    method = "GET";
+    const query = queryFromFlags(flags);
+    path = resourcePath(resource, undefined, "graph") + (query ? `?${query}` : "");
+  } else if (resource === "memory" && action === "recall") {
+    method = "POST";
+    path = resourcePath(resource, undefined, "recall");
+    body = await payloadFrom(flags, true);
+  } else if (resource === "memory" && action === "capture") {
+    if (!target) fail("memory capture requires a session id");
+    method = "POST";
+    path = resourcePath(resource, undefined, `capture/session/${encodeSegment(target)}`);
+    body = await payloadFrom(flags, false);
   } else if (resource === "tasks" && action === "claim") {
     if (!target) fail("tasks claim requires a task id");
     method = "POST";

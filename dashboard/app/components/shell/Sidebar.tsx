@@ -4,7 +4,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
-import { IconHome, IconChat, IconAgent, IconJob, IconTask, IconSlice, IconSettings, IconDispatch } from "./icons";
+import { IconHome, IconChat, IconAgent, IconJob, IconTask, IconSlice, IconSettings, IconDispatch, IconMemory } from "./icons";
 import type { SessionMeta } from "@/lib/runs";
 import { toInboxSessions } from "@/lib/chat-inbox";
 
@@ -23,6 +23,7 @@ function matchPrefix(...prefixes: string[]): (p: string) => boolean {
 const NAV: NavItem[] = [
   { href: "/",       label: "Home",   icon: <IconHome />,  match: (p) => p === "/" },
   { href: "/chats",  label: "Chats",  icon: <IconChat />,  match: matchPrefix("/chats", "/chat") },
+  { href: "/memory", label: "Memory", icon: <IconMemory />, match: matchPrefix("/memory") },
   { href: "/dispatch", label: "Dispatch", icon: <IconDispatch />, match: matchPrefix("/dispatch") },
   { href: "/agents", label: "Agents", icon: <IconAgent />, match: matchPrefix("/agents") },
   { href: "/slices", label: "Slices", icon: <IconSlice />, match: matchPrefix("/slices") },

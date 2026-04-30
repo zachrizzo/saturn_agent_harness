@@ -36,6 +36,10 @@ export function sessionsRoot(): string {
   return path.join(automationsRoot(), "sessions");
 }
 
+export function memoryRoot(): string {
+  return path.join(automationsRoot(), "memory");
+}
+
 export function workingDirectoriesFile(): string {
   return path.join(automationsRoot(), "working-directories.json");
 }

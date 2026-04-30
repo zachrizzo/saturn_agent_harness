@@ -13,6 +13,7 @@
 /runs/
 /sessions/
 /tasks/
+/memory/
 /slice-fixtures/
 /.mcp-secret
 /telegram/state.json

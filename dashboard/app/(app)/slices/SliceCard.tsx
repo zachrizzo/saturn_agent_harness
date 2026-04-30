@@ -8,7 +8,7 @@ import { toClaudeAlias } from "@/lib/claude-models";
 import { CLI_LABELS, CLI_SHORT_LABELS, normalizeCli } from "@/lib/clis";
 import { Button, Card, Chip } from "@/app/components/ui";
 import { ShareExportButton } from "@/app/components/share/ShareExportButton";
-import { IconBash, IconDispatch, IconEdit, IconFork, IconSlice } from "@/app/components/shell/icons";
+import { IconBash, IconDispatch, IconEdit, IconFork, IconMoreHorizontal, IconSlice, IconTrash } from "@/app/components/shell/icons";
 
 function mutationVariant(tier: SliceMutationTier): "success" | "warn" | "fail" | "default" {
   switch (tier) {
@@ -36,9 +36,11 @@ function formatTier(value: string): string {
     .join(" ");
 }
 
-export function SliceCard({ slice }: { slice: Slice }) {
+export function SliceCard({ slice, onDeleted }: { slice: Slice; onDeleted?: (id: string) => void }) {
   const router = useRouter();
   const [duplicating, setDuplicating] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const handleDuplicate = async () => {
     setDuplicating(true);
@@ -62,6 +64,23 @@ export function SliceCard({ slice }: { slice: Slice }) {
     } catch (e) {
       alert(e instanceof Error ? e.message : "Duplicate failed");
       setDuplicating(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!window.confirm(`Delete slice "${slice.name}"? This cannot be undone.`)) return;
+    setDeleting(true);
+    try {
+      const res = await fetch(`/api/slices/${encodeURIComponent(slice.id)}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error ?? `Delete failed (${res.status})`);
+      }
+      onDeleted?.(slice.id);
+      router.refresh();
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : "Delete failed");
+      setDeleting(false);
     }
   };
 
@@ -151,24 +170,62 @@ export function SliceCard({ slice }: { slice: Slice }) {
           <IconBash className="w-3.5 h-3.5" />
           Test
         </Link>
-        <span className="slice-card-share">
-          <IconDispatch className="w-3.5 h-3.5" />
-          <ShareExportButton
-            endpoint={`/api/share/slices/${encodeURIComponent(slice.id)}`}
-            filename={`saturn-slice-${slice.id}`}
-          />
-        </span>
-        <Button
-          type="button"
-          variant="default"
-          size="sm"
-          onClick={handleDuplicate}
-          disabled={duplicating}
-          className="slice-card-action"
+        <div
+          className="slice-card-more"
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              setMenuOpen(false);
+            }
+          }}
         >
-          <IconFork className="w-3.5 h-3.5" />
-          {duplicating ? "Duplicating..." : "Duplicate"}
-        </Button>
+          <Button
+            type="button"
+            variant="default"
+            size="icon"
+            title="More actions"
+            aria-label={`More actions for ${slice.name}`}
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((open) => !open)}
+            className="slice-card-more-trigger"
+          >
+            <IconMoreHorizontal className="w-4 h-4" />
+          </Button>
+          {menuOpen && (
+            <div className="slice-card-menu">
+              <span className="slice-card-menu-share">
+                <IconDispatch className="w-3.5 h-3.5" />
+                <ShareExportButton
+                  endpoint={`/api/share/slices/${encodeURIComponent(slice.id)}`}
+                  filename={`saturn-slice-${slice.id}`}
+                  label="Share JSON"
+                  className="slice-card-menu-action"
+                />
+              </span>
+              <Button
+                type="button"
+                variant="default"
+                size="sm"
+                onClick={handleDuplicate}
+                disabled={duplicating}
+                className="slice-card-menu-action"
+              >
+                <IconFork className="w-3.5 h-3.5" />
+                {duplicating ? "Duplicating..." : "Duplicate"}
+              </Button>
+              <Button
+                type="button"
+                variant="danger"
+                size="sm"
+                onClick={handleDelete}
+                disabled={deleting}
+                className="slice-card-menu-action slice-card-menu-danger"
+              >
+                <IconTrash className="w-3.5 h-3.5" />
+                {deleting ? "Deleting..." : "Delete"}
+              </Button>
+            </div>
+          )}
+        </div>
       </div>
     </Card>
   );

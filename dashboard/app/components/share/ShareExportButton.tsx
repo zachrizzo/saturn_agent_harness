@@ -7,13 +7,14 @@ type Props = {
   endpoint: string;
   filename: string;
   label?: string;
+  className?: string;
 };
 
 function safeFilename(value: string): string {
   return value.replace(/[^a-z0-9._-]+/gi, "-").replace(/^-+|-+$/g, "") || "saturn-share";
 }
 
-export function ShareExportButton({ endpoint, filename, label = "Share" }: Props) {
+export function ShareExportButton({ endpoint, filename, label = "Share", className = "" }: Props) {
   const [json, setJson] = useState("");
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
@@ -72,7 +73,7 @@ export function ShareExportButton({ endpoint, filename, label = "Share" }: Props
 
   return (
     <>
-      <Button type="button" variant="default" size="sm" onClick={loadBundle} disabled={loading}>
+      <Button type="button" variant="default" size="sm" onClick={loadBundle} disabled={loading} className={className}>
         {loading ? "Sharing..." : label}
       </Button>
 

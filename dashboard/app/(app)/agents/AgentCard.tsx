@@ -1,18 +1,22 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
 import type { Agent } from "@/lib/runs";
 import { agentDefaultCli, agentSupportedClis } from "@/lib/session-utils";
 import { toClaudeAlias } from "@/lib/claude-models";
 import { CLI_LABELS, CLI_SHORT_LABELS } from "@/lib/clis";
-import { Chip } from "@/app/components/ui";
-import { IconAgent, IconChat, IconClock, IconEdit } from "@/app/components/shell/icons";
+import { Button, Chip } from "@/app/components/ui";
+import { IconAgent, IconChat, IconClock, IconEdit, IconTrash } from "@/app/components/shell/icons";
 import { ShareExportButton } from "@/app/components/share/ShareExportButton";
 import { newChatHrefForAgent } from "@/lib/agent-navigation";
 
 type Props = { agent: Agent };
 
 export function AgentCard({ agent }: Props) {
+  const router = useRouter();
+  const [deleting, setDeleting] = useState(false);
   const isOrchestrator = agent.kind === "orchestrator";
   const supportedClis = agentSupportedClis(agent);
   const defaultCli = agentDefaultCli(agent);
@@ -26,6 +30,22 @@ export function AgentCard({ agent }: Props) {
   const cliLabel = supportedClis.length > 1
     ? supportedClis.map((cli) => CLI_SHORT_LABELS[cli]).join(" · ")
     : CLI_SHORT_LABELS[defaultCli];
+
+  const handleDelete = async () => {
+    if (!window.confirm(`Delete agent "${agent.name}"? This cannot be undone.`)) return;
+    setDeleting(true);
+    try {
+      const res = await fetch(`/api/agents/${encodeURIComponent(agent.id)}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error ?? `Delete failed (${res.status})`);
+      }
+      router.refresh();
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : "Delete failed");
+      setDeleting(false);
+    }
+  };
 
   return (
     <article className="agent-card group">
@@ -57,6 +77,18 @@ export function AgentCard({ agent }: Props) {
           <Link href={`/agents/${agent.id}/edit`} title="Edit agent" className="btn btn-ghost btn-icon">
             <IconEdit className="w-3.5 h-3.5" />
           </Link>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            title="Delete agent"
+            aria-label={`Delete ${agent.name}`}
+            onClick={handleDelete}
+            disabled={deleting}
+            className="text-[var(--fail)]"
+          >
+            <IconTrash className="w-3.5 h-3.5" />
+          </Button>
         </div>
       </div>
 

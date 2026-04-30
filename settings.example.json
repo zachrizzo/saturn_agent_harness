@@ -6,5 +6,8 @@
   "defaultMcpTools": false,
   "bedrockProfile": "sondermind-development-new",
   "bedrockRegion": "us-east-1",
+  "memoryEnabled": true,
+  "memoryAutoCapture": true,
+  "memoryRecallLimit": 5,
   "hiddenMcpImageServers": []
 }

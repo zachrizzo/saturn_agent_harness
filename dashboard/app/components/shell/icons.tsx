@@ -45,6 +45,17 @@ export function IconJob({ className = base }: IconProps) {
   );
 }
 
+export function IconMemory({ className = base }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M12 4a4 4 0 0 0-4 4v8a4 4 0 0 0 8 0V8a4 4 0 0 0-4-4Z" />
+      <path d="M8 9H5.5a2.5 2.5 0 0 0 0 5H8" />
+      <path d="M16 9h2.5a2.5 2.5 0 0 1 0 5H16" />
+      <path d="M10 8h4M10 12h4M10 16h4" />
+    </svg>
+  );
+}
+
 export function IconSearch({ className = base }: IconProps) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -156,6 +167,16 @@ export function IconFork({ className = base }: IconProps) {
       <circle cx="18" cy="8" r="2" />
       <path d="M6 8v8" />
       <path d="M18 10v1a4 4 0 0 1-4 4H6" />
+    </svg>
+  );
+}
+
+export function IconMoreHorizontal({ className = base }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
+      <circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none" />
     </svg>
   );
 }
