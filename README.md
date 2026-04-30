@@ -2,7 +2,7 @@
 
 Schedule Claude Code agent runs via native macOS cron and view results in a local Next.js dashboard.
 
-Saturn is cool because it turns agent work into a real local control plane: schedule recurring AI jobs, jump into chats, track tasks, compare backends, and keep every run visible without handing your workflow to a cloud dashboard.
+Saturn is cool because it turns agent work into a real local control plane: schedule recurring AI jobs, jump into chats, track tasks, compare Claude Personal, Bedrock, local, and Codex backends, and keep every run visible without handing your workflow to a cloud dashboard.
 
 ---
 
@@ -71,7 +71,7 @@ You are setting up Saturn from a clean macOS machine. Do all of this in order an
      export AWS_PROFILE="$(jq -r '.bedrockProfile // "sondermind-development-new"' settings.json)"
      export AWS_REGION="$(jq -r '.bedrockRegion // "us-east-1"' settings.json)"
      aws sso login --profile "$AWS_PROFILE"
-   - Personal Claude:
+   - Claude Personal:
      Start Saturn, choose Personal, then run /login in the chat composer; or open Settings and use Claude Personal auth.
    - Local Claude:
      Start LM Studio, serve an OpenAI-compatible model on http://127.0.0.1:1234, and make sure ~/litellm_config.yaml model_name entries match LM Studio's model ids.
@@ -119,12 +119,15 @@ The legacy stored value `claude` is accepted as `claude-bedrock`.
 
 Bedrock uses AWS CLI credentials from the local Mac. Saturn stores only the AWS profile and region in `settings.json` (`bedrockProfile`, `bedrockRegion`) and exposes them in Settings under "Claude Bedrock AWS". The Settings UI also lists profiles returned by `aws configure list-profiles` when the AWS CLI has local profiles configured. Saturn does not store AWS credentials.
 
-For manual terminal testing, Bedrock and local can be run side-by-side after initial setup:
+Claude Personal uses the same `claude` binary, but routes through Claude Code's personal `/login` auth path instead of Bedrock or LiteLLM. In Saturn, open Settings and use "Claude Personal auth", or switch a chat to Personal and run `/login`. Personal runs clear Bedrock, Vertex, LiteLLM, base URL, and auth-token environment variables so they do not inherit another backend by accident.
+
+For manual terminal testing, Bedrock, Personal, and local can be run side-by-side after initial setup:
 
 | Terminal | Command | Backend |
 |---|---|---|
 | Terminal 1 | `CLAUDE_CODE_USE_BEDROCK=1 AWS_PROFILE=$(jq -r '.bedrockProfile // "sondermind-development-new"' settings.json) AWS_REGION=$(jq -r '.bedrockRegion // "us-east-1"' settings.json) claude` | AWS Bedrock |
-| Terminal 2 | `claude-local` | LM Studio via LiteLLM proxy |
+| Terminal 2 | `unset CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN; claude --setting-sources project,local` | Claude Personal |
+| Terminal 3 | `claude-local` | LM Studio via LiteLLM proxy |
 
 Switch model for a local session:
 ```bash
@@ -340,7 +343,14 @@ saturn/
    launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.zachrizzo.claude-cron-dashboard.plist
    ```
 
-3. **Register the jobs defined in `jobs/jobs.json`**
+3. **Choose and authenticate a backend**
+   Open `http://127.0.0.1:3737/settings`.
+   - Claude Personal: use "Open Claude login" under Claude Personal auth, or select Personal in a chat and run `/login`.
+   - Claude Bedrock: set the AWS profile/region and run `aws sso login --profile <profile>`.
+   - Claude Local: start LM Studio and use the `claude-local` wrapper created by bootstrap.
+   - Codex: run `codex` once and complete sign-in if prompted.
+
+4. **Register the jobs defined in `jobs/jobs.json`**
    ```bash
    bin/register-job.sh
    crontab -l    # verify the lines marked "# saturn:<name>"
