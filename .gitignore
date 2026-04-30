@@ -34,6 +34,7 @@ dashboard/.next-dev/
 dashboard/.next-dev-control/
 dashboard/.next-dev-graph/
 dashboard/.next-dev-codex/
+dashboard/.next-codex-test/
 dashboard/.playwright-cli/
 dashboard/node_modules/
 dashboard/output/
