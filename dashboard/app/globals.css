@@ -2512,12 +2512,13 @@ h1, h2, h3, h4, h5, h6 {
 .slice-workflow-canvas {
   position: relative;
   min-height: 420px;
-  overflow: auto;
+  overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-subtle);
   cursor: grab;
   overscroll-behavior: contain;
+  touch-action: none;
 }
 
 .slice-workflow-canvas.panning {
@@ -2529,6 +2530,8 @@ h1, h2, h3, h4, h5, h6 {
   position: relative;
   min-width: 100%;
   min-height: 100%;
+  transform-origin: 0 0;
+  will-change: transform;
 }
 
 .slice-workflow-edge {

@@ -764,7 +764,7 @@ function SliceWorkflowGraph({
   const canvasRef = useRef<HTMLDivElement>(null);
   const migratedTopDownLayoutRef = useRef(false);
   const paletteDragRef = useRef<PaletteDragState | null>(null);
-  const panDragRef = useRef<{ startX: number; startY: number; scrollLeft: number; scrollTop: number } | null>(null);
+  const panDragRef = useRef<{ startX: number; startY: number; offsetX: number; offsetY: number } | null>(null);
   const [dragging, setDragging] = useState<{ nodeId: string; offsetX: number; offsetY: number } | null>(null);
   const [connectionDrag, setConnectionDrag] = useState<{ fromNodeId: string; x: number; y: number } | null>(null);
   const [connectionTarget, setConnectionTarget] = useState<string | null>(null);
@@ -773,6 +773,7 @@ function SliceWorkflowGraph({
   const [fullscreen, setFullscreen] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
   const [canvasViewport, setCanvasViewport] = useState({ width: 720, height: 520 });
+  const [viewOffset, setViewOffset] = useState({ x: 0, y: 0 });
 
   const sliceById = useMemo(() => new Map(slices.map((slice) => [slice.id, slice])), [slices]);
   const placedSliceIds = useMemo(() => new Set(graph.nodes.map((node) => node.slice_id)), [graph.nodes]);
@@ -828,9 +829,8 @@ function SliceWorkflowGraph({
   const getDefaultNodeX = () => {
     const canvas = canvasRef.current;
     const canvasWidth = canvas?.clientWidth ?? canvasViewport.width;
-    const scrollLeft = canvas?.scrollLeft ?? 0;
     const maxX = Math.max(28, canvasSurfaceSize.width - NODE_WIDTH - 28);
-    return clamp(scrollLeft + (canvasWidth - NODE_WIDTH) / 2, 28, maxX);
+    return clamp((canvasWidth - NODE_WIDTH) / 2 - viewOffset.x, 28, maxX);
   };
 
   useEffect(() => {
@@ -854,15 +854,17 @@ function SliceWorkflowGraph({
   const addNode = (sliceId: string, x?: number, y?: number) => {
     const slice = sliceById.get(sliceId);
     if (!slice) return;
-    const maxX = Math.max(12, canvasSurfaceSize.width - NODE_WIDTH - 12);
-    const maxY = Math.max(12, canvasSurfaceSize.height - NODE_HEIGHT - 12);
     const fallbackX = getDefaultNodeX();
     const fallbackY = 32 + graph.nodes.length * (NODE_HEIGHT + NODE_VERTICAL_GAP);
+    const desiredX = x ?? fallbackX;
+    const desiredY = y ?? fallbackY;
+    const maxX = Math.max(12, desiredX, canvasSurfaceSize.width - NODE_WIDTH - 12);
+    const maxY = Math.max(12, desiredY, canvasSurfaceSize.height - NODE_HEIGHT - 12);
     const node = {
       id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       slice_id: slice.id,
-      x: clamp(x ?? fallbackX, 12, maxX),
-      y: clamp(y ?? fallbackY, 12, Math.max(maxY, fallbackY)),
+      x: clamp(desiredX, 12, maxX),
+      y: clamp(desiredY, 12, Math.max(maxY, fallbackY)),
       label: slice.name,
     };
     onGraphChange((current) => ({ ...current, nodes: [...current.nodes, node] }));
@@ -893,10 +895,12 @@ function SliceWorkflowGraph({
           event.clientY >= rect.top &&
           event.clientY <= rect.bottom;
         if (insideCanvas) {
+          const point = canvasPoint(event.clientX, event.clientY);
+          if (!point) return;
           addNode(
             current.sliceId,
-            event.clientX - rect.left + canvas.scrollLeft - NODE_WIDTH / 2,
-            event.clientY - rect.top + canvas.scrollTop - NODE_HEIGHT / 2,
+            point.x - NODE_WIDTH / 2,
+            point.y - NODE_HEIGHT / 2,
           );
         }
       }
@@ -968,8 +972,8 @@ function SliceWorkflowGraph({
     if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
     return {
-      x: clamp(clientX - rect.left + canvas.scrollLeft, 0, canvasSurfaceSize.width),
-      y: clamp(clientY - rect.top + canvas.scrollTop, 0, canvasSurfaceSize.height),
+      x: clientX - rect.left - viewOffset.x,
+      y: clientY - rect.top - viewOffset.y,
     };
   };
 
@@ -1047,25 +1051,28 @@ function SliceWorkflowGraph({
 
   const startCanvasPan = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0 || !canvasRef.current) return;
-    const canvas = canvasRef.current;
-    const canPan = canvas.scrollWidth > canvas.clientWidth || canvas.scrollHeight > canvas.clientHeight;
-    if (!canPan) return;
     e.preventDefault();
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // Some synthetic pointer events cannot be captured; window listeners still cover those paths.
+    }
     panDragRef.current = {
       startX: e.clientX,
       startY: e.clientY,
-      scrollLeft: canvas.scrollLeft,
-      scrollTop: canvas.scrollTop,
+      offsetX: viewOffset.x,
+      offsetY: viewOffset.y,
     };
     setIsPanning(true);
   };
 
   const updateCanvasPan = (clientX: number, clientY: number) => {
     const pan = panDragRef.current;
-    const canvas = canvasRef.current;
-    if (!pan || !canvas) return false;
-    canvas.scrollLeft = pan.scrollLeft - (clientX - pan.startX);
-    canvas.scrollTop = pan.scrollTop - (clientY - pan.startY);
+    if (!pan) return false;
+    setViewOffset({
+      x: pan.offsetX + clientX - pan.startX,
+      y: pan.offsetY + clientY - pan.startY,
+    });
     return true;
   };
 
@@ -1082,11 +1089,10 @@ function SliceWorkflowGraph({
       return;
     }
     if (!dragging || !canvasRef.current) return;
-    const rect = canvasRef.current.getBoundingClientRect();
-    const maxX = Math.max(12, canvasSurfaceSize.width - NODE_WIDTH - 12);
-    const maxY = Math.max(12, canvasSurfaceSize.height - NODE_HEIGHT - 12);
-    const x = clamp(clientX - rect.left + canvasRef.current.scrollLeft - dragging.offsetX, 12, maxX);
-    const y = clamp(clientY - rect.top + canvasRef.current.scrollTop - dragging.offsetY, 12, maxY);
+    const point = canvasPoint(clientX, clientY);
+    if (!point) return;
+    const x = Math.max(12, point.x - dragging.offsetX);
+    const y = Math.max(12, point.y - dragging.offsetY);
     onGraphChange((current) => ({
       ...current,
       nodes: current.nodes.map((node) => (
@@ -1119,6 +1125,9 @@ function SliceWorkflowGraph({
   };
 
   const handleCanvasPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
     finishGraphPointerDrag(e.clientX, e.clientY);
   };
 
@@ -1140,7 +1149,7 @@ function SliceWorkflowGraph({
       window.removeEventListener("pointerup", handleWindowPointerUp);
       window.removeEventListener("pointercancel", cancelGraphPointerDrag);
     };
-  }, [canvasSurfaceSize.height, canvasSurfaceSize.width, connectionDrag, connectionTarget, dragging, graph.nodes, isPanning]);
+  }, [canvasSurfaceSize.height, canvasSurfaceSize.width, connectionDrag, connectionTarget, dragging, graph.nodes, isPanning, viewOffset]);
 
   const edgesWithNodes = graph.edges
     .map((edge) => {
@@ -1283,11 +1292,20 @@ function SliceWorkflowGraph({
             }}
             onPointerMove={handlePointerMove}
             onPointerUp={handleCanvasPointerUp}
-            onPointerCancel={cancelGraphPointerDrag}
+            onPointerCancel={(e) => {
+              if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+                e.currentTarget.releasePointerCapture(e.pointerId);
+              }
+              cancelGraphPointerDrag();
+            }}
           >
             <div
               className="slice-workflow-surface"
-              style={{ width: canvasSurfaceSize.width, height: canvasSurfaceSize.height }}
+              style={{
+                width: canvasSurfaceSize.width,
+                height: canvasSurfaceSize.height,
+                transform: `translate(${viewOffset.x}px, ${viewOffset.y}px)`,
+              }}
             >
               <svg className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden="true">
                 <defs>
@@ -1357,13 +1375,14 @@ function SliceWorkflowGraph({
                       setConnectionTarget((current) => (current === node.id ? null : current));
                     }}
                     onPointerDown={(e) => {
-                      if (!canvasRef.current) return;
-                      const rect = canvasRef.current.getBoundingClientRect();
+                      e.stopPropagation();
+                      const point = canvasPoint(e.clientX, e.clientY);
+                      if (!point) return;
                       setSelectedNodeId(node.id);
                       setDragging({
                         nodeId: node.id,
-                        offsetX: e.clientX - rect.left + canvasRef.current.scrollLeft - node.x,
-                        offsetY: e.clientY - rect.top + canvasRef.current.scrollTop - node.y,
+                        offsetX: point.x - node.x,
+                        offsetY: point.y - node.y,
                       });
                     }}
                     onPointerUp={(e) => {
