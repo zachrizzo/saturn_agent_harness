@@ -2,6 +2,8 @@
 
 Schedule Claude Code agent runs via native macOS cron and view results in a local Next.js dashboard.
 
+Saturn is cool because it turns agent work into a real local control plane: schedule recurring AI jobs, jump into chats, track tasks, compare backends, and keep every run visible without handing your workflow to a cloud dashboard.
+
 ---
 
 ## Screenshots
