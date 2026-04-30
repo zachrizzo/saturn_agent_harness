@@ -4,6 +4,18 @@ Schedule Claude Code agent runs via native macOS cron and view results in a loca
 
 ---
 
+## Screenshots
+
+### Dashboard
+
+![Saturn dashboard](docs/images/dashboard.png)
+
+### Chat
+
+![Saturn chat](docs/images/chat.png)
+
+---
+
 ## Fresh Machine Setup
 
 Paste this prompt into a terminal-capable agent to set up the entire project from scratch:
