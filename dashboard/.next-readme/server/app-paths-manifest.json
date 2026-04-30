@@ -1,0 +1,9 @@
+{
+  "/api/sessions/route": "app/api/sessions/route.js",
+  "/api/sessions/[id]/git-changes/route": "app/api/sessions/[id]/git-changes/route.js",
+  "/api/slash-commands/route": "app/api/slash-commands/route.js",
+  "/api/sessions/[id]/route": "app/api/sessions/[id]/route.js",
+  "/api/models/route": "app/api/models/route.js",
+  "/(app)/page": "app/(app)/page.js",
+  "/(app)/chats/[id]/page": "app/(app)/chats/[id]/page.js"
+}
