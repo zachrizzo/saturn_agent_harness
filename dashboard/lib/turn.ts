@@ -15,11 +15,63 @@ import { readBedrockConfig } from "./bedrock-auth";
 const ORCHESTRATOR_MCP_TOOLS = [
   "mcp__orchestrator__list_slices",
   "mcp__orchestrator__dispatch_slice",
+  "mcp__orchestrator__run_slice_graph",
+  "mcp__orchestrator__get_slice_graph_run",
   "mcp__orchestrator__dispatch_custom_slice",
   "mcp__orchestrator__get_budget",
   "mcp__orchestrator__stop",
 ];
 
+function tomlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+function removeTomlTable(source: string, tableName: string): string {
+  const header = `[${tableName}]`;
+  const lines = source.split(/\r?\n/);
+  const kept: string[] = [];
+  let skipping = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed === header) {
+      skipping = true;
+      continue;
+    }
+    if (skipping && trimmed.startsWith("[") && trimmed.endsWith("]")) {
+      skipping = false;
+    }
+    if (!skipping) kept.push(line);
+  }
+  return kept.join("\n").trimEnd();
+}
+
+async function createCodexHomeWithMcp(sessionId: string, orchestratorUrl: string): Promise<string> {
+  const sourceHome = process.env.CODEX_HOME ?? (process.env.HOME ? path.join(process.env.HOME, ".codex") : "");
+  if (!sourceHome) throw new Error("CODEX_HOME or HOME is required for Codex orchestrator MCP");
+
+  const codexHome = path.join(sessionsRoot(), sessionId, "codex-home");
+  await fs.mkdir(codexHome, { recursive: true });
+  const entries = await fs.readdir(sourceHome, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (entry.name === "config.toml") continue;
+    const src = path.join(sourceHome, entry.name);
+    const dest = path.join(codexHome, entry.name);
+    try {
+      await fs.symlink(src, dest, entry.isDirectory() ? "dir" : "file");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
+  }
+
+  const baseConfig = await fs.readFile(path.join(sourceHome, "config.toml"), "utf8").catch(() => "");
+  const config = `${removeTomlTable(baseConfig, "mcp_servers.orchestrator")}
+
+[mcp_servers.orchestrator]
+url = ${tomlString(orchestratorUrl)}
+`;
+  await fs.writeFile(path.join(codexHome, "config.toml"), config, { mode: 0o600 });
+  return codexHome;
+}
 
 export async function spawnTurn(
   sessionId: string,
@@ -89,27 +141,36 @@ export async function spawnTurn(
 
   const port = process.env.PORT ?? "3737";
 
-  // For orchestrator sessions (Claude-only in v1): generate an MCP config and
-  // inject it so run-turn.sh passes --mcp-config to the Claude CLI.
-  if (isOrchestrator(agentSnapshot) && isBedrock) {
+  // For orchestrator sessions: expose the local MCP server so agents can run
+  // saved slice workflows and dispatch specialist sub-agents.
+  if (isOrchestrator(agentSnapshot)) {
     const wallclock = agentSnapshot?.budget?.max_wallclock_seconds;
     const token = mintToken(sessionId, wallclock);
-    const mcpConfig = {
-      mcpServers: {
-        orchestrator: {
-          type: "http",
-          url: `http://127.0.0.1:${port}/api/mcp/orchestrator/${sessionId}?token=${token}`,
-        },
-      },
-    };
-    const mcpConfigPath = path.join(sessionsRoot(), sessionId, "mcp-config.json");
-    await fs.mkdir(path.dirname(mcpConfigPath), { recursive: true });
-    await fs.writeFile(mcpConfigPath, JSON.stringify(mcpConfig, null, 2), "utf8");
+    const orchestratorUrl = `http://127.0.0.1:${port}/api/mcp/orchestrator/${sessionId}?token=${token}`;
+    extraEnv.SATURN_ORCHESTRATOR_TOOLS = "1";
 
-    extraEnv.MCP_CONFIG_PATH = mcpConfigPath;
-    // Merge MCP tool names so the orchestrator is allowed to call them
-    const allTools = [...new Set([...baseTools, ...ORCHESTRATOR_MCP_TOOLS])];
-    extraEnv.ALLOWED_TOOLS_OVERRIDE = allTools.join(",");
+    if (normalizedCli === "codex") {
+      extraEnv.CODEX_HOME = await createCodexHomeWithMcp(sessionId, orchestratorUrl);
+    }
+
+    if (isBedrock || isPersonal) {
+      const mcpConfig = {
+        mcpServers: {
+          orchestrator: {
+            type: "http",
+            url: orchestratorUrl,
+          },
+        },
+      };
+      const mcpConfigPath = path.join(sessionsRoot(), sessionId, "mcp-config.json");
+      await fs.mkdir(path.dirname(mcpConfigPath), { recursive: true });
+      await fs.writeFile(mcpConfigPath, JSON.stringify(mcpConfig, null, 2), "utf8");
+
+      extraEnv.MCP_CONFIG_PATH = mcpConfigPath;
+      // Merge MCP tool names so the orchestrator is allowed to call them
+      const allTools = [...new Set([...baseTools, ...ORCHESTRATOR_MCP_TOOLS])];
+      extraEnv.ALLOWED_TOOLS_OVERRIDE = allTools.join(",");
+    }
   } else if (isLocal && baseTools.length === 0) {
     if (mcpTools === true) {
       extraEnv.ALLOWED_TOOLS_OVERRIDE = "ALL";

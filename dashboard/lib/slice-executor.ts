@@ -520,10 +520,21 @@ export async function executeSlice(req: SliceExecuteInput): Promise<SliceExecute
     return failure(slice_run_id, `failed to create slice dir: ${(err as Error).message}`);
   }
 
-  const rendered = renderTemplate(
+  const renderedBase = renderTemplate(
     slice.prompt_template.system,
     req.inputs as Record<string, unknown>
   );
+  const rendered = Object.keys(req.inputs).length === 0
+    ? renderedBase
+    : `${renderedBase}
+
+---
+
+Slice inputs from the orchestrator:
+
+\`\`\`json
+${JSON.stringify(req.inputs, null, 2)}
+\`\`\``;
 
   let sandbox: SandboxResult;
   try {

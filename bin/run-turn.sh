@@ -186,16 +186,33 @@ Claim tasks before working on them. Release when done. If a claim fails with a c
 ---"
 fi
 
+SATURN_ORCHESTRATOR_INSTRUCTIONS=""
+if [[ "${SATURN_ORCHESTRATOR_TOOLS:-}" == "1" ]]; then
+  SATURN_ORCHESTRATOR_INSTRUCTIONS="
+---
+
+## Saturn Slice Workflow
+
+This saved agent can use the local \`orchestrator\` MCP server to coordinate specialist sub-agents.
+
+- Start by calling \`list_slices\`; it returns the available slice catalog and any saved \`workflow_graph\`.
+- If \`workflow_graph\` is present, prefer \`run_slice_graph\` for tasks that should follow the visual workflow. It starts the saved graph in dependency/top-to-bottom order and returns a \`graph_run_id\`; poll \`get_slice_graph_run\` with that id until status is \`success\` or \`failed\`. Connected downstream nodes receive completed upstream node outputs as \`upstream_results\`.
+- Use \`dispatch_slice\` for ad-hoc branches or one-off specialist calls outside the saved graph.
+- Synthesize the workflow results for the user instead of dumping raw tool JSON.
+
+---"
+fi
+
 # Build the prompt text
 if [[ "$BUILD_TRANSCRIPT" == "first" ]]; then
   if [[ -n "$AGENT_PROMPT" ]]; then
-    PROMPT_TO_SEND="$AGENT_PROMPT$SATURN_CLI_INSTRUCTIONS
+    PROMPT_TO_SEND="$AGENT_PROMPT$SATURN_CLI_INSTRUCTIONS$SATURN_ORCHESTRATOR_INSTRUCTIONS
 
 ---
 
 User: $PROMPT_USER_MESSAGE"
   else
-    PROMPT_TO_SEND="${SATURN_CLI_INSTRUCTIONS:+${SATURN_CLI_INSTRUCTIONS}$'\n\n'}$PROMPT_USER_MESSAGE"
+    PROMPT_TO_SEND="${SATURN_CLI_INSTRUCTIONS:+${SATURN_CLI_INSTRUCTIONS}$'\n\n'}${SATURN_ORCHESTRATOR_INSTRUCTIONS:+${SATURN_ORCHESTRATOR_INSTRUCTIONS}$'\n\n'}$PROMPT_USER_MESSAGE"
   fi
 elif [[ "$BUILD_TRANSCRIPT" == "yes" ]]; then
   TRANSCRIPT="$(jq -r '
@@ -217,6 +234,7 @@ elif [[ "$BUILD_TRANSCRIPT" == "yes" ]]; then
   ' "$META_FILE")"
   AGENT_LINE=""
   [[ -n "$AGENT_PROMPT" ]] && AGENT_LINE="$AGENT_PROMPT
+$SATURN_ORCHESTRATOR_INSTRUCTIONS
 
 ---
 

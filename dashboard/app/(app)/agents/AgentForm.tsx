@@ -648,6 +648,15 @@ const NODE_HEIGHT = 128;
 const NODE_PORT_X = NODE_WIDTH / 2;
 const NODE_VERTICAL_GAP = 52;
 
+type PaletteDragState = {
+  sliceId: string;
+  startX: number;
+  startY: number;
+  x: number;
+  y: number;
+  active: boolean;
+};
+
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
 }
@@ -714,6 +723,30 @@ function topDownLayoutNodes(
   }));
 }
 
+function wouldCreateGraphCycle(
+  edges: SliceGraph["edges"],
+  fromNodeId: string,
+  toNodeId: string,
+): boolean {
+  const outgoing = new Map<string, string[]>();
+  for (const edge of edges) {
+    const next = outgoing.get(edge.from) ?? [];
+    next.push(edge.to);
+    outgoing.set(edge.from, next);
+  }
+
+  const stack = [toNodeId];
+  const seen = new Set<string>();
+  while (stack.length > 0) {
+    const nodeId = stack.pop()!;
+    if (nodeId === fromNodeId) return true;
+    if (seen.has(nodeId)) continue;
+    seen.add(nodeId);
+    stack.push(...(outgoing.get(nodeId) ?? []));
+  }
+  return false;
+}
+
 function SliceWorkflowGraph({
   slices,
   graph,
@@ -729,9 +762,11 @@ function SliceWorkflowGraph({
 }) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const migratedTopDownLayoutRef = useRef(false);
+  const paletteDragRef = useRef<PaletteDragState | null>(null);
   const [dragging, setDragging] = useState<{ nodeId: string; offsetX: number; offsetY: number } | null>(null);
   const [connectionDrag, setConnectionDrag] = useState<{ fromNodeId: string; x: number; y: number } | null>(null);
   const [connectionTarget, setConnectionTarget] = useState<string | null>(null);
+  const [paletteDrag, setPaletteDrag] = useState<PaletteDragState | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(graph.nodes[0]?.id ?? null);
   const [fullscreen, setFullscreen] = useState(false);
 
@@ -743,7 +778,7 @@ function SliceWorkflowGraph({
   );
 
   useEffect(() => {
-    if (selectedNodeId && graph.nodes.some((node) => node.id === selectedNodeId)) return;
+    if (!selectedNodeId || graph.nodes.some((node) => node.id === selectedNodeId)) return;
     setSelectedNodeId(graph.nodes[0]?.id ?? null);
   }, [graph.nodes, selectedNodeId]);
 
@@ -810,6 +845,62 @@ function SliceWorkflowGraph({
     });
   };
 
+  useEffect(() => {
+    if (!paletteDrag) return;
+
+    const finishPaletteDrag = (event: PointerEvent) => {
+      const current = paletteDragRef.current;
+      paletteDragRef.current = null;
+      setPaletteDrag(null);
+      if (!current) return;
+
+      const distance = Math.hypot(event.clientX - current.startX, event.clientY - current.startY);
+      if ((current.active || distance > 6) && canvasRef.current) {
+        const rect = canvasRef.current.getBoundingClientRect();
+        const insideCanvas =
+          event.clientX >= rect.left &&
+          event.clientX <= rect.right &&
+          event.clientY >= rect.top &&
+          event.clientY <= rect.bottom;
+        if (insideCanvas) {
+          addNode(
+            current.sliceId,
+            event.clientX - rect.left - NODE_WIDTH / 2,
+            event.clientY - rect.top - NODE_HEIGHT / 2,
+          );
+        }
+      }
+    };
+
+    const cancelPaletteDrag = () => {
+      paletteDragRef.current = null;
+      setPaletteDrag(null);
+    };
+
+    const updatePaletteDrag = (event: PointerEvent) => {
+      const current = paletteDragRef.current;
+      if (!current) return;
+      const distance = Math.hypot(event.clientX - current.startX, event.clientY - current.startY);
+      const next = {
+        ...current,
+        x: event.clientX,
+        y: event.clientY,
+        active: current.active || distance > 6,
+      };
+      paletteDragRef.current = next;
+      setPaletteDrag(next);
+    };
+
+    window.addEventListener("pointermove", updatePaletteDrag);
+    window.addEventListener("pointerup", finishPaletteDrag);
+    window.addEventListener("pointercancel", cancelPaletteDrag);
+    return () => {
+      window.removeEventListener("pointermove", updatePaletteDrag);
+      window.removeEventListener("pointerup", finishPaletteDrag);
+      window.removeEventListener("pointercancel", cancelPaletteDrag);
+    };
+  }, [Boolean(paletteDrag)]);
+
   const removeNode = (nodeId: string) => {
     onGraphChange((current) => ({
       nodes: current.nodes.filter((node) => node.id !== nodeId),
@@ -834,6 +925,7 @@ function SliceWorkflowGraph({
     onGraphChange((current) => {
       const exists = current.edges.some((edge) => edge.from === fromNodeId && edge.to === toNodeId);
       if (exists) return current;
+      if (wouldCreateGraphCycle(current.edges, fromNodeId, toNodeId)) return current;
       return {
         ...current,
         edges: [...current.edges, { id: `edge-${fromNodeId}-${toNodeId}`, from: fromNodeId, to: toNodeId }],
@@ -926,9 +1018,9 @@ function SliceWorkflowGraph({
     );
   };
 
-  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+  const updateGraphPointerDrag = (clientX: number, clientY: number) => {
     if (connectionDrag) {
-      const point = canvasPoint(e.clientX, e.clientY);
+      const point = canvasPoint(clientX, clientY);
       if (point) setConnectionDrag((current) => current ? { ...current, ...point } : current);
       return;
     }
@@ -936,8 +1028,8 @@ function SliceWorkflowGraph({
     const rect = canvasRef.current.getBoundingClientRect();
     const maxX = Math.max(12, rect.width - NODE_WIDTH - 12);
     const maxY = Math.max(12, rect.height - NODE_HEIGHT - 12);
-    const x = clamp(e.clientX - rect.left - dragging.offsetX, 12, maxX);
-    const y = clamp(e.clientY - rect.top - dragging.offsetY, 12, maxY);
+    const x = clamp(clientX - rect.left - dragging.offsetX, 12, maxX);
+    const y = clamp(clientY - rect.top - dragging.offsetY, 12, maxY);
     onGraphChange((current) => ({
       ...current,
       nodes: current.nodes.map((node) => (
@@ -946,15 +1038,47 @@ function SliceWorkflowGraph({
     }));
   };
 
-  const handleCanvasPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (connectionDrag) {
-      const targetId = connectionTarget ?? findConnectionTargetAt(connectionDrag.fromNodeId, e.clientX, e.clientY);
-      if (targetId) addEdge(connectionDrag.fromNodeId, targetId);
-    }
+  const cancelGraphPointerDrag = () => {
     setDragging(null);
     setConnectionDrag(null);
     setConnectionTarget(null);
   };
+
+  const finishGraphPointerDrag = (clientX: number, clientY: number) => {
+    if (connectionDrag) {
+      const targetId = connectionTarget ?? findConnectionTargetAt(connectionDrag.fromNodeId, clientX, clientY);
+      if (targetId) addEdge(connectionDrag.fromNodeId, targetId);
+    }
+    cancelGraphPointerDrag();
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    updateGraphPointerDrag(e.clientX, e.clientY);
+  };
+
+  const handleCanvasPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    finishGraphPointerDrag(e.clientX, e.clientY);
+  };
+
+  useEffect(() => {
+    if (!dragging && !connectionDrag) return;
+
+    const handleWindowPointerMove = (event: PointerEvent) => {
+      updateGraphPointerDrag(event.clientX, event.clientY);
+    };
+    const handleWindowPointerUp = (event: PointerEvent) => {
+      finishGraphPointerDrag(event.clientX, event.clientY);
+    };
+
+    window.addEventListener("pointermove", handleWindowPointerMove);
+    window.addEventListener("pointerup", handleWindowPointerUp);
+    window.addEventListener("pointercancel", cancelGraphPointerDrag);
+    return () => {
+      window.removeEventListener("pointermove", handleWindowPointerMove);
+      window.removeEventListener("pointerup", handleWindowPointerUp);
+      window.removeEventListener("pointercancel", cancelGraphPointerDrag);
+    };
+  }, [dragging, connectionDrag, connectionTarget, graph.nodes]);
 
   const edgesWithNodes = graph.edges
     .map((edge) => {
@@ -1027,6 +1151,20 @@ function SliceWorkflowGraph({
                     e.dataTransfer.setData("application/saturn-slice-id", slice.id);
                     e.dataTransfer.effectAllowed = "copy";
                   }}
+                  onPointerDown={(e) => {
+                    if (e.button !== 0) return;
+                    e.preventDefault();
+                    const nextDrag = {
+                      sliceId: slice.id,
+                      startX: e.clientX,
+                      startY: e.clientY,
+                      x: e.clientX,
+                      y: e.clientY,
+                      active: false,
+                    };
+                    paletteDragRef.current = nextDrag;
+                    setPaletteDrag(nextDrag);
+                  }}
                   className={[
                     "rounded-md border p-2 transition-colors cursor-grab active:cursor-grabbing",
                     selected
@@ -1041,6 +1179,7 @@ function SliceWorkflowGraph({
                     </div>
                     <button
                       type="button"
+                      onPointerDown={(e) => e.stopPropagation()}
                       onClick={() => addNode(slice.id)}
                       className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border text-muted hover:bg-bg-hover hover:text-fg"
                       title={`Add ${slice.name}`}
@@ -1074,9 +1213,14 @@ function SliceWorkflowGraph({
               e.dataTransfer.dropEffect = "copy";
             }}
             onDrop={handleDrop}
+            onPointerDown={(e) => {
+              if (!(e.target as HTMLElement).closest(".slice-workflow-node, .slice-workflow-node-editor, .slice-workflow-port")) {
+                setSelectedNodeId(null);
+              }
+            }}
             onPointerMove={handlePointerMove}
             onPointerUp={handleCanvasPointerUp}
-            onPointerCancel={handleCanvasPointerUp}
+            onPointerCancel={cancelGraphPointerDrag}
           >
             <svg className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden="true">
               <defs>
@@ -1269,6 +1413,15 @@ function SliceWorkflowGraph({
                 </div>
                 <button
                   type="button"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={() => setSelectedNodeId(null)}
+                  className="rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:bg-bg-hover hover:text-fg"
+                >
+                  Close
+                </button>
+                <button
+                  type="button"
+                  onPointerDown={(e) => e.stopPropagation()}
                   onClick={() => removeNode(selectedNode.id)}
                   className="rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:bg-bg-hover hover:text-fg"
                 >
@@ -1340,6 +1493,19 @@ function SliceWorkflowGraph({
           )}
         </div>
       </div>
+
+      {paletteDrag?.active && (
+        <div
+          className="slice-workflow-drag-preview"
+          style={{ left: paletteDrag.x, top: paletteDrag.y }}
+          aria-hidden="true"
+        >
+          <div className="truncate text-[12px] font-semibold text-fg">
+            {sliceById.get(paletteDrag.sliceId)?.name ?? paletteDrag.sliceId}
+          </div>
+          <div className="truncate text-[10px] text-muted">{paletteDrag.sliceId}</div>
+        </div>
+      )}
     </div>
   );
 }
