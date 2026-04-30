@@ -4,9 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import type { StreamEvent, TokenBreakdown } from "@/lib/events";
 import type { SessionMeta } from "@/lib/runs";
-import { formatDuration } from "@/lib/format";
-import { toClaudeAlias } from "@/lib/claude-models";
-import { formatReasoningEffort } from "@/lib/models";
 import { FileViewer } from "@/app/components/chat/FileViewer";
 
 export type InspectorTool = {
@@ -30,7 +27,8 @@ type Props = {
   fileOpenRequest?: { path: string; requestId: number } | null;
 };
 
-type TabKey = "tool" | "run" | "files" | "tokens";
+const INSPECTOR_TABS = ["tool", "files", "tokens"] as const;
+type TabKey = typeof INSPECTOR_TABS[number];
 type FilesFilter = "all" | "changes" | "files";
 
 type GitChange = {
@@ -467,7 +465,7 @@ export function Inspector({
   referencedFiles = [],
   fileOpenRequest,
 }: Props) {
-  const [tab, setTab] = useState<TabKey>("run");
+  const [tab, setTab] = useState<TabKey>("tool");
   const [filesFilter, setFilesFilter] = useState<FilesFilter>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -605,24 +603,6 @@ export function Inspector({
   const collapseVisibleDirs = () => {
     setCollapsedDirs((current) => new Set([...current, ...visibleDirKeys]));
   };
-  const result = [...events].reverse().find((e) => e.kind === "result");
-  const resultMeta = result?.kind === "result" ? result : null;
-
-  const lastTurn = session.turns[session.turns.length - 1];
-  const startedMs = lastTurn?.started_at ? Date.parse(lastTurn.started_at) : undefined;
-  const finishedMs = lastTurn?.finished_at
-    ? Date.parse(lastTurn.finished_at)
-    : session.status === "running"
-      ? Date.now()
-      : undefined;
-  const durationMs =
-    startedMs !== undefined && finishedMs !== undefined && finishedMs >= startedMs
-      ? finishedMs - startedMs
-      : undefined;
-
-  const modelDisplay = toClaudeAlias(lastTurn?.model ?? session.agent_snapshot?.model ?? undefined)
-    ?? lastTurn?.model ?? session.agent_snapshot?.model ?? null;
-
   return (
     <aside className="inspector" style={{ width }}>
       <button
@@ -634,7 +614,7 @@ export function Inspector({
       />
       {/* Tab bar */}
       <div className="tab-bar">
-        {(["tool", "run", "files", "tokens"] as TabKey[]).map((t) => {
+        {INSPECTOR_TABS.map((t) => {
           const badge =
             t === "tool" ? tools.length :
             t === "files" ? fileTabCount :
@@ -646,7 +626,7 @@ export function Inspector({
               className={`tab ${tab === t ? "active" : ""}`}
               onClick={() => setTab(t)}
             >
-              {t === "tool" ? "Tool" : t === "run" ? "Run" : t === "files" ? "Files" : "Tokens"}
+              {t === "tool" ? "Tool" : t === "files" ? "Files" : "Tokens"}
               {badge != null && badge > 0 && (
                 <span className="n">{badge}</span>
               )}
@@ -709,32 +689,6 @@ export function Inspector({
                 </div>
               )}
             </>
-          )}
-        </div>
-      )}
-
-      {/* ── Run tab ── */}
-      {tab === "run" && (
-        <div className="flex-1 overflow-y-auto min-h-0">
-          <Section title="Session">
-            <div className="kv-stack">
-              <KVRow label="Status" value={session.status} />
-              <KVRow label="Turns" value={String(session.turns.length)} />
-              <KVRow label="Started" value={new Date(session.started_at).toLocaleTimeString()} />
-              <KVRow label="Duration" value={formatDuration(durationMs)} />
-              <KVRow label="CLI" value={lastTurn?.cli ?? null} />
-              <KVRow label="Model" value={modelDisplay} />
-              <KVRow label="Effort" value={formatReasoningEffort(lastTurn?.reasoningEffort ?? session.agent_snapshot?.reasoningEffort)} />
-            </div>
-          </Section>
-          {resultMeta && (
-            <Section title="Last result">
-              <div className="kv-stack">
-                <KVRow label="Success" value={resultMeta.success ? "yes" : "no"} />
-                <KVRow label="Tokens" value={resultMeta.totalTokens.toLocaleString()} />
-                <KVRow label="Turns" value={String(resultMeta.numTurns)} />
-              </div>
-            </Section>
           )}
         </div>
       )}

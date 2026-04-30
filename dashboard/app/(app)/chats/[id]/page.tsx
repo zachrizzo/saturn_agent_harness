@@ -7,6 +7,22 @@ import { SwarmView } from "./SwarmView";
 export const revalidate = 0;
 export const dynamic = "force-dynamic";
 
+const SESSION_READ_RETRY_DELAYS_MS = [75, 125, 200, 300, 400, 500];
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function getSessionWithCreateRaceRetry(id: string): ReturnType<typeof getSession> {
+  let session = await getSession(id);
+  for (const delay of SESSION_READ_RETRY_DELAYS_MS) {
+    if (session) return session;
+    await sleep(delay);
+    session = await getSession(id);
+  }
+  return session;
+}
+
 export default async function ChatSessionPage({
   params,
   searchParams,
@@ -16,7 +32,7 @@ export default async function ChatSessionPage({
 }) {
   const [{ id }, sp] = await Promise.all([params, searchParams]);
   const [session, settings] = await Promise.all([
-    getSession(id),
+    getSessionWithCreateRaceRetry(id),
     readAppSettings(),
   ]);
   if (!session) notFound();

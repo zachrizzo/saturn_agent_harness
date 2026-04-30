@@ -1,4 +1,6 @@
 import Link from "next/link";
+import type { ReactNode } from "react";
+import { DispatchConnectionActions } from "./DispatchConnectionActions";
 import { DispatchQrCard } from "./DispatchQrCard";
 import { getDispatchOverview } from "@/lib/dispatch";
 import { listAgents, type Agent, type SessionMeta } from "@/lib/runs";
@@ -40,16 +42,54 @@ function agentKind(agent: Agent): string {
   return agent.kind === "orchestrator" ? "Swarm" : "Chat";
 }
 
-function setupStep(ok: boolean, label: string, detail: string): JSX.Element {
+type WizardStepState = "complete" | "active" | "locked";
+
+type WizardStep = {
+  number: string;
+  title: string;
+  summary: string;
+  detail: string;
+  state: WizardStepState;
+};
+
+function setupStep(step: WizardStep): JSX.Element {
   return (
-    <div className={ok ? "dispatch-step done" : "dispatch-step"}>
+    <div className={`dispatch-step ${step.state}`}>
       <span className="dispatch-step-marker" aria-hidden="true">
-        {ok ? "✓" : ""}
+        {step.state === "complete" ? "✓" : step.number}
       </span>
       <div className="min-w-0">
-        <div className="dispatch-step-label">{label}</div>
-        <div className="dispatch-step-detail">{detail}</div>
+        <div className="dispatch-step-label">{step.title}</div>
+        <div className="dispatch-step-detail">{step.summary}</div>
       </div>
+    </div>
+  );
+}
+
+function commandBlock(command: string): JSX.Element {
+  return (
+    <pre className="dispatch-command mono">
+      <code>{command}</code>
+    </pre>
+  );
+}
+
+function WizardAction({
+  title,
+  body,
+  children,
+}: {
+  title: string;
+  body: string;
+  children?: ReactNode;
+}): JSX.Element {
+  return (
+    <div className="dispatch-wizard-action">
+      <div>
+        <div className="dispatch-wizard-action-title">{title}</div>
+        <p>{body}</p>
+      </div>
+      {children}
     </div>
   );
 }
@@ -73,35 +113,70 @@ export default async function DispatchPage() {
 
   const configured = overview.plist.tokenConfigured
     && (overview.plist.allowAll || overview.plist.allowedChatCount > 0);
-  const nextStep = !overview.telegram.botUsername
-    ? {
-        label: "Start here",
-        title: "Create or enter a bot username",
-        body: "Use BotFather to create the bot, then paste the username to generate the phone link and QR code.",
-      }
-    : !overview.plist.tokenConfigured
-      ? {
-          label: "Needs bridge token",
-          title: "Install the Telegram bridge",
-          body: "The bot username is known, but the local LaunchAgent still needs the token before Saturn can receive messages.",
-        }
-      : !configured
-        ? {
-            label: "Needs allowed chat",
-            title: "Allow a chat id",
-            body: "Add at least one allowed Telegram chat id, or configure the bridge to allow all chats.",
-          }
-        : !overview.service.running
-          ? {
-              label: "Ready to start",
-              title: "Start the LaunchAgent",
-              body: "The bot is configured. Start the bridge so Telegram messages can create Saturn chats.",
-            }
-          : {
-              label: "Ready",
-              title: "Dispatch is listening",
-              body: "Open the bot on your phone and send a task. Saturn will route it into Chats.",
-            };
+  const setupChecks = [
+    Boolean(overview.telegram.botUsername),
+    overview.plist.tokenConfigured,
+    overview.plist.allowAll || overview.plist.allowedChatCount > 0,
+    overview.service.running,
+  ];
+  const firstIncomplete = setupChecks.findIndex((done) => !done);
+  const activeIndex = firstIncomplete === -1 ? setupChecks.length - 1 : firstIncomplete;
+  const stepState = (index: number): WizardStepState => {
+    if (setupChecks[index]) return "complete";
+    return index === activeIndex ? "active" : "locked";
+  };
+  const botUsername = overview.telegram.botUsername ?? "your_saturn_bot";
+  const baseUrl = overview.plist.baseUrl ?? "http://127.0.0.1:3737";
+  const discoveryCommand = [
+    `TELEGRAM_BOT_TOKEN="123:abc"`,
+    `TELEGRAM_BOT_USERNAME="${botUsername}"`,
+    `TELEGRAM_ALLOW_ALL=1`,
+    `SATURN_BASE_URL="${baseUrl}"`,
+    `node bin/telegram-dispatch.mjs`,
+  ].join(" \\\n  ");
+  const installCommand = [
+    `TELEGRAM_BOT_TOKEN="123:abc"`,
+    `TELEGRAM_BOT_USERNAME="${botUsername}"`,
+    `TELEGRAM_ALLOWED_CHAT_IDS="123456789"`,
+    `SATURN_BASE_URL="${baseUrl}"`,
+    `bin/install-telegram-service.sh`,
+  ].join(" \\\n  ");
+  const restartCommand = `launchctl kickstart -k gui/$(id -u)/${overview.service.label}`;
+  const wizardSteps: WizardStep[] = [
+    {
+      number: "1",
+      title: "Create bot",
+      summary: overview.telegram.botUsername ? `@${overview.telegram.botUsername}` : "BotFather username needed",
+      detail: "Create a Telegram bot with BotFather, then enter the bot username so Saturn can generate the phone link.",
+      state: stepState(0),
+    },
+    {
+      number: "2",
+      title: "Install bridge",
+      summary: overview.plist.tokenConfigured ? "Token saved" : "Token not installed",
+      detail: "Install the local LaunchAgent with the BotFather token. The token stays in your LaunchAgent plist.",
+      state: stepState(1),
+    },
+    {
+      number: "3",
+      title: "Allow chat",
+      summary: overview.plist.allowAll
+        ? "Discovery mode"
+        : overview.plist.allowedChatCount > 0
+          ? `${overview.plist.allowedChatCount} chat${overview.plist.allowedChatCount === 1 ? "" : "s"} allowed`
+          : "No chat allowed yet",
+      detail: "Send /start to discover your Telegram chat id, then reinstall with TELEGRAM_ALLOWED_CHAT_IDS.",
+      state: stepState(2),
+    },
+    {
+      number: "4",
+      title: "Send test",
+      summary: overview.service.running ? "Bridge running" : "Bridge stopped",
+      detail: "Open the bot on your phone and send a normal task. It should appear in Chats.",
+      state: stepState(3),
+    },
+  ];
+  const activeStep = wizardSteps[activeIndex] ?? wizardSteps[wizardSteps.length - 1];
 
   return (
     <div className="dispatch-page space-y-6">
@@ -118,16 +193,76 @@ export default async function DispatchPage() {
         </div>
       </header>
 
-      <section className="dispatch-command-center">
-        <div className="dispatch-next-card">
-          <div className="dispatch-next-label">{nextStep.label}</div>
-          <h2>{nextStep.title}</h2>
-          <p>{nextStep.body}</p>
-          <div className="dispatch-setup-list" aria-label="Telegram setup checklist">
-            {setupStep(Boolean(overview.telegram.botUsername), "Bot username", overview.telegram.botUsername ? `@${overview.telegram.botUsername}` : "Paste it below")}
-            {setupStep(overview.plist.tokenConfigured, "Bot token", overview.plist.tokenConfigured ? "Saved in LaunchAgent" : "Missing from bridge")}
-            {setupStep(overview.plist.allowAll || overview.plist.allowedChatCount > 0, "Allowed chats", overview.plist.allowAll ? "All chats allowed" : `${overview.plist.allowedChatCount} chat${overview.plist.allowedChatCount === 1 ? "" : "s"}`)}
-            {setupStep(overview.service.running, "Bridge service", overview.service.running ? `Running${overview.service.pid ? ` as pid ${overview.service.pid}` : ""}` : "Stopped")}
+      <section className="dispatch-wizard" aria-label="Dispatch setup wizard">
+        <div className="dispatch-wizard-rail">
+          <div className="dispatch-wizard-kicker">Setup wizard</div>
+          <div className="dispatch-setup-list">
+            {wizardSteps.map((step) => (
+              <div key={step.number} className="dispatch-step-wrap">
+                {setupStep(step)}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="dispatch-wizard-main">
+          <div className="dispatch-next-label">
+            {configured && overview.service.running ? "Ready" : `Step ${activeStep.number}`}
+          </div>
+          <h2>{activeStep.title}</h2>
+          <p>{activeStep.detail}</p>
+
+          <div className="dispatch-wizard-actions">
+            {activeIndex === 0 && (
+              <WizardAction
+                title="Create the bot in Telegram"
+                body="Open BotFather, send /newbot, choose a bot username, then paste that username in the QR helper below."
+              >
+                <a href="https://t.me/BotFather" target="_blank" rel="noreferrer" className="btn btn-primary text-[12px] py-1.5 px-3">
+                  Open BotFather
+                </a>
+              </WizardAction>
+            )}
+            {activeIndex === 1 && (
+              <WizardAction
+                title="Install the bridge"
+                body="Run the installer from the repo root. Use the token BotFather gave you and replace the chat id after discovery."
+              >
+                {commandBlock(installCommand)}
+              </WizardAction>
+            )}
+            {activeIndex === 2 && (
+              <>
+                <WizardAction
+                  title="Discover your chat id"
+                  body="Run the bridge once in allow-all mode, send /start to the bot, then read telegram/state.json for your chat id."
+                >
+                  {commandBlock(discoveryCommand)}
+                </WizardAction>
+                <WizardAction
+                  title="Lock it down"
+                  body="After you have the chat id, install the LaunchAgent with an explicit allowlist."
+                >
+                  {commandBlock(installCommand)}
+                </WizardAction>
+              </>
+            )}
+            {activeIndex === 3 && !overview.service.running && (
+              <WizardAction
+                title="Start the LaunchAgent"
+                body={overview.service.loaded ? "The service is loaded but not running. Restart it and then refresh this page." : "The service is not loaded yet. Run the installer command first."}
+              >
+                {overview.service.loaded ? commandBlock(restartCommand) : commandBlock(installCommand)}
+              </WizardAction>
+            )}
+            {overview.service.running && (
+              <WizardAction
+                title="Send a test message"
+                body="Open the bot, send a short task, then watch the created session in Chats."
+              >
+                <Link href="/chats" className="btn btn-primary text-[12px] py-1.5 px-3">Open chats</Link>
+              </WizardAction>
+            )}
           </div>
         </div>
 
@@ -167,8 +302,8 @@ export default async function DispatchPage() {
 
         <div className="card p-5 space-y-4">
           <div className="sect-head">
-            <h2>Phone workflow</h2>
-            <span className="right">OpenClaw-style</span>
+            <h2>Setup reference</h2>
+            <span className="right">manual path</span>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="rounded-lg border border-border bg-bg-subtle p-4">
@@ -272,32 +407,38 @@ export default async function DispatchPage() {
           </div>
         ) : (
           <div className="grid gap-3">
-            {overview.state.chats.map((chat) => (
-              <Link
-                key={chat.chatId}
-                href={chat.sessionId ? `/chats/${encodeURIComponent(chat.sessionId)}` : "/chats"}
-                className="card p-4 hover:border-accent/40 transition-colors"
-              >
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-[13px] font-medium truncate">Telegram chat {chat.chatId}</div>
-                    <div className="text-[11px] text-subtle truncate">
-                      {chat.sessionId ? `session ${chat.sessionId}` : "no session yet"}
+            {overview.state.chats.map((chat) => {
+              const href = chat.sessionId ? `/chats/${encodeURIComponent(chat.sessionId)}` : "/chats";
+              return (
+                <div
+                  key={chat.chatId}
+                  className="card p-4"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-[13px] font-medium truncate">Telegram chat {chat.chatId}</div>
+                      <div className="text-[11px] text-subtle truncate">
+                        {chat.sessionId ? `session ${chat.sessionId}` : "no session yet"}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <span className="chip">{chat.session?.status ?? "idle"}</span>
+                      {chat.queueLength > 0 && <span className="chip text-[var(--warn)]">{chat.queueLength} queued</span>}
+                      {chat.pendingSessionId && <span className="chip text-accent">working</span>}
+                      <Link href={href} className="btn btn-primary text-[12px] py-1 px-2.5">
+                        Open
+                      </Link>
+                      <DispatchConnectionActions chatId={chat.chatId} />
                     </div>
                   </div>
-                  <div className="flex flex-wrap gap-2">
-                    <span className="chip">{chat.session?.status ?? "idle"}</span>
-                    {chat.queueLength > 0 && <span className="chip text-[var(--warn)]">{chat.queueLength} queued</span>}
-                    {chat.pendingSessionId && <span className="chip text-accent">working</span>}
+                  <div className="mt-3 grid gap-2 md:grid-cols-[170px_minmax(0,1fr)_150px] text-[12px]">
+                    <div className="text-muted">Route: <span className="text-fg">{chat.agentId ?? chat.session?.agent_snapshot?.name ?? "Ad-hoc"}</span></div>
+                    <div className="truncate text-muted">Last: <span className="text-fg">{lastTurn(chat.session)}</span></div>
+                    <div className="text-muted md:text-right">{formatDate(chat.session?.started_at)}</div>
                   </div>
                 </div>
-                <div className="mt-3 grid gap-2 md:grid-cols-[170px_minmax(0,1fr)_150px] text-[12px]">
-                  <div className="text-muted">Route: <span className="text-fg">{chat.agentId ?? chat.session?.agent_snapshot?.name ?? "Ad-hoc"}</span></div>
-                  <div className="truncate text-muted">Last: <span className="text-fg">{lastTurn(chat.session)}</span></div>
-                  <div className="text-muted md:text-right">{formatDate(chat.session?.started_at)}</div>
-                </div>
-              </Link>
-            ))}
+              );
+            })}
           </div>
         )}
       </section>

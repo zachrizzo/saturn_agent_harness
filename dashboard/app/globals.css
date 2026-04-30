@@ -1494,31 +1494,44 @@ h1, h2, h3, h4, h5, h6 {
   gap: 14px;
 }
 
-.dispatch-command-center {
+.dispatch-wizard {
   display: grid;
-  grid-template-columns: minmax(300px, 0.95fr) minmax(0, 1.25fr);
+  grid-template-columns: minmax(250px, 0.58fr) minmax(340px, 1fr) minmax(320px, 0.9fr);
   gap: 14px;
   align-items: stretch;
 }
 
-.dispatch-next-card {
+.dispatch-wizard-rail,
+.dispatch-wizard-main {
   position: relative;
   overflow: hidden;
   padding: 18px;
   border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
   border-radius: 8px;
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--accent) 8%, var(--bg-elev)), var(--bg-elev) 58%),
-    var(--bg-elev);
+  background: var(--bg-elev);
   box-shadow: var(--shadow-sm);
 }
 
-.dispatch-next-card::before {
+.dispatch-wizard-main {
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 8%, var(--bg-elev)), var(--bg-elev) 58%),
+    var(--bg-elev);
+}
+
+.dispatch-wizard-main::before {
   content: "";
   position: absolute;
   inset: 0 auto 0 0;
   width: 3px;
   background: var(--accent);
+}
+
+.dispatch-wizard-kicker {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .dispatch-next-label {
@@ -1536,7 +1549,7 @@ h1, h2, h3, h4, h5, h6 {
   text-transform: uppercase;
 }
 
-.dispatch-next-card h2 {
+.dispatch-wizard-main h2 {
   margin: 12px 0 6px;
   color: var(--text);
   font-size: 18px;
@@ -1544,7 +1557,7 @@ h1, h2, h3, h4, h5, h6 {
   letter-spacing: 0;
 }
 
-.dispatch-next-card p {
+.dispatch-wizard-main p {
   margin: 0;
   color: var(--text-muted);
   font-size: 13px;
@@ -1557,7 +1570,23 @@ h1, h2, h3, h4, h5, h6 {
   margin-top: 16px;
 }
 
+.dispatch-step-wrap {
+  position: relative;
+}
+
+.dispatch-step-wrap:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  top: 24px;
+  bottom: -8px;
+  left: 9px;
+  width: 1px;
+  background: var(--border);
+}
+
 .dispatch-step {
+  position: relative;
+  z-index: 1;
   display: grid;
   grid-template-columns: 22px minmax(0, 1fr);
   gap: 9px;
@@ -1577,9 +1606,20 @@ h1, h2, h3, h4, h5, h6 {
   line-height: 1;
 }
 
-.dispatch-step.done .dispatch-step-marker {
+.dispatch-step.complete .dispatch-step-marker {
   border-color: var(--success);
   background: var(--success);
+}
+
+.dispatch-step.active .dispatch-step-marker {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 800;
+}
+
+.dispatch-step.locked {
+  opacity: 0.55;
 }
 
 .dispatch-step-label {
@@ -1595,6 +1635,48 @@ h1, h2, h3, h4, h5, h6 {
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.dispatch-wizard-actions {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.dispatch-wizard-action {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-subtle) 72%, transparent);
+}
+
+.dispatch-wizard-action-title {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.dispatch-wizard-action p {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.dispatch-command {
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
 }
 
 .dispatch-metrics-grid {
@@ -1656,7 +1738,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 @media (max-width: 1100px) {
-  .dispatch-command-center,
+  .dispatch-wizard,
   .dispatch-connect-grid {
     grid-template-columns: 1fr;
   }

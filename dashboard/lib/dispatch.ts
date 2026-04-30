@@ -202,17 +202,8 @@ async function tailFile(filePath: string, maxBytes = 6000): Promise<{ exists: bo
 }
 
 async function readState(): Promise<DispatchOverview["state"] & { botUsername?: string }> {
-  const statePath = path.join(automationsRoot(), "telegram", "state.json");
-  let parsed: TelegramState = { offset: 0, chats: {} };
-  let exists = false;
-  try {
-    parsed = JSON.parse(await fs.readFile(statePath, "utf8")) as TelegramState;
-    exists = true;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
-      parsed = { offset: 0, chats: {} };
-    }
-  }
+  const statePath = dispatchStatePath();
+  const { state: parsed, exists } = await readDispatchState();
 
   const sessions = await listSessions().catch(() => []);
   const byId = new Map(sessions.map((session) => [session.session_id, session]));
@@ -281,5 +272,67 @@ export async function getDispatchOverview(): Promise<DispatchOverview> {
       outTail: outLog.text,
       errTail: errLog.text,
     },
+  };
+}
+
+function dispatchStatePath(): string {
+  return path.join(automationsRoot(), "telegram", "state.json");
+}
+
+async function readDispatchState(): Promise<{ state: TelegramState; exists: boolean }> {
+  try {
+    return {
+      state: JSON.parse(await fs.readFile(dispatchStatePath(), "utf8")) as TelegramState,
+      exists: true,
+    };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      return { state: { offset: 0, chats: {} }, exists: false };
+    }
+    return { state: { offset: 0, chats: {} }, exists: false };
+  }
+}
+
+async function writeDispatchState(state: TelegramState): Promise<void> {
+  const statePath = dispatchStatePath();
+  await fs.mkdir(path.dirname(statePath), { recursive: true });
+  await fs.writeFile(statePath, JSON.stringify(state, null, 2), "utf8");
+}
+
+async function restartDispatchServiceIfLoaded(): Promise<{ restarted: boolean; error?: string }> {
+  const service = await readServiceStatus();
+  if (!service.loaded) return { restarted: false };
+
+  try {
+    const uid = process.getuid?.() ?? os.userInfo().uid;
+    await execFileAsync("launchctl", ["kickstart", "-k", `gui/${uid}/${DISPATCH_SERVICE_LABEL}`], { timeout: 2500 });
+    return { restarted: true };
+  } catch (err) {
+    return {
+      restarted: false,
+      error: err instanceof Error ? err.message.split("\n")[0] : "failed to restart service",
+    };
+  }
+}
+
+export async function removeDispatchConnection(chatId: string): Promise<{
+  removed: boolean;
+  restarted: boolean;
+  restartError?: string;
+}> {
+  const cleanChatId = chatId.trim();
+  if (!cleanChatId) return { removed: false, restarted: false };
+
+  const { state } = await readDispatchState();
+  if (!state.chats?.[cleanChatId]) return { removed: false, restarted: false };
+
+  delete state.chats[cleanChatId];
+  await writeDispatchState(state);
+
+  const restart = await restartDispatchServiceIfLoaded();
+  return {
+    removed: true,
+    restarted: restart.restarted,
+    restartError: restart.error,
   };
 }
