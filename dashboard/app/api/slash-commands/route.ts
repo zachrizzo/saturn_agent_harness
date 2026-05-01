@@ -40,7 +40,7 @@ const BUILTIN_COMMANDS: SlashCommand[] = [
   {
     name: "mcp",
     label: "/mcp",
-    description: "Run the selected CLI's native MCP manager command.",
+    description: "Run the selected CLI's native MCP manager and refresh tools for the next turn.",
     kind: "builtin",
     clis: ["claude-bedrock", "claude-personal", "claude-local", "codex"],
     transform: "literal",

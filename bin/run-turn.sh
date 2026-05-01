@@ -426,7 +426,7 @@ PY
   fi
   rm -f "$parse_file"
 
-  local output exit_code command_display final_text status mcp_cli_session_id
+  local output exit_code command_display final_text status
   local -a mcp_cmd
   if [[ "$parse_failed" == "1" ]]; then
     output="$(cat "$parse_err_file" 2>/dev/null || true)"
@@ -468,7 +468,9 @@ PY
 
 \`\`\`text
 $output
-\`\`\`"
+\`\`\`
+
+MCP status refreshed. The next message in this Saturn chat will start a fresh native $ENGINE session so newly connected MCP tools can be loaded without restarting the Saturn chat."
     status="success"
   else
     final_text="Native MCP command failed: \`$command_display\`
@@ -477,11 +479,6 @@ $output
 $output
 \`\`\`"
     status="failed"
-  fi
-
-  mcp_cli_session_id=""
-  if [[ "$CLI" == "$PREV_CLI" ]]; then
-    mcp_cli_session_id="$PREV_CLI_SESSION_ID"
   fi
 
   FINISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -495,7 +492,6 @@ $output
     --arg cli "$CLI" \
     --arg model "$MODEL" \
     --arg reasoning_effort "$REASONING_EFFORT" \
-    --arg session_id "$mcp_cli_session_id" \
     --arg started "$STARTED_AT" \
     --arg finished "$FINISHED_AT" \
     --arg user_msg "$USER_MESSAGE" \
@@ -506,7 +502,7 @@ $output
         cli: $cli,
         model: (if $model == "" then null else $model end),
         reasoningEffort: (if $reasoning_effort == "" then null else $reasoning_effort end),
-        cli_session_id: (if $session_id == "" then null else $session_id end),
+        cli_session_id: null,
         started_at: $started,
         finished_at: $finished,
         status: $status,
