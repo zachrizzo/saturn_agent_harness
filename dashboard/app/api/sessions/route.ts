@@ -16,6 +16,7 @@ import type { ModelReasoningEffort } from "@/lib/models";
 import { assertBedrockReady, isBedrockNotReadyError } from "@/lib/bedrock-auth";
 import { isBedrockCli } from "@/lib/clis";
 import { agentSupportedClis } from "@/lib/session-utils";
+import { markSessionRunnerFailed } from "@/lib/session-lifecycle";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -33,6 +34,8 @@ type CreateSessionBody = {
     reasoningEffort?: ModelReasoningEffort;
     prompt?: string;
     cwd?: string;
+    allowedTools?: string[];
+    timeout_seconds?: number;
   };
   overrides?: SessionMeta["overrides"];
 };
@@ -52,6 +55,8 @@ function adhocAgent(config: CreateSessionBody["adhoc_config"]): Agent {
     models: config?.model ? { [cli]: config.model } : undefined,
     reasoningEffort: config?.reasoningEffort,
     reasoningEfforts: config?.reasoningEffort ? { [cli]: config.reasoningEffort } : undefined,
+    allowedTools: config?.allowedTools,
+    timeout_seconds: config?.timeout_seconds,
     created_at: now,
     updated_at: now,
   };
@@ -61,6 +66,14 @@ function validatePositiveInteger(value: unknown, field: string): string | null {
   if (value === undefined) return null;
   if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
     return `${field} must be a whole number greater than 0`;
+  }
+  return null;
+}
+
+function validateStringArray(value: unknown, field: string): string | null {
+  if (value === undefined) return null;
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item.trim())) {
+    return `${field} must be an array of non-empty strings`;
   }
   return null;
 }
@@ -109,6 +122,14 @@ export async function POST(req: NextRequest) {
   if (overrideError) {
     return NextResponse.json({ error: overrideError }, { status: 400 });
   }
+  const timeoutError = validatePositiveInteger(body.adhoc_config?.timeout_seconds, "adhoc_config.timeout_seconds");
+  if (timeoutError) {
+    return NextResponse.json({ error: timeoutError }, { status: 400 });
+  }
+  const allowedToolsError = validateStringArray(body.adhoc_config?.allowedTools, "adhoc_config.allowedTools");
+  if (allowedToolsError) {
+    return NextResponse.json({ error: allowedToolsError }, { status: 400 });
+  }
 
   if (isBedrockCli(cli)) {
     try {
@@ -139,7 +160,13 @@ export async function POST(req: NextRequest) {
   await fs.writeFile(path.join(dir, "stream.jsonl"), "", "utf8");
   await fs.writeFile(path.join(dir, "stderr.log"), "", "utf8");
 
-  await spawnTurn(session_id, cli, model, message, agent, body.mcpTools, reasoningEffort);
+  try {
+    await spawnTurn(session_id, cli, model, message, agent, body.mcpTools, reasoningEffort);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    await markSessionRunnerFailed(session_id, `failed to start runner: ${detail}`);
+    return NextResponse.json({ error: detail }, { status: 500 });
+  }
 
   return NextResponse.json({ session_id });
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ThemeToggle } from "../ThemeToggle";
 import { Kbd } from "../ui";
 import { IconSearch, IconMenu, IconX } from "./icons";
@@ -17,6 +17,7 @@ import { CommandPalette } from "./CommandPalette";
 export function Header({ recents }: { recents: RecentChatItem[] }) {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const drawerRootRef = useRef<HTMLDivElement>(null);
 
   // Global ⌘K / Ctrl+K
   useEffect(() => {
@@ -38,6 +39,25 @@ export function Header({ recents }: { recents: RecentChatItem[] }) {
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
+
+  useEffect(() => {
+    if (!drawerOpen) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setDrawerOpen(false);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [drawerOpen]);
+
+  useEffect(() => {
+    const node = drawerRootRef.current;
+    if (!node) return;
+    if (drawerOpen) {
+      node.removeAttribute("inert");
+    } else {
+      node.setAttribute("inert", "");
+    }
+  }, [drawerOpen]);
 
   return (
     <>
@@ -91,6 +111,7 @@ export function Header({ recents }: { recents: RecentChatItem[] }) {
 
       {/* Mobile drawer */}
       <div
+        ref={drawerRootRef}
         className={[
           "md:hidden fixed inset-0 z-40 transition-opacity",
           drawerOpen ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none",
@@ -102,6 +123,9 @@ export function Header({ recents }: { recents: RecentChatItem[] }) {
           onClick={() => setDrawerOpen(false)}
         />
         <aside
+          role="dialog"
+          aria-modal="true"
+          aria-label="Navigation menu"
           className={[
             "absolute left-0 top-0 bottom-0 w-[260px] bg-bg border-r border-border shadow-lg",
             "transform transition-transform duration-200",
@@ -122,7 +146,7 @@ export function Header({ recents }: { recents: RecentChatItem[] }) {
               <IconX />
             </button>
           </div>
-          <Sidebar recents={recents} onNavigate={() => setDrawerOpen(false)} />
+          <Sidebar recents={recents} onNavigate={() => setDrawerOpen(false)} recentsScrollable />
         </aside>
       </div>
 

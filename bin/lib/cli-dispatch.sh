@@ -44,12 +44,12 @@ normalize_cli_id() {
 # Populates the RUN_ARGS array and RUN_CMD variable in the caller's scope.
 #
 # Args (positional):
-#   $1 cli           — "claude-bedrock" | "claude-personal" | "claude-local" | "codex" ("claude" aliases to claude-bedrock)
-#   $2 model         — model id or empty
-#   $3 allowed_tools — comma-separated (claude only) or empty
-#   $4 session_id    — CLI-native session id; use with $5 to distinguish resume vs new
-#   $5 is_resume     — "yes" to resume an existing session, anything else to start fresh
-#   $6 reasoning_effort — optional thinking/reasoning level
+#   $1 cli              - "claude-bedrock" | "claude-personal" | "claude-local" | "codex" ("claude" aliases to claude-bedrock)
+#   $2 model            - model id or empty
+#   $3 allowed_tools    - comma-separated (claude only), __SATURN_NO_TOOLS__, or empty
+#   $4 session_id       - CLI-native session id; use with $5 to distinguish resume vs new
+#   $5 is_resume        - "yes" to resume an existing session, anything else to start fresh
+#   $6 reasoning_effort - optional thinking/reasoning level
 build_cli_args() {
   local cli
   cli="$(normalize_cli_id "$1")"
@@ -110,7 +110,11 @@ build_cli_args() {
       else
         resolved_model="${model:-}"
       fi
-      [[ -n "$allowed_tools" ]] && RUN_ARGS+=(--allowedTools "$allowed_tools")
+      if [[ ",$allowed_tools," == *",__SATURN_NO_TOOLS__,"* ]]; then
+        RUN_ARGS+=(--tools "")
+      elif [[ -n "$allowed_tools" ]]; then
+        RUN_ARGS+=(--allowedTools "$allowed_tools")
+      fi
       [[ -n "$resolved_model" ]] && RUN_ARGS+=(--model "$resolved_model")
       if [[ -n "$reasoning_effort" ]]; then
         [[ "$reasoning_effort" == "minimal" ]] && reasoning_effort="low"

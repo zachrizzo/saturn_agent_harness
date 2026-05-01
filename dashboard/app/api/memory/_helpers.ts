@@ -12,6 +12,7 @@ export type MemoryFilters = {
   type?: MemoryType;
   tag?: string;
   limit?: number;
+  offset?: number;
 };
 
 export function badRequest(message: string) {
@@ -60,6 +61,14 @@ export function parseLimit(value: unknown, fallback?: number): number | undefine
   return limit;
 }
 
+export function parseOffset(value: unknown, fallback = 0): number | undefined {
+  if (value === undefined || value === null || value === "") return fallback;
+  const raw = typeof value === "string" ? value.trim() : value;
+  const offset = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isInteger(offset) || offset < 0 || offset > 1_000_000) return undefined;
+  return offset;
+}
+
 export function parseScopeFilter(value: unknown): MemoryScopeFilter | undefined {
   if (value === undefined || value === null || value === "") return "all";
   return typeof value === "string" && MEMORY_SCOPES.includes(value as MemoryScopeFilter)
@@ -82,6 +91,10 @@ export function parseQueryFilters(params: URLSearchParams): MemoryFilters | { er
   if ((params.has("limit") || params.get("limit")) && limit === undefined) {
     return { error: "limit must be an integer from 1 to 100" };
   }
+  const offset = parseOffset(params.get("offset") ?? undefined);
+  if (params.has("offset") && offset === undefined) {
+    return { error: "offset must be an integer from 0 to 1000000" };
+  }
 
   const type = parseMemoryType(params.get("type"));
   if (params.has("type") && params.get("type") && !type) {
@@ -94,6 +107,7 @@ export function parseQueryFilters(params: URLSearchParams): MemoryFilters | { er
     ...(type ? { type } : {}),
     ...(tag ? { tag } : {}),
     ...(limit ? { limit } : {}),
+    ...(offset ? { offset } : {}),
   };
 }
 

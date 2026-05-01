@@ -4,6 +4,7 @@ import {
   badRequest,
   cleanString,
   cleanStringList,
+  type MemoryFilters,
   parseBodyScope,
   parseJsonObject,
   parseMemoryType,
@@ -13,6 +14,34 @@ import {
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
+function pageLimit(filters: MemoryFilters): number | undefined {
+  return typeof filters.limit === "number" ? filters.limit : undefined;
+}
+
+function pageOffset(filters: MemoryFilters): number {
+  return typeof filters.offset === "number" ? filters.offset : 0;
+}
+
+function withLookaheadLimit(filters: MemoryFilters): MemoryFilters {
+  const limit = pageLimit(filters);
+  return limit ? { ...filters, limit: limit + 1 } : filters;
+}
+
+function pagePayload(items: unknown[], filters: MemoryFilters) {
+  const limit = pageLimit(filters);
+  const offset = pageOffset(filters);
+  const pageItems = limit ? items.slice(0, limit) : items;
+  return {
+    items: pageItems,
+    pageInfo: {
+      limit: limit ?? pageItems.length,
+      offset,
+      nextOffset: offset + pageItems.length,
+      hasMore: Boolean(limit && items.length > limit),
+    },
+  };
+}
 
 async function callSearchMemory(q: string, filters: Record<string, unknown>) {
   const fn = searchMemory as unknown as (...args: unknown[]) => Promise<unknown>;
@@ -26,20 +55,28 @@ export async function GET(req: NextRequest) {
 
   try {
     if (q) {
-      const result = await callSearchMemory(q, filters);
-      const results = Array.isArray(result)
+      const result = await callSearchMemory(q, withLookaheadLimit(filters));
+      const resultRecord = parseJsonObject(result);
+      const rawResults = Array.isArray(result)
         ? result
-        : parseJsonObject(result)?.results ?? parseJsonObject(result)?.notes ?? [];
+        : resultRecord?.results ?? resultRecord?.notes ?? [];
+      const results = Array.isArray(rawResults) ? rawResults : [];
+      const page = pagePayload(results, filters);
       return NextResponse.json({
-        results,
-        notes: results,
-        index: parseJsonObject(result)?.index,
+        results: page.items,
+        notes: page.items,
+        pageInfo: page.pageInfo,
+        index: resultRecord?.index,
       });
     }
 
-    const notes = await listMemoryNotes(filters);
+    const notes = await listMemoryNotes(withLookaheadLimit(filters));
+    const rawNoteData = Array.isArray(notes) ? notes : parseJsonObject(notes)?.notes ?? [];
+    const rawNotes = Array.isArray(rawNoteData) ? rawNoteData : [];
+    const page = pagePayload(rawNotes, filters);
     return NextResponse.json({
-      notes: Array.isArray(notes) ? notes : parseJsonObject(notes)?.notes ?? [],
+      notes: page.items,
+      pageInfo: page.pageInfo,
       index: parseJsonObject(notes)?.index,
     });
   } catch (err) {

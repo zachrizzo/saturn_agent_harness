@@ -1,14 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { sessionsRoot } from "@/lib/paths";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+const GIT_MAX_BUFFER = 50 * 1024 * 1024;
 
 type SliceMeta = {
   sandbox_path?: string;
@@ -37,6 +38,16 @@ async function acquireLock(lockPath: string): Promise<boolean> {
 
 async function releaseLock(lockPath: string): Promise<void> {
   await fs.unlink(lockPath).catch(() => { /* best-effort */ });
+}
+
+async function git(cwd: string | undefined, args: string[]): Promise<string> {
+  const { stdout } = await execFileAsync("git", args, { cwd, maxBuffer: GIT_MAX_BUFFER, encoding: "utf8" });
+  return stdout;
+}
+
+async function diffIncludingUntracked(sandboxPath: string): Promise<string> {
+  await git(sandboxPath, ["add", "-N", "--", "."]).catch(() => "");
+  return git(sandboxPath, ["diff", "--binary", "HEAD"]);
 }
 
 // GET: Returns the diff between the worktree and HEAD (dry-run preview)
@@ -71,13 +82,9 @@ export async function GET(
     );
   }
 
-  const { stdout: diff } = await execAsync(
-    `git -C "${sandboxPath}" diff HEAD`
-  ).catch(() => ({ stdout: "" }));
+  const diff = await diffIncludingUntracked(sandboxPath).catch(() => "");
 
-  const { stdout: status } = await execAsync(
-    `git -C "${sandboxPath}" status --short`
-  ).catch(() => ({ stdout: "" }));
+  const status = await git(sandboxPath, ["status", "--short"]).catch(() => "");
 
   return NextResponse.json({
     diff,
@@ -152,9 +159,7 @@ export async function POST(
       );
     }
 
-    const { stdout: patch } = await execAsync(
-      `git -C "${sandboxPath}" diff HEAD`
-    );
+    const patch = await diffIncludingUntracked(sandboxPath);
 
     if (!patch.trim()) {
       return NextResponse.json({ applied: true, message: "no changes to apply" });
@@ -166,7 +171,7 @@ export async function POST(
     // Pre-flight: would this patch apply cleanly? If not, surface the conflict
     // list instead of partially applying.
     try {
-      await execAsync(`git -C "${repoRoot}" apply --check "${patchFile}"`);
+      await git(repoRoot, ["apply", "--check", patchFile]);
     } catch (checkErr: unknown) {
       const msg = checkErr instanceof Error ? checkErr.message : String(checkErr);
       return NextResponse.json(
@@ -179,7 +184,7 @@ export async function POST(
       );
     }
 
-    await execAsync(`git -C "${repoRoot}" apply "${patchFile}"`);
+    await git(repoRoot, ["apply", patchFile]);
 
     // Mark as applied in slice meta
     const updatedMeta = await readSliceMeta(sliceMetaPath);
@@ -190,7 +195,7 @@ export async function POST(
     // Cleanup: remove the worktree now that changes have landed in the real repo.
     // Best-effort — leaving it around is not a correctness problem, just disk bloat.
     try {
-      await execAsync(`git worktree remove --force "${sandboxPath}"`);
+      await git(undefined, ["worktree", "remove", "--force", sandboxPath]);
     } catch {
       /* noop */
     }

@@ -11,6 +11,8 @@ type Props = {
   onChange: (v: string) => void;
   disabled?: boolean;
   className?: string;
+  recentVariant?: "pills" | "cards";
+  recentLimit?: number;
 };
 
 type PickResponse = {
@@ -28,15 +30,41 @@ function isLocalDirectoryCandidate(value: string): boolean {
   return /^(\/|~\/|\$HOME\/|\$CODEX_HOME\/|\.{1,2}\/)/.test(trimmed);
 }
 
-export function DirPicker({ value, onChange, disabled, className }: Props) {
+function projectName(dir: string): string {
+  const normalized = dir.replace(/[\\/]+$/, "");
+  return normalized.split(/[\\/]/).filter(Boolean).pop() ?? dir;
+}
+
+function parentPath(dir: string): string {
+  const normalized = dir.replace(/[\\/]+$/, "");
+  const parts = normalized.split(/[\\/]/).filter(Boolean);
+  if (parts.length <= 1) return dir;
+  const prefix = normalized.startsWith("/") ? "/" : "";
+  return `${prefix}${parts.slice(0, -1).join("/")}`;
+}
+
+export function DirPicker({
+  value,
+  onChange,
+  disabled,
+  className,
+  recentVariant = "pills",
+  recentLimit = 5,
+}: Props) {
   const [dirs, setDirs] = useState<string[]>([]);
+  const [recentDirs, setRecentDirs] = useState<string[]>([]);
   const [query, setQuery] = useState(value);
   const [open, setOpen] = useState(false);
   const [picking, setPicking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const onChangeRef = useRef(onChange);
 
   useEffect(() => setQuery(value), [value]);
+
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
 
   useEffect(() => {
     let localDirs: string[] = [];
@@ -48,20 +76,27 @@ export function DirPicker({ value, onChange, disabled, className }: Props) {
         : [];
       if (last && !value && isLocalDirectoryCandidate(last)) {
         setQuery(last);
-        onChange(last);
+        onChangeRef.current(last);
         localDirs = [last, ...localDirs.filter((dir) => dir !== last)];
       }
     } catch {}
-    if (localDirs.length > 0) setDirs(localDirs);
+    if (localDirs.length > 0) {
+      setDirs(localDirs);
+      setRecentDirs(localDirs);
+    }
 
     fetch("/api/directories")
       .then((r) => r.json())
       .then((d) => {
         const serverDirs = Array.isArray(d.dirs) ? d.dirs.filter((dir: unknown): dir is string => typeof dir === "string") : [];
+        const serverRecentDirs = Array.isArray(d.recentDirs)
+          ? d.recentDirs.filter((dir: unknown): dir is string => typeof dir === "string")
+          : [];
+        setRecentDirs([...new Set([...localDirs, ...serverRecentDirs])]);
         setDirs([...new Set([...localDirs, ...serverDirs])]);
       })
       .catch(() => {});
-  }, [onChange, value]);
+  }, []);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -74,6 +109,7 @@ export function DirPicker({ value, onChange, disabled, className }: Props) {
   const filtered = query.trim()
     ? dirs.filter((d) => d.toLowerCase().includes(query.toLowerCase()))
     : dirs;
+  const visibleRecentDirs = (recentDirs.length > 0 ? recentDirs : dirs).slice(0, recentLimit);
 
   const select = (dir: string) => {
     onChange(dir);
@@ -101,7 +137,10 @@ export function DirPicker({ value, onChange, disabled, className }: Props) {
     const next = Array.isArray(recentDirs)
       ? recentDirs.filter((item): item is string => typeof item === "string")
       : [];
-    if (next.length > 0) setDirs((current) => [...new Set([...next, ...current])]);
+    if (next.length > 0) {
+      setRecentDirs((current) => [...new Set([...next, ...current])]);
+      setDirs((current) => [...new Set([...next, ...current])]);
+    }
   };
 
   const persist = (dir: string, options?: { localFirst?: boolean }) => {
@@ -192,6 +231,54 @@ export function DirPicker({ value, onChange, disabled, className }: Props) {
             </li>
           ))}
         </ul>
+      )}
+      {recentVariant === "cards" && visibleRecentDirs.length > 0 && (
+        <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-2">
+          {visibleRecentDirs.map((dir) => {
+            const selected = value.trim() === dir;
+            return (
+              <button
+                key={dir}
+                type="button"
+                disabled={disabled || picking}
+                onMouseDown={(e) => { e.preventDefault(); select(dir); }}
+                className={[
+                  "min-w-0 rounded-md border px-3 py-2 text-left transition-colors disabled:opacity-40",
+                  selected
+                    ? "border-accent bg-accent-soft"
+                    : "border-border bg-bg-elev hover:bg-bg-hover hover:border-border-strong",
+                ].join(" ")}
+                title={dir}
+              >
+                <span className="flex min-w-0 items-start gap-2">
+                  <svg className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+                  </svg>
+                  <span className="min-w-0">
+                    <span className="block truncate text-[12px] font-medium text-fg">{projectName(dir)}</span>
+                    <span className="mt-0.5 block truncate mono text-[11px] text-muted">{parentPath(dir)}</span>
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {recentVariant === "pills" && !open && visibleRecentDirs.length > 0 && (
+        <div className="flex flex-wrap gap-1 mt-1.5">
+          {visibleRecentDirs.map((dir) => (
+            <button
+              key={dir}
+              type="button"
+              disabled={disabled || picking}
+              onMouseDown={(e) => { e.preventDefault(); select(dir); }}
+              className="text-[11px] px-2 py-0.5 rounded-md bg-bg-elev border border-border text-muted hover:text-fg hover:border-fg/30 transition-colors mono max-w-[200px] truncate disabled:opacity-40"
+              title={dir}
+            >
+              {dir.split("/").filter(Boolean).pop() ?? dir}
+            </button>
+          ))}
+        </div>
       )}
     </div>
   );

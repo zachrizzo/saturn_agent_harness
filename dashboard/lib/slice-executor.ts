@@ -6,12 +6,12 @@
 // io_schema, updates the per-session budget, and appends to slices/index.jsonl.
 
 import { promises as fs } from "node:fs";
-import { spawn, exec } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 import { binDir, sessionsRoot } from "./paths";
 import { getSlice, type Slice, type SliceSandbox, type SliceSandboxMode } from "./slices";
@@ -199,6 +199,11 @@ async function tokensFromStream(streamPath: string): Promise<SliceExecuteTokens>
 
 type SandboxResult = { cwd: string; path?: string; repoRoot?: string };
 
+async function git(cwd: string | undefined, args: string[]): Promise<string> {
+  const { stdout } = await execFileAsync("git", args, { cwd, encoding: "utf8" });
+  return stdout.trim();
+}
+
 async function setupSandbox(
   sliceDir: string,
   sandbox: SliceSandbox,
@@ -219,9 +224,7 @@ async function setupSandbox(
       // Detect git repo root; fall back to tmpfs if not a git repo
       let repoRoot: string;
       try {
-        repoRoot = (
-          await execAsync(`git -C "${repoCwd}" rev-parse --show-toplevel`)
-        ).stdout.trim();
+        repoRoot = await git(repoCwd, ["rev-parse", "--show-toplevel"]);
       } catch {
         // Not a git repo — fall back to tmpfs
         await fs.mkdir(sandboxDir, { recursive: true });
@@ -231,9 +234,7 @@ async function setupSandbox(
       // Create worktree: git worktree add --detach <sandboxDir> HEAD
       await fs.mkdir(sandboxDir, { recursive: true });
       try {
-        await execAsync(
-          `git -C "${repoRoot}" worktree add --detach "${sandboxDir}" HEAD`
-        );
+        await git(repoRoot, ["worktree", "add", "--detach", sandboxDir, "HEAD"]);
       } catch {
         // Worktree add failed (e.g. already exists, lock file) — fall back to tmpfs
         return { cwd: sandboxDir, path: sandboxDir };
@@ -243,9 +244,7 @@ async function setupSandbox(
       // could run unintended pre-commit scripts or leak env. Point this worktree
       // at an empty hooks path.
       try {
-        await execAsync(
-          `git -C "${sandboxDir}" config core.hooksPath /dev/null`
-        );
+        await git(sandboxDir, ["config", "core.hooksPath", "/dev/null"]);
       } catch {
         /* best-effort */
       }
@@ -479,10 +478,42 @@ async function cleanupWorktreeOnFailure(
 ): Promise<void> {
   if (sandboxMode !== "worktree" || !sandbox.path || exitCode === 0) return;
   try {
-    await execAsync(`git worktree remove --force "${sandbox.path}"`);
+    await git(sandbox.repoRoot ?? sandbox.cwd, ["worktree", "remove", "--force", sandbox.path]);
   } catch {
     /* best-effort */
   }
+}
+
+async function writeSliceResult(
+  sliceDir: string,
+  result: {
+    status: SliceExecuteStatus;
+    output: unknown | null;
+    error?: string;
+    tokens: SliceExecuteTokens;
+    duration_ms: number;
+    raw_output: string;
+  },
+): Promise<void> {
+  const metaPath = path.join(sliceDir, "meta.json");
+  if (result.output !== null) {
+    await fs.writeFile(path.join(sliceDir, "output.json"), JSON.stringify(result.output, null, 2) + "\n", "utf8");
+  }
+
+  let meta: Record<string, unknown> = {};
+  try {
+    meta = JSON.parse(await fs.readFile(metaPath, "utf8")) as Record<string, unknown>;
+  } catch {
+    meta = {};
+  }
+
+  meta.status = result.status;
+  meta.output = result.output;
+  meta.error = result.error ?? null;
+  meta.tokens = result.tokens;
+  meta.duration_ms = result.duration_ms;
+  meta.raw_output_length = result.raw_output.length;
+  await fs.writeFile(metaPath, JSON.stringify(meta, null, 2), "utf8");
 }
 
 async function recordBudget(sessionId: string, totalTokens: number): Promise<void> {
@@ -614,6 +645,7 @@ ${JSON.stringify(req.inputs, null, 2)}
   );
   await cleanupWorktreeOnFailure(slice.sandbox.mode, sandbox, outcome.exitCode);
   await recordBudget(req.sessionId, tokens.total);
+  await writeSliceResult(sliceDir, { status, output, error, tokens, duration_ms, raw_output });
 
   await appendIndex(req.sessionId, {
     slice_run_id,
@@ -696,6 +728,7 @@ export async function executeCustomSlice(
   );
   await cleanupWorktreeOnFailure(sandboxSpec.mode, sandbox, outcome.exitCode);
   await recordBudget(req.sessionId, tokens.total);
+  await writeSliceResult(sliceDir, { status, output: null, error, tokens, duration_ms, raw_output });
 
   await appendIndex(req.sessionId, {
     slice_run_id,

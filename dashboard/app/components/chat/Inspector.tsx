@@ -1,9 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import { Terminal as XTerm } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import type { IDisposable } from "@xterm/xterm";
 import type { StreamEvent, TokenBreakdown } from "@/lib/events";
 import type { SessionMeta } from "@/lib/runs";
+import { projectNameFromPath, type TerminalListResponse, type TerminalRecord } from "@/lib/terminal-types";
 import { FileViewer } from "@/app/components/chat/FileViewer";
 
 export type InspectorTool = {
@@ -25,11 +29,245 @@ type Props = {
   onWidthChange: (width: number) => void;
   referencedFiles?: string[];
   fileOpenRequest?: { path: string; requestId: number } | null;
+  onInsertIntoComposer?: (text: string) => void;
+  onClose?: () => void;
 };
 
-const INSPECTOR_TABS = ["tool", "files", "tokens"] as const;
-type TabKey = typeof INSPECTOR_TABS[number];
+const INSPECTOR_TABS = [
+  { key: "tool", label: "Tool" },
+  { key: "terminal", label: "Terminal" },
+  { key: "files", label: "Files" },
+  { key: "web", label: "Web" },
+  { key: "tokens", label: "Tokens" },
+] as const;
+type TabKey = typeof INSPECTOR_TABS[number]["key"];
 type FilesFilter = "all" | "changes" | "files";
+
+type WebAnnotation = {
+  id: number;
+  x: number;
+  y: number;
+  label: string;
+  elementSelector?: string;
+  elementTag?: string;
+  elementText?: string;
+  elementLabel?: string;
+};
+
+type WebElementDetails = Pick<WebAnnotation, "elementSelector" | "elementTag" | "elementText" | "elementLabel" | "label">;
+
+type WebElementTarget = WebElementDetails & {
+  box: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  };
+};
+
+const TERMINAL_DETAIL_MIN_HEIGHT = 220;
+const TERMINAL_LIST_MIN_HEIGHT = 140;
+const INSPECTOR_TOP_OFFSET = 48;
+const INSPECTOR_TAB_BAR_HEIGHT = 40;
+
+function terminalDetailMaxHeight(): number {
+  if (typeof window === "undefined") return 520;
+  return Math.max(
+    TERMINAL_DETAIL_MIN_HEIGHT,
+    window.innerHeight - INSPECTOR_TOP_OFFSET - INSPECTOR_TAB_BAR_HEIGHT - TERMINAL_LIST_MIN_HEIGHT,
+  );
+}
+
+function terminalDetailDefaultHeight(): number {
+  if (typeof window === "undefined") return 420;
+  return Math.min(Math.round(window.innerHeight / 2), terminalDetailMaxHeight());
+}
+
+function clampTerminalDetailHeight(height: number): number {
+  return Math.round(Math.min(terminalDetailMaxHeight(), Math.max(TERMINAL_DETAIL_MIN_HEIGHT, height)));
+}
+
+function terminalFontSizeForWidth(width: number): number {
+  if (!Number.isFinite(width) || width <= 0) return 11.5;
+  const ratio = Math.min(1, Math.max(0, (width - 420) / 320));
+  return Math.round((10 + ratio * 2) * 2) / 2;
+}
+
+function normalizeWebUrl(raw: string): { url?: string; error?: string } {
+  const trimmed = raw.trim();
+  if (!trimmed) return { error: "Enter a URL." };
+  if (trimmed.startsWith("/")) return { url: trimmed };
+
+  let candidate = trimmed;
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(candidate)) {
+    candidate = /^(localhost|127\.|0\.0\.0\.0|\[::1\]|::1)(?::|\/|$)/i.test(candidate)
+      ? `http://${candidate}`
+      : `https://${candidate}`;
+  }
+
+  try {
+    const parsed = new URL(candidate, window.location.origin);
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      return { error: "Use an http or https URL." };
+    }
+    return { url: parsed.toString() };
+  } catch {
+    return { error: "That URL does not look valid." };
+  }
+}
+
+function compactWebAnnotationText(value: string | null | undefined, maxLength = 96): string {
+  const compacted = (value ?? "").replace(/\s+/g, " ").trim();
+  if (compacted.length <= maxLength) return compacted;
+  return `${compacted.slice(0, maxLength - 3).trimEnd()}...`;
+}
+
+function cssIdentifier(value: string): string {
+  return globalThis.CSS?.escape?.(value) ?? value.replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+}
+
+function cssAttribute(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+}
+
+function selectorSegmentForElement(element: Element): string {
+  const tag = element.tagName.toLowerCase();
+  const id = element.getAttribute("id");
+  if (id) return `${tag}#${cssIdentifier(id)}`;
+
+  const classes = Array.from(element.classList)
+    .filter(Boolean)
+    .slice(0, 3)
+    .map((className) => `.${cssIdentifier(className)}`)
+    .join("");
+  if (classes) return `${tag}${classes}`;
+
+  const ariaLabel = element.getAttribute("aria-label");
+  if (ariaLabel) return `${tag}[aria-label="${cssAttribute(compactWebAnnotationText(ariaLabel, 48))}"]`;
+
+  const parent = element.parentElement;
+  if (!parent) return tag;
+  const sameTagSiblings = Array.from(parent.children).filter((child) => child.tagName === element.tagName);
+  if (sameTagSiblings.length <= 1) return tag;
+  return `${tag}:nth-of-type(${sameTagSiblings.indexOf(element) + 1})`;
+}
+
+function selectorForWebElement(element: Element): string {
+  const parts: string[] = [];
+  let current: Element | null = element;
+
+  while (current && current.tagName.toLowerCase() !== "html" && parts.length < 4) {
+    parts.unshift(selectorSegmentForElement(current));
+    if (current.getAttribute("id")) break;
+    current = current.parentElement;
+  }
+
+  return parts.join(" > ");
+}
+
+function percentBoxForWebElement(frame: HTMLIFrameElement, element: Element): WebElementTarget["box"] | null {
+  const document = frame.contentDocument;
+  if (!document) return null;
+
+  const rect = element.getBoundingClientRect();
+  const viewportWidth = frame.contentWindow?.innerWidth || document.documentElement.clientWidth;
+  const viewportHeight = frame.contentWindow?.innerHeight || document.documentElement.clientHeight;
+  if (viewportWidth <= 0 || viewportHeight <= 0 || rect.width <= 0 || rect.height <= 0) return null;
+
+  const left = Math.max(0, Math.min(viewportWidth, rect.left));
+  const top = Math.max(0, Math.min(viewportHeight, rect.top));
+  const right = Math.max(0, Math.min(viewportWidth, rect.right));
+  const bottom = Math.max(0, Math.min(viewportHeight, rect.bottom));
+  if (right <= left || bottom <= top) return null;
+
+  return {
+    left: (left / viewportWidth) * 100,
+    top: (top / viewportHeight) * 100,
+    width: ((right - left) / viewportWidth) * 100,
+    height: ((bottom - top) / viewportHeight) * 100,
+  };
+}
+
+function describeWebElementAtPoint(
+  frame: HTMLIFrameElement | null,
+  clientX: number,
+  clientY: number,
+): WebElementTarget | null {
+  if (!frame) return null;
+
+  try {
+    const rect = frame.getBoundingClientRect();
+    const document = frame.contentDocument;
+    if (!document) return null;
+
+    const element = document.elementFromPoint(clientX - rect.left, clientY - rect.top);
+    if (!element || element === document.documentElement || element === document.body) return null;
+    const box = percentBoxForWebElement(frame, element);
+    if (!box) return null;
+
+    const tag = element.tagName.toLowerCase();
+    const htmlElement = element as HTMLElement;
+    const accessibleLabel = compactWebAnnotationText(
+      element.getAttribute("aria-label")
+        ?? element.getAttribute("title")
+        ?? element.getAttribute("alt")
+        ?? element.getAttribute("name")
+        ?? "",
+      80,
+    );
+    const visibleText = compactWebAnnotationText(
+      "innerText" in htmlElement ? htmlElement.innerText : element.textContent,
+      110,
+    );
+    const label = accessibleLabel || visibleText || selectorSegmentForElement(element);
+
+    return {
+      elementSelector: selectorForWebElement(element),
+      elementTag: tag,
+      elementText: visibleText || undefined,
+      elementLabel: accessibleLabel || undefined,
+      label,
+      box,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function sameWebElementTarget(a: WebElementTarget | null, b: WebElementTarget | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.elementSelector !== b.elementSelector || a.label !== b.label) return false;
+  return Math.abs(a.box.left - b.box.left) < 0.1
+    && Math.abs(a.box.top - b.box.top) < 0.1
+    && Math.abs(a.box.width - b.box.width) < 0.1
+    && Math.abs(a.box.height - b.box.height) < 0.1;
+}
+
+function formatWebAnnotationForChat(url: string, annotation: WebAnnotation): string {
+  const lines = [
+    "Web annotation:",
+    `- URL: ${url}`,
+    `- Target: ${annotation.label || "Selected element"}`,
+  ];
+
+  if (annotation.elementSelector) lines.push(`- Selector: ${annotation.elementSelector}`);
+  if (annotation.elementLabel) lines.push(`- Element label: ${annotation.elementLabel}`);
+  if (annotation.elementText) lines.push(`- Element text: ${annotation.elementText}`);
+  lines.push(`- Position: ${annotation.x.toFixed(1)}% x, ${annotation.y.toFixed(1)}% y`);
+
+  return lines.join("\n");
+}
+
+function webAnnotationMeta(annotation: WebAnnotation): string {
+  const parts = [
+    annotation.elementSelector,
+    annotation.elementLabel ? `label: ${annotation.elementLabel}` : null,
+    annotation.elementText ? `text: ${annotation.elementText}` : null,
+  ].filter(Boolean);
+
+  return parts.join(" | ");
+}
 
 type GitChange = {
   path: string;
@@ -293,6 +531,123 @@ const STATUS_COLOR: Record<InspectorTool["status"], string> = {
 };
 const STATUS_LABEL: Record<InspectorTool["status"], string> = { ok: "ok", err: "err", run: "…" };
 
+const TERMINAL_STATUS_LABEL: Record<TerminalRecord["status"], string> = {
+  running: "running",
+  success: "done",
+  failed: "failed",
+};
+
+type TerminalStreamPayload =
+  | { type: "data"; data: string }
+  | { type: "meta"; terminal: TerminalRecord }
+  | { type: "end"; terminal: TerminalRecord }
+  | { type: "error"; message: string };
+
+function isBashInspectorTool(tool: InspectorTool): boolean {
+  const name = tool.name.toLowerCase();
+  return name === "bash" || name.includes("bash");
+}
+
+function agentBashTerminalId(sessionId: string, toolUseId: string): string {
+  const raw = `${sessionId}:${toolUseId}`;
+  return `agent-bash-${btoa(raw).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
+}
+
+function terminalStatusFromTool(status: InspectorTool["status"]): TerminalRecord["status"] {
+  if (status === "run") return "running";
+  if (status === "err") return "failed";
+  return "success";
+}
+
+function terminalStatusClass(status: TerminalRecord["status"]): string {
+  if (status === "running") return "terminal-status running";
+  if (status === "failed") return "terminal-status failed";
+  return "terminal-status success";
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function commandFromToolInput(input: unknown): string {
+  if (typeof input === "string") return input;
+  const rec = asRecord(input);
+  for (const key of ["command", "cmd", "script"]) {
+    const value = rec[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return toJsonString(input || {});
+}
+
+function terminalTitleFromCommand(command: string): string {
+  const firstLine = command.split(/\r?\n/).find((line) => line.trim())?.trim() ?? "Bash";
+  return firstLine.length > 84 ? `${firstLine.slice(0, 81)}...` : firstLine;
+}
+
+function buildTerminalRecordFromTool(session: SessionMeta, tool: InspectorTool): TerminalRecord {
+  const command = commandFromToolInput(tool.input);
+  const cwd = session.agent_snapshot?.cwd?.trim() || null;
+  const latestTurn = session.turns.at(-1);
+  const updatedAt =
+    latestTurn?.finished_at ??
+    (tool.status === "run" ? new Date().toISOString() : session.finished_at) ??
+    latestTurn?.started_at ??
+    session.started_at;
+
+  return {
+    id: agentBashTerminalId(session.session_id, tool.id),
+    source: "agent-bash",
+    readOnly: true,
+    title: terminalTitleFromCommand(command),
+    projectPath: cwd,
+    projectName: projectNameFromPath(cwd),
+    cwd,
+    status: terminalStatusFromTool(tool.status),
+    createdAt: tool.startedAt ?? latestTurn?.started_at ?? session.started_at,
+    updatedAt,
+    sessionId: session.session_id,
+    toolUseId: tool.id,
+    command,
+    exitCode: null,
+    isError: tool.status === "err",
+  };
+}
+
+function upsertTerminalRecord(list: TerminalRecord[], terminal: TerminalRecord): TerminalRecord[] {
+  const next = list.some((item) => item.id === terminal.id)
+    ? list.map((item) => item.id === terminal.id ? terminal : item)
+    : [terminal, ...list];
+  return next.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+function mergeTerminalRecords(...groups: TerminalRecord[][]): TerminalRecord[] {
+  const byId = new Map<string, TerminalRecord>();
+  for (const group of groups) {
+    for (const terminal of group) {
+      byId.set(terminal.id, { ...byId.get(terminal.id), ...terminal });
+    }
+  }
+  return [...byId.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+function terminalSubtitle(terminal: TerminalRecord): string {
+  if (terminal.source === "pty") return terminal.cwd ?? "Interactive shell";
+  return terminal.command ?? "Agent Bash transcript";
+}
+
+function terminalKindLabel(terminal: TerminalRecord): string {
+  return terminal.source === "pty" ? "shell" : "agent Bash";
+}
+
+async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init);
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`);
+  return data as T;
+}
+
 function StatusDot({ status }: { status: InspectorTool["status"] }) {
   return (
     <span
@@ -464,6 +819,8 @@ export function Inspector({
   onWidthChange,
   referencedFiles = [],
   fileOpenRequest,
+  onInsertIntoComposer,
+  onClose,
 }: Props) {
   const [tab, setTab] = useState<TabKey>("tool");
   const [filesFilter, setFilesFilter] = useState<FilesFilter>("all");
@@ -471,6 +828,28 @@ export function Inspector({
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set());
   const [gitChanges, setGitChanges] = useState<GitChangesState>({ status: "loading" });
+  const [sessionTerminals, setSessionTerminals] = useState<TerminalRecord[]>([]);
+  const [selectedTerminalId, setSelectedTerminalId] = useState<string | null>(null);
+  const [terminalTranscript, setTerminalTranscript] = useState("");
+  const [terminalStreamError, setTerminalStreamError] = useState<string | null>(null);
+  const [terminalDetailHeight, setTerminalDetailHeight] = useState<number | null>(null);
+  const [terminalDefaultCwd, setTerminalDefaultCwd] = useState<string | null>(null);
+  const [creatingTerminal, setCreatingTerminal] = useState(false);
+  const [terminalCreateError, setTerminalCreateError] = useState<string | null>(null);
+  const [webDraftUrl, setWebDraftUrl] = useState("");
+  const [webUrl, setWebUrl] = useState("");
+  const [webError, setWebError] = useState<string | null>(null);
+  const [webAnnotating, setWebAnnotating] = useState(false);
+  const [webAnnotations, setWebAnnotations] = useState<WebAnnotation[]>([]);
+  const [selectedWebAnnotationId, setSelectedWebAnnotationId] = useState<number | null>(null);
+  const [webHoverTarget, setWebHoverTarget] = useState<WebElementTarget | null>(null);
+  const webFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const xtermHostRef = useRef<HTMLDivElement | null>(null);
+  const xtermRef = useRef<XTerm | null>(null);
+  const fitAddonRef = useRef<FitAddon | null>(null);
+  const xtermDataListenerRef = useRef<IDisposable | null>(null);
+  const xtermResizeListenerRef = useRef<IDisposable | null>(null);
+  const pendingPtyDataRef = useRef("");
   const latestTurn = session.turns.at(-1);
   const fileRefreshKey = `${events.length}:${session.status}:${latestTurn?.finished_at ?? ""}`;
 
@@ -497,13 +876,122 @@ export function Inspector({
     window.addEventListener("pointerup", onUp);
   };
 
+  const setClampedTerminalDetailHeight = (height: number) => {
+    setTerminalDetailHeight(clampTerminalDetailHeight(height));
+  };
+
+  const startTerminalDetailResize = (ev: ReactPointerEvent<HTMLButtonElement>) => {
+    ev.preventDefault();
+    const startY = ev.clientY;
+    const detailEl = ev.currentTarget.closest(".insp-terminal-detail") as HTMLElement | null;
+    const startHeight = detailEl?.getBoundingClientRect().height
+      ?? terminalDetailHeight
+      ?? terminalDetailDefaultHeight();
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+
+    const onMove = (moveEv: PointerEvent) => {
+      setClampedTerminalDetailHeight(startHeight + startY - moveEv.clientY);
+    };
+    const onUp = () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
+  const nudgeTerminalDetailHeight = (delta: number) => {
+    setTerminalDetailHeight((current) => clampTerminalDetailHeight((current ?? terminalDetailDefaultHeight()) + delta));
+  };
+
+  const openWebUrl = (ev?: FormEvent<HTMLFormElement>) => {
+    ev?.preventDefault();
+    const normalized = normalizeWebUrl(webDraftUrl);
+    if (normalized.error || !normalized.url) {
+      setWebError(normalized.error ?? "Could not open that URL.");
+      return;
+    }
+    setWebError(null);
+    setWebUrl(normalized.url);
+    setWebAnnotations([]);
+    setSelectedWebAnnotationId(null);
+  };
+
+  const addWebAnnotation = (ev: ReactMouseEvent<HTMLDivElement>) => {
+    if (!webAnnotating) return;
+    const rect = ev.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const id = Date.now();
+    const x = Math.min(100, Math.max(0, ((ev.clientX - rect.left) / rect.width) * 100));
+    const y = Math.min(100, Math.max(0, ((ev.clientY - rect.top) / rect.height) * 100));
+    const elementTarget = describeWebElementAtPoint(webFrameRef.current, ev.clientX, ev.clientY);
+    const elementDetails: WebElementDetails | null = elementTarget
+      ? {
+          elementSelector: elementTarget.elementSelector,
+          elementTag: elementTarget.elementTag,
+          elementText: elementTarget.elementText,
+          elementLabel: elementTarget.elementLabel,
+          label: elementTarget.label,
+        }
+      : null;
+
+    setWebAnnotations((current) => [
+      ...current,
+      {
+        id,
+        x,
+        y,
+        label: elementDetails?.label || `Annotation ${current.length + 1}`,
+        ...elementDetails,
+      },
+    ]);
+    setSelectedWebAnnotationId(id);
+  };
+
+  const updateWebHoverTarget = (ev: ReactMouseEvent<HTMLDivElement>) => {
+    if (!webAnnotating) return;
+    const next = describeWebElementAtPoint(webFrameRef.current, ev.clientX, ev.clientY);
+    setWebHoverTarget((current) => sameWebElementTarget(current, next) ? current : next);
+  };
+
+  const clearWebHoverTarget = () => {
+    setWebHoverTarget(null);
+  };
+
+  const updateWebAnnotationLabel = (id: number, label: string) => {
+    setWebAnnotations((current) => current.map((annotation) => (
+      annotation.id === id ? { ...annotation, label } : annotation
+    )));
+  };
+
+  const removeWebAnnotation = (id: number) => {
+    setWebAnnotations((current) => current.filter((annotation) => annotation.id !== id));
+    setSelectedWebAnnotationId((current) => current === id ? null : current);
+  };
+
+  const addWebAnnotationToComposer = (annotation: WebAnnotation) => {
+    if (!webUrl) return;
+    onInsertIntoComposer?.(formatWebAnnotationForChat(webUrl, annotation));
+  };
+
+  useEffect(() => {
+    if (!webAnnotating || !webUrl) setWebHoverTarget(null);
+  }, [webAnnotating, webUrl]);
+
   // Sync selected tool when parent selects one (chip click)
   useEffect(() => {
     if (activeTool) {
       setSelectedId(activeTool.id);
       setTab("tool");
+      if (isBashInspectorTool(activeTool)) {
+        setSelectedTerminalId(agentBashTerminalId(session.session_id, activeTool.id));
+      }
     }
-  }, [activeTool?.id]);
+  }, [activeTool?.id, session.session_id]);
 
   // Auto-select first tool when switching to tool tab
   useEffect(() => {
@@ -516,6 +1004,268 @@ export function Inspector({
     () => tools.find((t) => t.id === selectedId) ?? activeTool ?? null,
     [tools, selectedId, activeTool],
   );
+
+  const toolTerminals = useMemo(
+    () => tools
+      .filter(isBashInspectorTool)
+      .map((tool) => buildTerminalRecordFromTool(session, tool)),
+    [session, tools],
+  );
+  const relatedTerminals = useMemo(
+    () => mergeTerminalRecords(sessionTerminals, toolTerminals),
+    [sessionTerminals, toolTerminals],
+  );
+  const selectedTerminal = useMemo(
+    () => relatedTerminals.find((terminal) => terminal.id === selectedTerminalId) ?? relatedTerminals[0] ?? null,
+    [relatedTerminals, selectedTerminalId],
+  );
+  const terminalCwd = session.agent_snapshot?.cwd?.trim() || terminalDefaultCwd || "";
+
+  useEffect(() => {
+    setSelectedTerminalId((current) => {
+      if (current && relatedTerminals.some((terminal) => terminal.id === current)) return current;
+      return relatedTerminals[0]?.id ?? null;
+    });
+  }, [relatedTerminals]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadTerminals = async () => {
+      try {
+        const data = await fetchJson<TerminalListResponse>(
+          `/api/terminals?sessionId=${encodeURIComponent(session.session_id)}`,
+          { cache: "no-store" },
+        );
+        if (!cancelled) {
+          setSessionTerminals(data.terminals ?? []);
+          setTerminalDefaultCwd(data.defaultCwd);
+        }
+      } catch {
+        if (!cancelled) setSessionTerminals([]);
+      }
+    };
+
+    void loadTerminals();
+    const timer = window.setInterval(() => {
+      void loadTerminals();
+    }, session.status === "running" ? 2500 : 8000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [events.length, session.session_id, session.status]);
+
+  const createInspectorTerminal = async () => {
+    const cwd = terminalCwd.trim();
+    if (!cwd) {
+      setTerminalCreateError("No working directory is available for this chat.");
+      return;
+    }
+
+    setCreatingTerminal(true);
+    setTerminalCreateError(null);
+    try {
+      const data = await fetchJson<{ terminal: TerminalRecord }>("/api/terminals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cwd,
+          cols: 88,
+          rows: 20,
+          title: "Chat shell",
+          sessionId: session.session_id,
+        }),
+      });
+      setSessionTerminals((current) => upsertTerminalRecord(current, data.terminal));
+      setSelectedTerminalId(data.terminal.id);
+      setTab("terminal");
+    } catch (err) {
+      setTerminalCreateError(err instanceof Error ? err.message : "Failed to create terminal.");
+    } finally {
+      setCreatingTerminal(false);
+    }
+  };
+
+  const closeSelectedTerminal = async () => {
+    if (!selectedTerminal || selectedTerminal.source !== "pty") return;
+    try {
+      const data = await fetchJson<{ terminal: TerminalRecord }>(
+        `/api/terminals/${encodeURIComponent(selectedTerminal.id)}`,
+        { method: "DELETE" },
+      );
+      setSessionTerminals((current) => current.filter((terminal) => terminal.id !== data.terminal.id));
+      setSelectedTerminalId((current) => current === data.terminal.id ? null : current);
+    } catch (err) {
+      setTerminalStreamError(err instanceof Error ? err.message : "Failed to close terminal.");
+    }
+  };
+
+  useEffect(() => {
+    xtermDataListenerRef.current?.dispose();
+    xtermResizeListenerRef.current?.dispose();
+    xtermRef.current?.dispose();
+    xtermDataListenerRef.current = null;
+    xtermResizeListenerRef.current = null;
+    xtermRef.current = null;
+    fitAddonRef.current = null;
+
+    if (!selectedTerminal || selectedTerminal.source !== "pty" || !xtermHostRef.current) return;
+
+    const term = new XTerm({
+      cursorBlink: selectedTerminal.status === "running",
+      convertEol: true,
+      fontFamily: "var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace",
+      fontSize: 11.5,
+      lineHeight: 1.18,
+      theme: {
+        background: "#0b1114",
+        foreground: "#d5e5e0",
+        cursor: "#6ee7b7",
+        selectionBackground: "#2a4b54",
+      },
+    });
+    const fitAddon = new FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(xtermHostRef.current);
+    term.focus();
+
+    xtermRef.current = term;
+    fitAddonRef.current = fitAddon;
+    if (pendingPtyDataRef.current) {
+      term.write(pendingPtyDataRef.current);
+      pendingPtyDataRef.current = "";
+    }
+
+    let lastSentCols = 0;
+    let lastSentRows = 0;
+    let resizeFrame: number | null = null;
+    const host = xtermHostRef.current;
+
+    const postResize = () => {
+      const dims = fitAddon.proposeDimensions();
+      if (!dims) return;
+      if (dims.cols === lastSentCols && dims.rows === lastSentRows) return;
+      lastSentCols = dims.cols;
+      lastSentRows = dims.rows;
+      fetch(`/api/terminals/${encodeURIComponent(selectedTerminal.id)}/resize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cols: dims.cols, rows: dims.rows }),
+      }).catch(() => {});
+    };
+
+    const fitAndResize = () => {
+      resizeFrame = null;
+      if (!host || host.clientWidth <= 0 || host.clientHeight <= 0) return;
+      const nextFontSize = terminalFontSizeForWidth(host.clientWidth);
+      if (term.options.fontSize !== nextFontSize) {
+        term.options.fontSize = nextFontSize;
+      }
+      try {
+        fitAddon.fit();
+        term.refresh(0, Math.max(0, term.rows - 1));
+      } catch {
+        return;
+      }
+      postResize();
+    };
+
+    const scheduleFitAndResize = () => {
+      if (resizeFrame !== null) return;
+      resizeFrame = window.requestAnimationFrame(fitAndResize);
+    };
+
+    xtermDataListenerRef.current = term.onData((data) => {
+      fetch(`/api/terminals/${encodeURIComponent(selectedTerminal.id)}/input`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data }),
+      }).catch(() => {});
+    });
+    xtermResizeListenerRef.current = term.onResize(({ cols, rows }) => {
+      if (cols === lastSentCols && rows === lastSentRows) return;
+      lastSentCols = cols;
+      lastSentRows = rows;
+      fetch(`/api/terminals/${encodeURIComponent(selectedTerminal.id)}/resize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cols, rows }),
+      }).catch(() => {});
+    });
+
+    const resizeObserver = new ResizeObserver(scheduleFitAndResize);
+    if (host) {
+      resizeObserver.observe(host);
+      if (host.parentElement) resizeObserver.observe(host.parentElement);
+    }
+    document.fonts?.ready.then(scheduleFitAndResize).catch(() => {});
+    scheduleFitAndResize();
+    window.addEventListener("resize", scheduleFitAndResize);
+
+    return () => {
+      window.removeEventListener("resize", scheduleFitAndResize);
+      resizeObserver.disconnect();
+      if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame);
+      xtermDataListenerRef.current?.dispose();
+      xtermResizeListenerRef.current?.dispose();
+      term.dispose();
+      xtermDataListenerRef.current = null;
+      xtermResizeListenerRef.current = null;
+      if (xtermRef.current === term) xtermRef.current = null;
+      if (fitAddonRef.current === fitAddon) fitAddonRef.current = null;
+    };
+  }, [selectedTerminal?.id, selectedTerminal?.source]);
+
+  useEffect(() => {
+    if (selectedTerminal?.source !== "pty" || !fitAddonRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      fitAddonRef.current?.fit();
+      const dims = fitAddonRef.current?.proposeDimensions();
+      if (!dims) return;
+      fetch(`/api/terminals/${encodeURIComponent(selectedTerminal.id)}/resize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cols: dims.cols, rows: dims.rows }),
+      }).catch(() => {});
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [selectedTerminal?.id, selectedTerminal?.source, terminalDetailHeight]);
+
+  useEffect(() => {
+    if (!selectedTerminal) {
+      setTerminalTranscript("");
+      setTerminalStreamError(null);
+      pendingPtyDataRef.current = "";
+      return;
+    }
+
+    setTerminalTranscript("");
+    setTerminalStreamError(null);
+    pendingPtyDataRef.current = "";
+    const source = new EventSource(`/api/terminals/${encodeURIComponent(selectedTerminal.id)}/stream`);
+    source.onmessage = (event) => {
+      const payload = JSON.parse(event.data) as TerminalStreamPayload;
+      if (payload.type === "data") {
+        if (selectedTerminal.source === "pty") {
+          if (xtermRef.current) xtermRef.current.write(payload.data);
+          else pendingPtyDataRef.current += payload.data;
+        } else {
+          setTerminalTranscript((current) => current + payload.data);
+        }
+      } else if (payload.type === "meta" || payload.type === "end") {
+        setSessionTerminals((current) => upsertTerminalRecord(current, payload.terminal));
+      } else if (payload.type === "error") {
+        setTerminalStreamError(payload.message);
+      }
+    };
+    source.onerror = () => {
+      source.close();
+    };
+
+    return () => source.close();
+  }, [selectedTerminal?.id, selectedTerminal?.source]);
 
   const files = useMemo(
     () => collectInspectableFiles(tools, events, session, referencedFiles),
@@ -612,21 +1362,33 @@ export function Inspector({
         aria-label="Resize document panel"
         title="Resize panel"
       />
+      {onClose && (
+        <button
+          type="button"
+          className="inspector-mobile-close"
+          onClick={onClose}
+          aria-label="Close inspector panel"
+          title="Close panel"
+        >
+          ×
+        </button>
+      )}
       {/* Tab bar */}
       <div className="tab-bar">
-        {INSPECTOR_TABS.map((t) => {
+        {INSPECTOR_TABS.map(({ key, label }) => {
           const badge =
-            t === "tool" ? tools.length :
-            t === "files" ? fileTabCount :
+            key === "tool" ? tools.length :
+            key === "terminal" ? relatedTerminals.length :
+            key === "files" ? fileTabCount :
             null;
           return (
             <button
-              key={t}
+              key={key}
               type="button"
-              className={`tab ${tab === t ? "active" : ""}`}
-              onClick={() => setTab(t)}
+              className={`tab ${tab === key ? "active" : ""}`}
+              onClick={() => setTab(key)}
             >
-              {t === "tool" ? "Tool" : t === "files" ? "Files" : "Tokens"}
+              {label}
               {badge != null && badge > 0 && (
                 <span className="n">{badge}</span>
               )}
@@ -679,6 +1441,18 @@ export function Inspector({
                     >
                       {STATUS_LABEL[selectedTool.status]}
                     </span>
+                    {isBashInspectorTool(selectedTool) && (
+                      <button
+                        type="button"
+                        className="insp-terminal-link"
+                        onClick={() => {
+                          setSelectedTerminalId(agentBashTerminalId(session.session_id, selectedTool.id));
+                          setTab("terminal");
+                        }}
+                      >
+                        View terminal
+                      </button>
+                    )}
                   </div>
                   <Section title="Input">
                     <JsonBlock value={selectedTool.input} />
@@ -686,6 +1460,121 @@ export function Inspector({
                   <Section title={selectedTool.status === "err" ? "Result · error" : "Result"}>
                     <JsonBlock value={selectedTool.result} error={selectedTool.status === "err"} />
                   </Section>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ── Terminal tab ── */}
+      {tab === "terminal" && (
+        <div className="insp-terminal-pane">
+          <div className="insp-terminal-create">
+            <button
+              type="button"
+              className="terminal-primary-button"
+              onClick={createInspectorTerminal}
+              disabled={creatingTerminal || !terminalCwd}
+            >
+              {creatingTerminal ? "Starting..." : "New terminal"}
+            </button>
+            <span className="insp-terminal-cwd" title={terminalCwd || undefined}>
+              {terminalCwd || "No working directory"}
+            </span>
+          </div>
+          {terminalCreateError && (
+            <div className="terminal-stream-error">{terminalCreateError}</div>
+          )}
+          {relatedTerminals.length === 0 ? (
+            <div className="insp-empty">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mb-2 opacity-30">
+                <polyline points="4 17 10 11 4 5" />
+                <line x1="12" y1="19" x2="20" y2="19" />
+              </svg>
+              No terminals for this chat yet.
+            </div>
+          ) : (
+            <>
+              <div className="insp-terminal-list">
+                {relatedTerminals.map((terminal) => (
+                  <button
+                    key={terminal.id}
+                    type="button"
+                    className={`insp-terminal-row ${selectedTerminal?.id === terminal.id ? "active" : ""}`}
+                    onClick={() => setSelectedTerminalId(terminal.id)}
+                  >
+                    <span className="insp-terminal-row-title">{terminal.title}</span>
+                    <span className={terminalStatusClass(terminal.status)}>
+                      {TERMINAL_STATUS_LABEL[terminal.status]}
+                    </span>
+                    <span className="insp-terminal-row-subtitle">{terminalKindLabel(terminal)}</span>
+                  </button>
+                ))}
+              </div>
+
+              {selectedTerminal && (
+                <div
+                  className="insp-terminal-detail"
+                  style={terminalDetailHeight
+                    ? ({ "--terminal-detail-height": `${terminalDetailHeight}px` } as CSSProperties)
+                    : undefined}
+                >
+                  <button
+                    type="button"
+                    className="insp-terminal-detail-resizer"
+                    onPointerDown={startTerminalDetailResize}
+                    onKeyDown={(ev) => {
+                      if (ev.key === "ArrowUp") {
+                        ev.preventDefault();
+                        nudgeTerminalDetailHeight(32);
+                      } else if (ev.key === "ArrowDown") {
+                        ev.preventDefault();
+                        nudgeTerminalDetailHeight(-32);
+                      } else if (ev.key === "Home") {
+                        ev.preventDefault();
+                        setClampedTerminalDetailHeight(TERMINAL_DETAIL_MIN_HEIGHT);
+                      } else if (ev.key === "End") {
+                        ev.preventDefault();
+                        setClampedTerminalDetailHeight(terminalDetailMaxHeight());
+                      }
+                    }}
+                    aria-label="Resize terminal transcript panel"
+                    title="Resize terminal panel"
+                  />
+                  <div className="insp-terminal-header">
+                    <div className="insp-terminal-title">
+                      <span>{selectedTerminal.title}</span>
+                      <small title={terminalSubtitle(selectedTerminal)}>{terminalSubtitle(selectedTerminal)}</small>
+                    </div>
+                    <a
+                      className="insp-terminal-link"
+                      href={`/terminals?terminal=${encodeURIComponent(selectedTerminal.id)}`}
+                    >
+                      Full page
+                    </a>
+                    {selectedTerminal.source === "pty" && (
+                      <button
+                        type="button"
+                        className="insp-terminal-link danger"
+                        onClick={closeSelectedTerminal}
+                      >
+                        Close
+                      </button>
+                    )}
+                  </div>
+                  {terminalStreamError && (
+                    <div className="terminal-stream-error">{terminalStreamError}</div>
+                  )}
+                  {selectedTerminal.source === "pty" ? (
+                    <div className="insp-terminal-xterm-shell">
+                      <div ref={xtermHostRef} className="insp-terminal-xterm-host" />
+                    </div>
+                  ) : (
+                    <pre className="insp-terminal-transcript" aria-label="Chat terminal transcript">
+                      {terminalTranscript || "$ loading transcript...\n"}
+                    </pre>
+                  )}
                 </div>
               )}
             </>
@@ -782,6 +1671,142 @@ export function Inspector({
             )}
           </div>
         )
+      )}
+
+      {/* ── Web tab ── */}
+      {tab === "web" && (
+        <div className="insp-web-pane">
+          <form className="insp-web-toolbar" onSubmit={openWebUrl}>
+            <input
+              className="insp-web-url"
+              value={webDraftUrl}
+              onChange={(ev) => setWebDraftUrl(ev.target.value)}
+              placeholder="https://example.com"
+              aria-label="Website URL"
+            />
+            <button type="submit" className="insp-web-button">
+              Open
+            </button>
+            <button
+              type="button"
+              className={`insp-web-button ${webAnnotating ? "active" : ""}`}
+              onClick={() => setWebAnnotating((value) => !value)}
+              disabled={!webUrl}
+            >
+              Annotate
+            </button>
+          </form>
+          {webError && <div className="insp-web-error">{webError}</div>}
+          <div className="insp-web-stage">
+            {webUrl ? (
+              <>
+                <iframe
+                  key={webUrl}
+                  ref={webFrameRef}
+                  className="insp-web-frame"
+                  src={webUrl}
+                  title="Website preview"
+                  sandbox="allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
+                  referrerPolicy="no-referrer"
+                />
+                <div
+                  className={`insp-web-annotation-layer ${webAnnotating ? "active" : ""}`}
+                  onClick={addWebAnnotation}
+                  onMouseMove={updateWebHoverTarget}
+                  onMouseLeave={clearWebHoverTarget}
+                  aria-label="Website annotation layer"
+                >
+                  {webHoverTarget && (
+                    <div
+                      className="insp-web-hover-target"
+                      style={{
+                        left: `${webHoverTarget.box.left}%`,
+                        top: `${webHoverTarget.box.top}%`,
+                        width: `${webHoverTarget.box.width}%`,
+                        height: `${webHoverTarget.box.height}%`,
+                      }}
+                    >
+                      <span>{webHoverTarget.label}</span>
+                    </div>
+                  )}
+                  {webAnnotations.map((annotation, index) => (
+                    <button
+                      key={annotation.id}
+                      type="button"
+                      className={`insp-web-pin ${selectedWebAnnotationId === annotation.id ? "selected" : ""}`}
+                      style={{ left: `${annotation.x}%`, top: `${annotation.y}%` }}
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        setSelectedWebAnnotationId(annotation.id);
+                      }}
+                      title={annotation.label}
+                    >
+                      {index + 1}
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="insp-web-empty">
+                <span>Open a URL to preview it here.</span>
+              </div>
+            )}
+          </div>
+          {webUrl && (
+            <div className="insp-web-footer">
+              <a href={webUrl} target="_blank" rel="noreferrer" className="insp-web-open-link">
+                Open in browser
+              </a>
+              <span className="insp-web-note">Some sites block embedded previews.</span>
+            </div>
+          )}
+          {webAnnotations.length > 0 && (
+            <div className="insp-web-annotations">
+              {webAnnotations.map((annotation, index) => {
+                const meta = webAnnotationMeta(annotation);
+
+                return (
+                  <div
+                    key={annotation.id}
+                    className={`insp-web-annotation-row ${selectedWebAnnotationId === annotation.id ? "selected" : ""}`}
+                  >
+                    <button
+                      type="button"
+                      className="insp-web-annotation-index"
+                      onClick={() => setSelectedWebAnnotationId(annotation.id)}
+                      aria-label={`Select annotation ${index + 1}`}
+                    >
+                      {index + 1}
+                    </button>
+                    <input
+                      className="insp-web-annotation-label"
+                      value={annotation.label}
+                      onChange={(ev) => updateWebAnnotationLabel(annotation.id, ev.target.value)}
+                      aria-label={`Annotation ${index + 1} label`}
+                    />
+                    <button
+                      type="button"
+                      className="insp-web-annotation-action"
+                      onClick={() => addWebAnnotationToComposer(annotation)}
+                    >
+                      Add to chat
+                    </button>
+                    <button
+                      type="button"
+                      className="insp-web-annotation-remove"
+                      onClick={() => removeWebAnnotation(annotation.id)}
+                      aria-label={`Remove annotation ${index + 1}`}
+                      title="Remove"
+                    >
+                      ×
+                    </button>
+                    {meta && <div className="insp-web-annotation-meta">{meta}</div>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       )}
 
       {/* ── Tokens tab ── */}

@@ -1,4 +1,6 @@
 // Server-only helper to spawn run-turn.sh for a session.
+import { createWriteStream } from "node:fs";
+import type { WriteStream } from "node:fs";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { spawn } from "child_process";
@@ -11,6 +13,7 @@ import { normalizeReasoningEffortForCli, type ModelReasoningEffort } from "./mod
 import { isBedrockCli, isLocalClaudeCli, isPersonalClaudeCli, normalizeCli } from "./clis";
 import { readBedrockConfig } from "./bedrock-auth";
 import { readAppSettings, type AppSettings } from "./settings";
+import { markSessionIfRunnerExited, markSessionRunnerFailed } from "./session-lifecycle";
 
 // MCP tools added to allowedTools for orchestrator sessions
 const ORCHESTRATOR_MCP_TOOLS = [
@@ -92,6 +95,31 @@ async function prepareMemoryEnv(
   }
 
   return extraEnv;
+}
+
+async function createReadyAppendStream(filePath: string): Promise<WriteStream> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const stream = createWriteStream(filePath, { flags: "a" });
+  if (typeof (stream as { fd?: unknown }).fd === "number") return stream;
+
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      stream.off("open", onOpen);
+      stream.off("error", onError);
+    };
+    const onOpen = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    stream.once("open", onOpen);
+    stream.once("error", onError);
+  });
+
+  return stream;
 }
 
 function tomlString(value: string): string {
@@ -276,14 +304,36 @@ export async function spawnTurn(
   extraEnv.TASK_BASE_URL = `http://127.0.0.1:${port}/api/tasks`;
   extraEnv.TASK_SESSION_ID = sessionId;
 
+  const earlyStderr = await createReadyAppendStream(path.join(sessionsRoot(), sessionId, "stderr.log"));
   const proc = spawn(script, [sessionId], {
     detached: true,
-    stdio: ["pipe", "ignore", "ignore"],
+    stdio: ["pipe", "ignore", earlyStderr],
     env: {
       ...process.env,
       ...extraEnv,
     },
   });
-  proc.stdin!.end(message);
+
+  proc.once("error", (err) => {
+    earlyStderr.write(`[runner] failed to spawn run-turn.sh: ${err.message}\n`);
+    earlyStderr.end();
+    markSessionRunnerFailed(sessionId, `failed to spawn run-turn.sh: ${err.message}`).catch(() => {});
+  });
+
+  proc.once("close", (code) => {
+    earlyStderr.end();
+    const timer = setTimeout(() => {
+      markSessionIfRunnerExited(sessionId, code).catch(() => {});
+    }, 1000);
+    timer.unref?.();
+  });
+
+  try {
+    proc.stdin!.end(message);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    earlyStderr.write(`[runner] failed to send prompt to run-turn.sh: ${message}\n`);
+    markSessionRunnerFailed(sessionId, `failed to send prompt to run-turn.sh: ${message}`).catch(() => {});
+  }
   proc.unref();
 }

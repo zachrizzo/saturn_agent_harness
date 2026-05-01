@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { CLI, Agent } from "@/lib/runs";
 import type { ModelReasoningEffort } from "@/lib/models";
-import { Composer, type ComposerHandle } from "@/app/components/chat/Composer";
+import { Composer } from "@/app/components/chat/Composer";
 import { DirPicker } from "@/app/components/DirPicker";
 import { Input, Textarea } from "@/app/components/ui";
 import { DEFAULT_CLAUDE_ALIAS, toBedrockId } from "@/lib/claude-models";
@@ -17,7 +17,6 @@ type Props = {
 
 export function NewChatForm({ initialAgentId }: Props) {
   const router = useRouter();
-  const composerRef = useRef<ComposerHandle>(null);
   const [cwd, setCwd] = useState("");
   const [cwdTouched, setCwdTouched] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -129,29 +128,7 @@ export function NewChatForm({ initialAgentId }: Props) {
         throw new Error(data?.error ?? `Request failed (${res.status})`);
       }
       const { session_id } = await res.json();
-
-      // Upload any files that were held locally in the Composer before the session existed
-      const pendingFiles = composerRef.current?.getPendingFiles() ?? [];
-      let finalMessage = message;
-      if (pendingFiles.length > 0) {
-        composerRef.current?.clearPendingFiles();
-        const form = new FormData();
-        pendingFiles.forEach((f) => form.append("files", f));
-        const upRes = await fetch(`/api/sessions/${encodeURIComponent(session_id)}/uploads`, {
-          method: "POST",
-          body: form,
-        });
-        if (upRes.ok) {
-          const data = await upRes.json();
-          const saved: { name: string; path: string }[] = data.files ?? [];
-          if (saved.length > 0) {
-            const lines = saved.map((f) => `- ${f.path}  (${f.name})`);
-            finalMessage = `${message}\n\n[Attached files — read them with the Read tool]\n${lines.join("\n")}`;
-          }
-        }
-      }
-
-      router.push(`/chats/${session_id}?m=${encodeURIComponent(finalMessage)}`);
+      router.push(`/chats/${session_id}?m=${encodeURIComponent(message)}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "failed");
       setStarting(false);
@@ -276,13 +253,14 @@ export function NewChatForm({ initialAgentId }: Props) {
               setCwdTouched(true);
               setCwd(value);
             }}
+            recentVariant="cards"
+            recentLimit={5}
             className="w-full"
           />
         </div>
       )}
 
       <Composer
-        ref={composerRef}
         variant="inline"
         currentCli={defaultCli}
         currentModel={defaultModel}
@@ -292,6 +270,7 @@ export function NewChatForm({ initialAgentId }: Props) {
         agentCliModels={selectedAgent?.models}
         agentCliReasoningEfforts={selectedAgent?.reasoningEfforts}
         cwd={showCwdPicker ? cwd : selectedAgent?.cwd}
+        attachmentsEnabled={false}
         disabled={starting}
         onSend={start}
         placeholder="What do you want to work on?"

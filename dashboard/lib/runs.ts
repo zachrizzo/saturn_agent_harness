@@ -6,6 +6,7 @@ import type { ModelReasoningEffort } from "./models";
 import { countTextTokensForCli } from "./token-counters";
 import { DEFAULT_CLI, normalizeCli } from "./clis";
 import type { CLI } from "./clis";
+import { reconcileStaleRunningSession } from "./session-lifecycle";
 export type { StreamEvent, TokenBreakdown, ToolCallSummary } from "./events";
 export { toEvents, getTokenBreakdown, getToolCallSummary } from "./events";
 export type { CLI } from "./clis";
@@ -491,7 +492,7 @@ export async function listSessions(): Promise<SessionMeta[]> {
       ),
   );
 
-  const out = metas.filter((m): m is SessionMeta => m !== null);
+  const out = await Promise.all(metas.filter((m): m is SessionMeta => m !== null).map(reconcileStaleRunningSession));
   for (const meta of out) normalizeSessionMeta(meta);
   out.sort((a, b) => (a.started_at < b.started_at ? 1 : -1));
   return out;

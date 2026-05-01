@@ -251,6 +251,19 @@ async function writeQueue(queue: EmbeddingQueue): Promise<void> {
   await atomicWriteFile(queuePath(), JSON.stringify(queue, null, 2) + "\n");
 }
 
+let queueUpdateChain: Promise<unknown> = Promise.resolve();
+
+function updateQueue(mutator: (queue: EmbeddingQueue) => EmbeddingQueue | Promise<EmbeddingQueue>): Promise<EmbeddingQueue> {
+  const next = queueUpdateChain.then(async () => {
+    const queue = await readQueue();
+    const updated = await mutator(queue);
+    await writeQueue(updated);
+    return updated;
+  });
+  queueUpdateChain = next.catch(() => undefined);
+  return next;
+}
+
 export async function readMemoryEmbeddingChunks(): Promise<MemoryEmbeddingChunk[]> {
   try {
     const raw = await fs.readFile(chunksPath(), "utf8");
@@ -565,12 +578,13 @@ async function loadIndexEntries(): Promise<MemoryIndexEntry[]> {
 }
 
 export async function enqueueMemoryEmbeddingRefresh(noteId: string, action: "refresh" | "delete" = "refresh"): Promise<void> {
-  const queue = await readQueue();
-  queue.items = [
-    ...queue.items.filter((item) => item.noteId !== noteId),
-    { noteId, action, queuedAt: new Date().toISOString() },
-  ];
-  await writeQueue(queue);
+  await updateQueue((queue) => ({
+    ...queue,
+    items: [
+      ...queue.items.filter((item) => item.noteId !== noteId),
+      { noteId, action, queuedAt: new Date().toISOString() },
+    ],
+  }));
   scheduleMemoryEmbeddingQueue();
 }
 
@@ -597,6 +611,7 @@ export async function rebuildMemoryEmbeddings(opts: {
   entries?: MemoryIndexEntry[];
   force?: boolean;
 } = {}): Promise<MemoryEmbeddingsStatus> {
+  const rebuildStartedAt = new Date().toISOString();
   const settings = opts.settings ?? await readAppSettings();
   const entries = opts.entries ?? await loadIndexEntries();
   const existingChunks = await readMemoryEmbeddingChunks();
@@ -638,16 +653,20 @@ export async function rebuildMemoryEmbeddings(opts: {
     }
 
     await writeChunks(nextChunks);
-    await writeQueue({ version: EMBEDDINGS_VERSION, items: [] });
+    const remainingQueue = await updateQueue((queue) => ({
+      ...queue,
+      items: queue.items.filter((item) => item.queuedAt > rebuildStartedAt),
+    }));
     const done: MemoryEmbeddingsManifest = {
       ...baseManifest,
       status: embeddingProvider(settings) === "disabled" ? "disabled" : "idle",
       totalNotes: entries.length,
       totalChunks: nextChunks.length,
       updatedAt: new Date().toISOString(),
-      queued: 0,
+      queued: remainingQueue.items.length,
     };
     await writeManifest(done);
+    if (remainingQueue.items.length) scheduleMemoryEmbeddingQueue();
     return statusFromManifest(done, settings);
   } catch (err) {
     const failed: MemoryEmbeddingsManifest = {

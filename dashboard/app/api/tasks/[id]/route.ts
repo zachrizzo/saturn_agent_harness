@@ -93,6 +93,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       : null;
   }
 
+  if (Object.keys(patch).length === 0) {
+    return NextResponse.json({ error: "no valid task fields provided" }, { status: 400 });
+  }
+
   const actor = typeof body.actor === "string" && body.actor.trim() ? body.actor.trim() : "saturn-cli";
 
   try {

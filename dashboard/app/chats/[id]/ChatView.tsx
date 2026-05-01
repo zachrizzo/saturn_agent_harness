@@ -65,9 +65,11 @@ export function ChatView({
   const [streaming, setStreaming] = useState(initialMeta.status === "running");
   const [autoScroll, setAutoScroll] = useState(true);
   const composerRef = useRef<ComposerHandle>(null);
+  const chatBottomRef = useRef<HTMLDivElement | null>(null);
   const [editingTurnIndex, setEditingTurnIndex] = useState<number | null>(null);
   const turnRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const [inspectorWidth, setInspectorWidth] = useState(420);
+  const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
   const [referencedFiles, setReferencedFiles] = useState<string[]>([]);
   const [fileOpenRequest, setFileOpenRequest] = useState<{ path: string; requestId: number } | null>(null);
   const fileOpenRequestId = useRef(0);
@@ -179,46 +181,76 @@ export function ChatView({
     return () => es.close();
   }, [refreshSessionSnapshot, router, sessionId, meta.status]);
 
-  // Scroll all the way to the bottom — past the last message AND showing the composer.
-  const scrollToEnd = (behavior: ScrollBehavior = "auto") => {
-    window.scrollTo({ top: document.body.scrollHeight, behavior });
-  };
+  const getChatScrollElement = useCallback(() => (
+    chatBottomRef.current?.closest<HTMLElement>('[data-shell="chat-scroll"]')
+      ?? chatBottomRef.current?.closest<HTMLElement>('[data-shell="main-scroll"]')
+      ?? document.scrollingElement
+      ?? document.documentElement
+  ), []);
+
+  const scrollToEnd = useCallback((behavior: ScrollBehavior = "auto") => {
+    const scrollEl = getChatScrollElement();
+    const bottomMarker = chatBottomRef.current;
+    if (bottomMarker) {
+      const markerRect = bottomMarker.getBoundingClientRect();
+      const scrollerRect = scrollEl instanceof HTMLElement
+        ? scrollEl.getBoundingClientRect()
+        : { bottom: window.innerHeight };
+      const targetTop = scrollEl.scrollTop + markerRect.bottom - scrollerRect.bottom + 12;
+      scrollEl.scrollTo({ top: Math.max(0, targetTop), behavior });
+      return;
+    }
+
+    const targetHeight = Math.max(
+      scrollEl.scrollHeight,
+      document.documentElement.scrollHeight,
+      document.body.scrollHeight,
+    );
+    scrollEl.scrollTo({ top: Math.max(0, targetHeight - scrollEl.clientHeight), behavior });
+  }, [getChatScrollElement]);
 
   // Jump to bottom on first mount (instant).
   useEffect(() => {
     scrollToEnd();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [scrollToEnd]);
 
   // Auto-scroll when new events arrive (while streaming AND user hasn't scrolled up)
   useEffect(() => {
     if (streaming && autoScroll) {
       scrollToEnd("smooth");
     }
-  }, [events.length, streaming, autoScroll]);
+  }, [events.length, streaming, autoScroll, scrollToEnd]);
 
   // Track whether the user is near the bottom — shows/hides the scroll-to-bottom button
   const [atBottom, setAtBottom] = useState(true);
   useEffect(() => {
+    const scrollEl = getChatScrollElement();
     const onScroll = () => {
       const threshold = 200;
+      const markerBottom = chatBottomRef.current?.getBoundingClientRect().bottom;
+      const scrollerBottom = scrollEl instanceof HTMLElement
+        ? scrollEl.getBoundingClientRect().bottom
+        : window.innerHeight;
       const distFromBottom =
-        document.documentElement.scrollHeight -
-        window.innerHeight -
-        window.scrollY;
+        markerBottom === undefined
+          ? scrollEl.scrollHeight - (scrollEl.scrollTop + scrollEl.clientHeight)
+          : markerBottom - scrollerBottom;
       const nearBottom = distFromBottom < threshold;
       setAtBottom(nearBottom);
       // If user scrolls up mid-stream, pause autoscroll; resume when they return.
       if (streaming) setAutoScroll(nearBottom);
     };
     onScroll();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
-  }, [streaming]);
+    scrollEl.addEventListener("scroll", onScroll, { passive: true });
+    return () => scrollEl.removeEventListener("scroll", onScroll);
+  }, [getChatScrollElement, streaming]);
 
   const scrollToBottom = () => {
-    scrollToEnd("smooth");
     setAutoScroll(true);
+    setAtBottom(true);
+    scrollToEnd("smooth");
+    window.requestAnimationFrame(() => scrollToEnd("smooth"));
+    window.setTimeout(() => scrollToEnd("auto"), 220);
   };
 
   // `/` to focus composer (unless already in an input/textarea)
@@ -382,7 +414,7 @@ export function ChatView({
     }
     // Then after a moment scroll back down to show the composer too
     setTimeout(() => {
-      window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+      scrollToEnd("smooth");
     }, 600);
   };
 
@@ -397,6 +429,11 @@ export function ChatView({
     setReferencedFiles((current) => current.includes(cleaned) ? current : [cleaned, ...current]);
     fileOpenRequestId.current += 1;
     setFileOpenRequest({ path: cleaned, requestId: fileOpenRequestId.current });
+    setMobileInspectorOpen(true);
+  }, []);
+
+  const insertIntoComposer = useCallback((text: string) => {
+    composerRef.current?.insertText(text);
   }, []);
 
   const stopGeneration = async () => {
@@ -501,7 +538,7 @@ export function ChatView({
   return (
     <ToolSelectionProvider value={toolSelection}>
       <div
-        className="chat-shell"
+        className={`chat-shell ${mobileInspectorOpen ? "inspector-open" : ""}`}
         style={{ "--inspector-width": `${inspectorWidth}px` } as CSSProperties}
       >
         <div className="chat-main">
@@ -546,6 +583,14 @@ export function ChatView({
               >
                 Fork
               </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="chat-inspector-toggle"
+                onClick={() => setMobileInspectorOpen(true)}
+              >
+                Panel
+              </Button>
             </div>
             {meta.agent_snapshot?.description && (
               <p className="text-[12px] text-muted mt-1 truncate" style={{ flexBasis: "100%" }}>
@@ -563,7 +608,7 @@ export function ChatView({
             <div className="session-id">{sessionId}</div>
           </header>
 
-          <div className="chat-stream">
+          <div className="chat-stream" data-shell="chat-scroll">
             {chunks.length === 0 && (
               <div className="card p-10 text-center text-muted text-[13px]">
                 Send a message to start the conversation.
@@ -617,6 +662,7 @@ export function ChatView({
                 </div>
               );
             })}
+            <div ref={chatBottomRef} aria-hidden="true" className="chat-bottom-sentinel" />
           </div>
 
           {!atBottom && (
@@ -624,12 +670,7 @@ export function ChatView({
               type="button"
               onClick={scrollToBottom}
               aria-label="Scroll to bottom"
-              className="fixed z-20 right-6 flex items-center justify-center w-9 h-9 rounded-full border border-border shadow-lg transition-all hover:scale-105 active:scale-95"
-              style={{
-                bottom: "8.5rem",
-                background: "var(--bg-elev)",
-                color: "var(--fg)",
-              }}
+              className="chat-scroll-bottom-button fixed z-20 flex items-center justify-center w-9 h-9 rounded-full border border-border shadow-lg transition-all hover:scale-105 active:scale-95"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
@@ -637,7 +678,7 @@ export function ChatView({
             </button>
           )}
 
-          <div className="pt-2">
+          <div className="chat-composer-area">
             {awaitingPlanApproval && !streaming && editingTurnIndex === null && (
               <div className="plan-approval-banner">
                 <div className="plan-approval-copy">
@@ -702,6 +743,12 @@ export function ChatView({
           </div>
         </div>
 
+        <button
+          type="button"
+          className="chat-inspector-backdrop"
+          onClick={() => setMobileInspectorOpen(false)}
+          aria-label="Close inspector panel"
+        />
         <Inspector
           session={meta}
           activeTool={activeTool}
@@ -712,6 +759,8 @@ export function ChatView({
           onWidthChange={setInspectorWidth}
           referencedFiles={referencedFiles}
           fileOpenRequest={fileOpenRequest}
+          onInsertIntoComposer={insertIntoComposer}
+          onClose={() => setMobileInspectorOpen(false)}
         />
       </div>
     </ToolSelectionProvider>

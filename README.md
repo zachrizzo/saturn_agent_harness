@@ -271,19 +271,31 @@ It uses Telegram long polling, so the Mac does not need a public webhook URL. In
 
 Optional routing:
 - `SATURN_AGENT_ID=research-deep-dive` starts new Telegram chats through a saved dashboard agent.
-- Without `SATURN_AGENT_ID`, the bridge creates ad-hoc sessions using `SATURN_ADHOC_CLI`, `SATURN_ADHOC_MODEL`, `SATURN_ADHOC_PROMPT`, `SATURN_ADHOC_CWD`, `SATURN_ADHOC_ALLOWED_TOOLS`, and `SATURN_ADHOC_TIMEOUT_SECONDS`.
+- Without `SATURN_AGENT_ID`, the bridge creates ad-hoc sessions using `SATURN_ADHOC_CLI`, `SATURN_ADHOC_MODEL`, `SATURN_ADHOC_REASONING_EFFORT`, `SATURN_ADHOC_PROMPT`, `SATURN_ADHOC_CWD`, `SATURN_ADHOC_ALLOWED_TOOLS`, and `SATURN_ADHOC_TIMEOUT_SECONDS`.
+- If no project override is set, ad-hoc Telegram sessions use a Saturn-owned Dispatch workspace at `telegram/dispatch-workspace`. Set `SATURN_DISPATCH_DEFAULT_CWD` to move that default folder.
+- `SATURN_PUBLIC_URL` controls the dashboard links sent back to Telegram; it defaults to `SATURN_BASE_URL`.
 
 Telegram commands:
 - `/new` or `/reset` clears the current Telegram chat's session mapping.
 - `/new <task>` starts a fresh session immediately.
 - `/status` shows the active session status.
 - `/session` shows the dashboard session id.
-- `/think <low|medium|high|xhigh>` sets reasoning for this Telegram chat.
-- `/model <id>` sets the model for this Telegram chat.
+- `/settings` shows the current route, runtime, project, tools, timeout, and prompt settings for the Telegram chat.
+- `/project list` or `/projects` lists recent project directories.
+- `/project <number|path|off>` sets the working directory for new ad-hoc sessions; `off` returns to the Dispatch workspace.
+- `/cli <codex|claude-personal|claude-bedrock|claude-local>` sets the backend for new sessions.
+- `/think <minimal|low|medium|high|xhigh|max|off>` sets or clears reasoning for this Telegram chat.
+- `/model <id|off>` sets or clears the model for this Telegram chat.
 - `/agent <id|off>` routes new sessions through a saved dashboard agent.
+- `/agents` lists saved dashboard agents.
+- `/tools <none|read|code|full|comma,separated,tools|off>` sets Claude allowed tools for new ad-hoc sessions.
+- `/mcp <on|off>` toggles MCP tools for new sessions.
+- `/timeout <seconds|off>` sets the new-session timeout.
+- `/prompt <text|off>` sets the ad-hoc system prompt for new sessions.
 - `/verbose <on|off>` toggles dashboard links and extra run details.
+- `/clear settings` resets all Dispatch settings for this Telegram chat.
 
-State lives in `telegram/state.json` and includes the Telegram update offset, per-chat session id, queued messages, and per-chat settings. Delete that file to fully reset the bridge.
+State lives in `telegram/state.json` and includes the Telegram update offset, per-chat session id, queued messages, and per-chat settings. The default Dispatch workspace lives at `telegram/dispatch-workspace`. Delete `telegram/state.json` to fully reset the bridge.
 
 ### launchd
 

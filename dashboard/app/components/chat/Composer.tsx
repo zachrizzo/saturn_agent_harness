@@ -34,6 +34,7 @@ type Props = {
   header?: React.ReactNode;
   /** If provided, enables attachment upload (drag/drop, paste, file picker) against this session */
   sessionId?: string;
+  attachmentsEnabled?: boolean;
   /** Working directory for this session — displayed in the toolbar */
   cwd?: string;
 };
@@ -74,13 +75,14 @@ function readQueuedMessages(queueStorageKey: string | null): QueuedMessage[] {
 export type ComposerHandle = {
   focus: () => void;
   setDraft: (text: string) => void;
+  insertText: (text: string) => void;
   /** Returns files queued locally when no sessionId was provided at drop time */
   getPendingFiles: () => File[];
   clearPendingFiles: () => void;
 };
 
 export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
-  { currentCli, currentModel, currentReasoningEffort, currentMcpTools, availableClis, agentCliModels, agentCliReasoningEfforts, disabled, onSend, onStop, placeholder, variant = "sticky", sendLabel, header, sessionId, cwd },
+  { currentCli, currentModel, currentReasoningEffort, currentMcpTools, availableClis, agentCliModels, agentCliReasoningEfforts, disabled, onSend, onStop, placeholder, variant = "sticky", sendLabel, header, sessionId, attachmentsEnabled = true, cwd },
   ref
 ) {
   const storageKey = sessionId ? `composer:${sessionId}` : null;
@@ -116,6 +118,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
   }
   const [queued, setQueued] = useState<QueuedMessage[]>(() => initialQueueRef.current ?? []);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const attachmentsRef = useRef<Attachment[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [sttSupported, setSttSupported] = useState(false);
@@ -164,13 +167,13 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
   useEffect(() => {
     if (prevSessionIdRef.current === sessionId) return;
     prevSessionIdRef.current = sessionId;
-    attachments.forEach((a) => a.previewUrl && URL.revokeObjectURL(a.previewUrl));
+    attachmentsRef.current.forEach((a) => a.previewUrl && URL.revokeObjectURL(a.previewUrl));
     setQueued([]);
     setMessage("");
     setAttachments([]);
     setSlashOpen(false);
     setSlashQuery("");
-  }, [attachments, sessionId]);
+  }, [sessionId]);
 
   useEffect(() => {
     if (!storageKey) return;
@@ -214,15 +217,18 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
     if (agentCliReasoningEfforts?.[nextCli]) setReasoningEffort(agentCliReasoningEfforts[nextCli]!);
   }, [agentCliModels, agentCliReasoningEfforts, cli, currentCli, selectableClis]);
 
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
+
   // Revoke object URLs when attachments unmount
   useEffect(() => {
     return () => {
-      attachments.forEach((a) => a.previewUrl && URL.revokeObjectURL(a.previewUrl));
+      attachmentsRef.current.forEach((a) => a.previewUrl && URL.revokeObjectURL(a.previewUrl));
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const uploadsEnabled = true;
+  const uploadsEnabled = attachmentsEnabled && Boolean(sessionId);
 
   const uploadFiles = useCallback(async (files: File[]) => {
     if (files.length === 0) return;
@@ -299,6 +305,22 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
         textareaRef.current?.focus();
         textareaRef.current?.setSelectionRange(text.length, text.length);
       }, 0);
+    },
+    insertText: (text: string) => {
+      setMessage((current) => {
+        const el = textareaRef.current;
+        const start = el?.selectionStart ?? current.length;
+        const end = el?.selectionEnd ?? start;
+        const needsLeadBreak = current.trim() && start > 0 && !current.slice(0, start).endsWith("\n");
+        const insert = `${needsLeadBreak ? "\n\n" : ""}${text}`;
+        const next = `${current.slice(0, start)}${insert}${current.slice(end)}`;
+        const cursor = start + insert.length;
+        setTimeout(() => {
+          textareaRef.current?.focus();
+          textareaRef.current?.setSelectionRange(cursor, cursor);
+        }, 0);
+        return next;
+      });
     },
     getPendingFiles: () => attachments.filter((a) => a.file && !a.error).map((a) => a.file!),
     clearPendingFiles: () => setAttachments((prev) => prev.filter((a) => !a.file)),

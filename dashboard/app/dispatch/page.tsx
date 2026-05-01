@@ -31,10 +31,20 @@ const TELEGRAM_COMMANDS = [
   ["/reset", "Clear the current Telegram chat's session mapping."],
   ["/status", "Show session status, turn count, and queue depth."],
   ["/session", "Return the Saturn session id for the active Telegram chat."],
+  ["/settings", "Show the chat's route, runtime, project, and tool settings."],
+  ["/project <path|#|off>", "Switch project; off returns to the Dispatch workspace."],
+  ["/projects", "List recent project directories."],
   ["/agent <id|off>", "Route new sessions through a saved dashboard agent."],
-  ["/model <id>", "Override the model for this Telegram chat."],
-  ["/think low|medium|high|xhigh", "Set reasoning effort for future turns."],
+  ["/agents", "List saved dashboard agents."],
+  ["/cli <id>", "Set the backend for new sessions."],
+  ["/model <id|off>", "Override or clear the model for this Telegram chat."],
+  ["/think <effort|off>", "Set or clear reasoning effort for future turns."],
+  ["/tools <preset|csv|off>", "Set Claude tool allowlists for new ad-hoc sessions."],
+  ["/mcp <on|off>", "Toggle MCP tools for new sessions."],
+  ["/timeout <seconds|off>", "Set or clear the timeout for new ad-hoc sessions."],
+  ["/prompt <text|off>", "Set the ad-hoc system prompt."],
   ["/verbose on|off", "Toggle dashboard links and extra run details."],
+  ["/clear settings", "Reset every Dispatch setting for this Telegram chat."],
 ];
 
 function statusChip(ok: boolean, label: string): JSX.Element {

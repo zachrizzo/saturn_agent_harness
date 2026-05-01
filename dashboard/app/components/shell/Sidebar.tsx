@@ -4,7 +4,21 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
-import { IconHome, IconChat, IconAgent, IconJob, IconTask, IconSlice, IconSettings, IconDispatch, IconMemory } from "./icons";
+import {
+  IconAgent,
+  IconChat,
+  IconChevronUp,
+  IconDispatch,
+  IconHome,
+  IconJob,
+  IconMemory,
+  IconPanelLeftClose,
+  IconPanelLeftOpen,
+  IconSettings,
+  IconSlice,
+  IconTask,
+  IconTerminal,
+} from "./icons";
 import type { SessionMeta } from "@/lib/runs";
 import { toInboxSessions } from "@/lib/chat-inbox";
 
@@ -23,6 +37,7 @@ function matchPrefix(...prefixes: string[]): (p: string) => boolean {
 const NAV: NavItem[] = [
   { href: "/",       label: "Home",   icon: <IconHome />,  match: (p) => p === "/" },
   { href: "/chats",  label: "Chats",  icon: <IconChat />,  match: matchPrefix("/chats", "/chat") },
+  { href: "/terminals", label: "Terminals", icon: <IconTerminal />, match: matchPrefix("/terminals") },
   { href: "/memory", label: "Memory", icon: <IconMemory />, match: matchPrefix("/memory") },
   { href: "/dispatch", label: "Dispatch", icon: <IconDispatch />, match: matchPrefix("/dispatch") },
   { href: "/agents", label: "Agents", icon: <IconAgent />, match: matchPrefix("/agents") },
@@ -76,6 +91,10 @@ function sameRecents(a: RecentChatItem[], b: RecentChatItem[]): boolean {
 type SidebarProps = {
   recents: RecentChatItem[];
   onNavigate?: () => void;
+  recentsScrollable?: boolean;
+  sidebarCollapsed?: boolean;
+  onSidebarCollapsedChange?: (collapsed: boolean) => void;
+  showDesktopControls?: boolean;
 };
 
 function linkClass(layout: string, active: boolean): string {
@@ -86,6 +105,8 @@ function linkClass(layout: string, active: boolean): string {
 }
 
 const SEEN_KEY = "chat-seen-at";
+const COLLAPSED_RECENT_PROJECTS_KEY = "saturn:collapsed-recent-projects";
+const COLLAPSED_NAV_KEY = "saturn:sidebar-nav-collapsed";
 
 function getSeenMap(): Record<string, string> {
   try {
@@ -93,6 +114,36 @@ function getSeenMap(): Record<string, string> {
   } catch {
     return {};
   }
+}
+
+function getCollapsedRecentProjects(): Set<string> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(COLLAPSED_RECENT_PROJECTS_KEY) ?? "[]") as unknown;
+    if (!Array.isArray(raw)) return new Set();
+    return new Set(raw.filter((item): item is string => typeof item === "string"));
+  } catch {
+    return new Set();
+  }
+}
+
+function setCollapsedRecentProjects(keys: Set<string>) {
+  try {
+    localStorage.setItem(COLLAPSED_RECENT_PROJECTS_KEY, JSON.stringify([...keys]));
+  } catch {}
+}
+
+function getCollapsedNav(): boolean {
+  try {
+    return localStorage.getItem(COLLAPSED_NAV_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function setCollapsedNav(collapsed: boolean) {
+  try {
+    localStorage.setItem(COLLAPSED_NAV_KEY, collapsed ? "1" : "0");
+  } catch {}
 }
 
 function markSeen(id: string) {
@@ -204,6 +255,10 @@ function useRecents(initial: RecentChatItem[]): RecentChatItem[] {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    setRecents((current) => (sameRecents(current, initial) ? current : initial));
+  }, [initial]);
+
+  useEffect(() => {
     let cancelled = false;
 
     const poll = async () => {
@@ -243,10 +298,21 @@ function useRecents(initial: RecentChatItem[]): RecentChatItem[] {
   return recents;
 }
 
-export function Sidebar({ recents: initialRecents, onNavigate }: SidebarProps): JSX.Element {
+export function Sidebar({
+  recents: initialRecents,
+  onNavigate,
+  recentsScrollable = false,
+  sidebarCollapsed = false,
+  onSidebarCollapsedChange,
+  showDesktopControls = false,
+}: SidebarProps): JSX.Element {
   const pathname = usePathname() || "/";
   const recents = useRecents(initialRecents);
   const [seenMap, setSeenMap] = useState<Record<string, string>>({});
+  const [collapsedProjectsLoaded, setCollapsedProjectsLoaded] = useState(false);
+  const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
+  const [navCollapsedLoaded, setNavCollapsedLoaded] = useState(false);
+  const [desktopNavCollapsed, setDesktopNavCollapsed] = useState(false);
   const [archiving, setArchiving] = useState<string | null>(null);
   const [hiddenIds, setHiddenIds] = useState<Set<string>>(new Set());
 
@@ -276,7 +342,21 @@ export function Sidebar({ recents: initialRecents, onNavigate }: SidebarProps): 
   // Load from localStorage on mount (client-only)
   useEffect(() => {
     setSeenMap(getSeenMap());
+    setCollapsedProjects(getCollapsedRecentProjects());
+    setDesktopNavCollapsed(getCollapsedNav());
+    setCollapsedProjectsLoaded(true);
+    setNavCollapsedLoaded(true);
   }, []);
+
+  useEffect(() => {
+    if (!collapsedProjectsLoaded) return;
+    setCollapsedRecentProjects(collapsedProjects);
+  }, [collapsedProjects, collapsedProjectsLoaded]);
+
+  useEffect(() => {
+    if (!navCollapsedLoaded) return;
+    setCollapsedNav(desktopNavCollapsed);
+  }, [desktopNavCollapsed, navCollapsedLoaded]);
 
   // When navigating to a chat, mark it seen
   useEffect(() => {
@@ -288,27 +368,86 @@ export function Sidebar({ recents: initialRecents, onNavigate }: SidebarProps): 
   const visibleRecents = recents.filter((r) => !hiddenIds.has(r.id));
   const unreadCount = visibleRecents.filter((r) => hasUnread(r, seenMap)).length;
   const recentGroups = groupRecentChats(visibleRecents);
+  const navCollapsed = showDesktopControls && desktopNavCollapsed && !sidebarCollapsed;
+  const toggleProjectCollapsed = (key: string) => {
+    setCollapsedProjects((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   return (
-    <nav className="flex flex-col gap-4 p-3 w-full h-full">
-      <ul className="flex flex-col gap-0.5" data-shell="sidebar-nav">
-        {NAV.map((n) => {
-          const isChats = n.href === "/chats";
-          return (
-            <li key={n.href}>
-              <Link href={n.href} onClick={onNavigate} className={linkClass("flex items-center gap-2.5 text-[13px]", n.match(pathname))}>
-                <span className="shrink-0 text-current">{n.icon}</span>
-                <span>{n.label}</span>
-                {isChats && unreadCount > 0 && (
-                  <span className="nav-badge hot">{unreadCount}</span>
-                )}
-              </Link>
-            </li>
-          );
-        })}
-      </ul>
+    <nav
+      className={[
+        "flex flex-col w-full h-full",
+        sidebarCollapsed ? "items-center gap-2 p-2" : "gap-4 p-3",
+      ].join(" ")}
+      data-shell="sidebar"
+      data-sidebar-collapsed={sidebarCollapsed ? "true" : "false"}
+    >
+      {showDesktopControls && (
+        <div className={`sidebar-controls ${sidebarCollapsed ? "is-collapsed" : ""}`}>
+          <button
+            type="button"
+            className="sidebar-icon-button"
+            onClick={() => onSidebarCollapsedChange?.(!sidebarCollapsed)}
+            title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            {sidebarCollapsed ? <IconPanelLeftOpen /> : <IconPanelLeftClose />}
+          </button>
+          {!sidebarCollapsed && (
+            <button
+              type="button"
+              className="sidebar-icon-button"
+              onClick={() => setDesktopNavCollapsed((current) => !current)}
+              title={navCollapsed ? "Expand navigation" : "Collapse navigation"}
+              aria-label={navCollapsed ? "Expand navigation" : "Collapse navigation"}
+              aria-expanded={!navCollapsed}
+            >
+              <IconChevronUp className={`w-4 h-4 transition-transform ${navCollapsed ? "rotate-180" : ""}`} />
+            </button>
+          )}
+        </div>
+      )}
 
-      <div className="flex flex-col gap-1 min-h-0 flex-1">
+      {!navCollapsed && (
+        <ul className={sidebarCollapsed ? "flex flex-col items-center gap-1" : "flex flex-col gap-0.5"} data-shell="sidebar-nav">
+          {NAV.map((n) => {
+            const active = n.match(pathname);
+            const isChats = n.href === "/chats";
+            return (
+              <li key={n.href} className={sidebarCollapsed ? "w-9" : undefined}>
+                <Link
+                  href={n.href}
+                  onClick={onNavigate}
+                  title={sidebarCollapsed ? n.label : undefined}
+                  aria-label={sidebarCollapsed ? n.label : undefined}
+                  className={linkClass(
+                    sidebarCollapsed
+                      ? "sidebar-rail-link"
+                      : "flex items-center gap-2.5 text-[13px]",
+                    active,
+                  )}
+                >
+                  <span className="shrink-0 text-current">{n.icon}</span>
+                  {!sidebarCollapsed && <span>{n.label}</span>}
+                  {isChats && unreadCount > 0 && !sidebarCollapsed && (
+                    <span className="nav-badge hot">{unreadCount}</span>
+                  )}
+                  {isChats && unreadCount > 0 && sidebarCollapsed && (
+                    <span className="sidebar-rail-hot" aria-label={`${unreadCount} unread chats`} />
+                  )}
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {!sidebarCollapsed && <div className="flex flex-col gap-1 min-h-0 flex-1">
         <div className="flex items-center justify-between px-2.5">
           <span className="text-[11px] font-medium uppercase tracking-wider text-subtle">
             Recent
@@ -322,17 +461,34 @@ export function Sidebar({ recents: initialRecents, onNavigate }: SidebarProps): 
             +
           </Link>
         </div>
-        <div className="flex flex-col gap-2 overflow-y-auto">
+        <div className={["flex flex-col gap-2", recentsScrollable ? "overflow-y-auto" : "overflow-hidden"].join(" ")}>
           {visibleRecents.length === 0 ? (
             <div className="px-2.5 py-1.5 text-[12px] text-subtle">No chats yet.</div>
           ) : (
-            recentGroups.map((group) => (
+            recentGroups.map((group) => {
+              const collapsed = collapsedProjects.has(group.key);
+              const groupUnread = group.items.filter((r) => hasUnread(r, seenMap)).length;
+              return (
               <section key={group.key} className="min-w-0">
-                <div
-                  className="flex items-center gap-1.5 px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted"
-                  style={group.path ? { color: "color-mix(in srgb, var(--teal) 82%, var(--text-muted))" } : undefined}
-                  title={group.path ?? undefined}
+                <button
+                  type="button"
+                  className={`recent-project-toggle ${collapsed ? "collapsed" : ""}`}
+                  onClick={() => toggleProjectCollapsed(group.key)}
+                  title={group.path ?? group.label}
+                  aria-expanded={!collapsed}
                 >
+                  <svg
+                    aria-hidden="true"
+                    className="recent-project-chevron"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="m6 4 4 4-4 4" />
+                  </svg>
                   {group.path && (
                     <span
                       aria-hidden="true"
@@ -340,9 +496,11 @@ export function Sidebar({ recents: initialRecents, onNavigate }: SidebarProps): 
                       style={{ background: "color-mix(in srgb, var(--teal) 75%, transparent)" }}
                     />
                   )}
-                  <span className="truncate">{group.label}</span>
-                </div>
-                <ul className="flex flex-col gap-0.5">
+                  <span className="recent-project-label">{group.label}</span>
+                  {groupUnread > 0 && <span className="recent-project-unread">{groupUnread}</span>}
+                  <span className="recent-project-count">{group.items.length}</span>
+                </button>
+                {!collapsed && <ul className="flex flex-col gap-0.5">
                   {group.items.map((r) => {
                     const active = pathname === `/chats/${r.id}` || pathname === `/chat/${r.id}`;
                     const unread = !active && hasUnread(r, seenMap);
@@ -413,9 +571,10 @@ export function Sidebar({ recents: initialRecents, onNavigate }: SidebarProps): 
                       </li>
                     );
                   })}
-                </ul>
+                </ul>}
               </section>
-            ))
+              );
+            })
           )}
         </div>
         <div className="px-2.5 pt-1">
@@ -427,7 +586,7 @@ export function Sidebar({ recents: initialRecents, onNavigate }: SidebarProps): 
             See all &rarr;
           </Link>
         </div>
-      </div>
+      </div>}
     </nav>
   );
 }

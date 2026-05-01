@@ -7,6 +7,9 @@ const token = mustEnv("TELEGRAM_BOT_TOKEN");
 const baseUrl = process.env.SATURN_BASE_URL || "http://127.0.0.1:3737";
 const publicBaseUrl = process.env.SATURN_PUBLIC_URL || baseUrl;
 const stateFile = process.env.TELEGRAM_STATE_FILE || path.join(root, "telegram", "state.json");
+const defaultDispatchCwd = normalizeDir(
+  process.env.SATURN_DISPATCH_DEFAULT_CWD || path.join(root, "telegram", "dispatch-workspace"),
+);
 const pollTimeout = Number(process.env.TELEGRAM_POLL_TIMEOUT_SECONDS || 25);
 const waitSeconds = Number(process.env.TELEGRAM_WAIT_SECONDS || 1800);
 const waitIntervalMs = Number(process.env.TELEGRAM_WAIT_INTERVAL_MS || 5000);
@@ -17,13 +20,50 @@ const allowedChatIds = new Set(
     .map((s) => s.trim())
     .filter(Boolean),
 );
+const cliValues = new Set(["claude-bedrock", "claude-personal", "claude-local", "codex", "claude"]);
+const reasoningValues = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
+const defaultPrompt = "You are Saturn Dispatch. Help the user from Telegram.";
+const noToolsSentinel = "__SATURN_NO_TOOLS__";
+const toolPresets = {
+  none: [noToolsSentinel],
+  read: ["Read", "Grep"],
+  "read-only": ["Read", "Grep"],
+  code: ["Read", "Grep", "Bash", "Edit", "Write"],
+  full: ["Read", "Grep", "Bash", "Edit", "Write"],
+};
+const botCommands = [
+  { command: "start", description: "Connect to Saturn Dispatch" },
+  { command: "help", description: "Show Dispatch help" },
+  { command: "new", description: "Start a fresh Saturn chat" },
+  { command: "reset", description: "Clear the current session" },
+  { command: "clear", description: "Clear session or settings" },
+  { command: "status", description: "Show active session status" },
+  { command: "session", description: "Show the current session id" },
+  { command: "settings", description: "Show route, runtime, project, and tools" },
+  { command: "project", description: "Set or list project directories" },
+  { command: "projects", description: "List recent project directories" },
+  { command: "cwd", description: "Set the project working directory" },
+  { command: "dirs", description: "List recent project directories" },
+  { command: "agent", description: "Route new chats through a saved agent" },
+  { command: "agents", description: "List saved agents" },
+  { command: "cli", description: "Set Codex or Claude backend" },
+  { command: "model", description: "Set or clear the model" },
+  { command: "think", description: "Set or clear reasoning effort" },
+  { command: "tools", description: "Set Claude tool allowlist" },
+  { command: "mcp", description: "Toggle MCP tools for new sessions" },
+  { command: "timeout", description: "Set new-session timeout" },
+  { command: "prompt", description: "Set ad-hoc system prompt" },
+  { command: "verbose", description: "Toggle dashboard links" },
+];
 
 if (!allowAll && allowedChatIds.size === 0) {
   throw new Error("Set TELEGRAM_ALLOWED_CHAT_IDS, or set TELEGRAM_ALLOW_ALL=1 for local testing.");
 }
 
 let state = await loadState();
+await ensureDefaultDispatchCwd();
 await refreshBotIdentity();
+await syncBotCommands();
 const pendingMonitors = new Set();
 
 for (const [chatId, chat] of Object.entries(state.chats || {})) {
@@ -70,108 +110,418 @@ async function handleUpdate(update) {
   ensureChat(chatId);
   await saveState();
 
-  if (text === "/start" || text.startsWith("/start ") || text === "/help") {
+  if (text.startsWith("/")) {
+    const handled = await handleCommand(chatId, text);
+    if (handled) return;
+  }
+
+  await dispatchMessage(chatId, text);
+}
+
+async function handleCommand(chatId, text) {
+  const [rawCommand] = text.split(/\s+/);
+  const command = rawCommand.split("@")[0].toLowerCase();
+  const arg = text.slice(rawCommand.length).trim();
+
+  if (command === "/start" || command === "/help") {
+    await sendMessage(chatId, helpText());
+    return true;
+  }
+
+  if (command === "/session") {
+    const sessionId = state.chats?.[chatId]?.session_id;
+    await sendMessage(chatId, sessionId ? `Current session: ${sessionId}` : "No session yet.");
+    return true;
+  }
+
+  if (command === "/status") {
+    await sendStatus(chatId);
+    return true;
+  }
+
+  if (command === "/settings") {
+    await sendSettings(chatId);
+    return true;
+  }
+
+  if (command === "/new") {
+    clearSessionMapping(chatId);
+    await saveState();
+    if (arg) {
+      await dispatchMessage(chatId, arg);
+    } else {
+      await sendMessage(chatId, "New session ready. Send the next task, or use /new <task>.");
+    }
+    return true;
+  }
+
+  if (command === "/reset" || command === "/clear") {
+    if (arg === "settings" || arg === "all") {
+      state.chats[chatId] = { queue: [] };
+      await saveState();
+      await sendMessage(chatId, "Dispatch settings and session mapping cleared for this Telegram chat.");
+    } else {
+      clearSessionMapping(chatId);
+      await saveState();
+      await sendMessage(chatId, "Session mapping cleared. Send the next task to start fresh.");
+    }
+    return true;
+  }
+
+  if (command === "/think") {
+    await setReasoning(chatId, arg);
+    return true;
+  }
+
+  if (command === "/model") {
+    await setModel(chatId, arg);
+    return true;
+  }
+
+  if (command === "/cli") {
+    await setCli(chatId, arg);
+    return true;
+  }
+
+  if (command === "/agent") {
+    await setAgent(chatId, arg);
+    return true;
+  }
+
+  if (command === "/agents") {
+    await sendAgents(chatId);
+    return true;
+  }
+
+  if (command === "/project" || command === "/cwd") {
+    await setProject(chatId, arg);
+    return true;
+  }
+
+  if (command === "/projects" || command === "/dirs") {
+    await sendProjects(chatId);
+    return true;
+  }
+
+  if (command === "/tools") {
+    await setTools(chatId, arg);
+    return true;
+  }
+
+  if (command === "/mcp") {
+    await setMcp(chatId, arg);
+    return true;
+  }
+
+  if (command === "/timeout") {
+    await setTimeoutSeconds(chatId, arg);
+    return true;
+  }
+
+  if (command === "/prompt") {
+    await setPrompt(chatId, arg);
+    return true;
+  }
+
+  if (command === "/verbose") {
+    await setVerbose(chatId, arg);
+    return true;
+  }
+
+  return false;
+}
+
+function helpText() {
+  return [
+    "Saturn Dispatch is connected.",
+    "",
+    "Send messages normally. If a turn is running, follow-ups are queued and sent next.",
+    "",
+    "Session",
+    "/new <task> starts a fresh Saturn chat.",
+    "/new, /reset, or /clear clears the current session mapping.",
+    "/session shows the current Saturn session id.",
+    "/status shows status, turns, queue, and active route.",
+    "/settings shows this chat's Dispatch settings.",
+    "",
+    "Routing",
+    "/project list shows recent projects.",
+    "/project <number|path|off> sets the cwd for new ad-hoc chats; off returns to Dispatch workspace.",
+    "/agent <id|off> routes new chats through a saved agent.",
+    "/agents lists saved agents.",
+    "",
+    "Runtime",
+    "/cli <codex|claude-personal|claude-bedrock|claude-local> sets backend.",
+    "/model <id|off> sets or clears the model.",
+    "/think <minimal|low|medium|high|xhigh|max|off> sets reasoning.",
+    "/tools <preset|csv|off> sets Claude allowed tools. Presets: none, read, code, full.",
+    "/mcp <on|off> toggles MCP tools for the session.",
+    "/timeout <seconds|off> sets new-chat timeout.",
+    "/prompt <text|off> sets the ad-hoc system prompt.",
+    "/verbose <on|off> toggles dashboard links.",
+    "/clear settings resets every Dispatch setting for this chat.",
+  ].join("\n");
+}
+
+async function setReasoning(chatId, arg) {
+  const effort = arg.trim().toLowerCase();
+  if (!effort) {
+    await sendMessage(chatId, "Use /think <minimal|low|medium|high|xhigh|max|off>.");
+    return;
+  }
+  if (effort === "off" || effort === "default" || effort === "none") {
+    delete state.chats[chatId].reasoningEffort;
+    await saveState();
+    await sendMessage(chatId, "Reasoning override cleared.");
+    return;
+  }
+  if (!reasoningValues.has(effort)) {
+    await sendMessage(chatId, "Use /think minimal, low, medium, high, xhigh, max, or off.");
+    return;
+  }
+  state.chats[chatId].reasoningEffort = effort === "max" && normalizeCliValue(state.chats[chatId].cli) === "codex" ? "xhigh" : effort;
+  await saveState();
+  await sendMessage(chatId, `Reasoning set to ${state.chats[chatId].reasoningEffort}.`);
+}
+
+async function setModel(chatId, arg) {
+  const model = arg.trim();
+  if (!model) {
+    await sendMessage(chatId, "Use /model <model-id> or /model off.");
+    return;
+  }
+  if (["off", "default", "none"].includes(model.toLowerCase())) {
+    delete state.chats[chatId].model;
+    await saveState();
+    await sendMessage(chatId, "Model override cleared.");
+    return;
+  }
+  state.chats[chatId].model = model;
+  await saveState();
+  await sendMessage(chatId, `Model set to ${model}.`);
+}
+
+async function setCli(chatId, arg) {
+  const cli = normalizeCliValue(arg.trim());
+  if (!cli) {
+    await sendMessage(chatId, "Use /cli codex, /cli claude-personal, /cli claude-bedrock, or /cli claude-local.");
+    return;
+  }
+  state.chats[chatId].cli = cli;
+  clearSessionMapping(chatId);
+  await saveState();
+  await sendMessage(chatId, `CLI set to ${cli}. New session ready; send a task or use /new <task>.`);
+}
+
+async function setAgent(chatId, arg) {
+  const agentId = arg.trim();
+  if (!agentId) {
+    await sendMessage(chatId, "Use /agent <agent-id> or /agent off. Use /agents to list saved agents.");
+    return;
+  }
+  if (["off", "none", "adhoc", "ad-hoc"].includes(agentId.toLowerCase())) {
+    delete state.chats[chatId].agent_id;
+    clearSessionMapping(chatId);
+    await saveState();
+    await sendMessage(chatId, "Agent routing disabled. New sessions will use ad-hoc Dispatch settings.");
+    return;
+  }
+  const agent = await findAgent(agentId);
+  if (!agent) {
+    await sendMessage(chatId, `Agent not found: ${agentId}\nUse /agents to list saved agents.`);
+    return;
+  }
+  state.chats[chatId].agent_id = agent.id;
+  clearSessionMapping(chatId);
+  await saveState();
+  await sendMessage(chatId, `New sessions will use agent ${agent.id}.`);
+}
+
+async function sendAgents(chatId) {
+  const agents = await listAgents();
+  if (!agents.length) {
+    await sendMessage(chatId, "No saved dashboard agents found.");
+    return;
+  }
+  await sendMessage(
+    chatId,
+    [
+      "Saved agents:",
+      ...agents.slice(0, 30).map((agent) => {
+        const cli = agent.defaultCli || agent.cli || "default";
+        return `${agent.id} - ${agent.name || agent.id} (${cli})`;
+      }),
+      "",
+      "Use /agent <id> to route new sessions through one.",
+    ].join("\n"),
+  );
+}
+
+async function setProject(chatId, arg) {
+  const value = arg.trim();
+  if (!value || value === "list") {
+    await sendProjects(chatId);
+    return;
+  }
+  if (["off", "none", "default"].includes(value.toLowerCase())) {
+    delete state.chats[chatId].cwd;
+    clearSessionMapping(chatId);
+    await saveState();
     await sendMessage(
       chatId,
-      [
-        "Saturn Dispatch is connected.",
-        "",
-        "Send messages normally. If a turn is running, follow-ups are queued and sent next.",
-        "/new or /reset clears this chat's session mapping.",
-        "/new <task> starts a fresh session with that task.",
-        "/status shows the active session status.",
-        "/session shows the current Saturn session id.",
-        "/think <low|medium|high|xhigh> sets reasoning for this chat.",
-        "/model <id> sets the model for this chat.",
-        "/agent <id|off> routes new sessions through a saved agent.",
-        "/verbose <on|off> toggles extra run links.",
-      ].join("\n"),
+      `Project override cleared. New sessions will use the Dispatch workspace:\n${effectiveProjectCwd(state.chats[chatId])}`,
     );
     return;
   }
 
-  if (text === "/session") {
-    const sessionId = state.chats?.[chatId]?.session_id;
-    await sendMessage(chatId, sessionId ? `Current session: ${sessionId}` : "No session yet.");
+  const recent = await listProjects();
+  const byNumber = Number(value);
+  const candidate = Number.isInteger(byNumber) && byNumber >= 1 && byNumber <= recent.length
+    ? recent[byNumber - 1]
+    : value;
+  const dir = await assertDirectory(candidate).catch((err) => err);
+  if (dir instanceof Error) {
+    await sendMessage(chatId, dir.message);
     return;
   }
 
-  if (text === "/status") {
-    await sendStatus(chatId);
+  state.chats[chatId].cwd = dir;
+  clearSessionMapping(chatId);
+  await saveState();
+  await recordProject(dir).catch(() => {});
+  await sendMessage(chatId, `Project set to:\n${dir}\nNew session ready; send a task or use /new <task>.`);
+}
+
+async function sendProjects(chatId) {
+  const projects = await listProjects();
+  if (!projects.length) {
+    await sendMessage(chatId, "No recent projects found. Use /project /absolute/path.");
     return;
   }
+  await sendMessage(
+    chatId,
+    [
+      "Projects:",
+      ...projects.slice(0, 20).map((dir, index) => `${index + 1}. ${formatProjectOption(dir)}`),
+      "",
+      "Use /project <number> or /project /absolute/path.",
+    ].join("\n"),
+  );
+}
 
-  if (text === "/new" || text === "/reset" || text === "/clear") {
+async function setTools(chatId, arg) {
+  const value = arg.trim();
+  if (!value) {
+    await sendMessage(chatId, "Use /tools <none|read|code|full|comma,separated,tools|off>.");
+    return;
+  }
+  const normalized = value.toLowerCase();
+  if (["off", "default"].includes(normalized)) {
+    delete state.chats[chatId].allowedTools;
     clearSessionMapping(chatId);
     await saveState();
-    await sendMessage(chatId, "Session mapping cleared. Send the next task to start fresh.");
+    await sendMessage(chatId, "Allowed tools override cleared.");
     return;
   }
+  const tools = toolPresets[normalized] ?? csv(value);
+  if (!tools?.length) {
+    await sendMessage(chatId, "Provide at least one tool name, a preset, or /tools off.");
+    return;
+  }
+  state.chats[chatId].allowedTools = tools;
+  clearSessionMapping(chatId);
+  await saveState();
+  await sendMessage(chatId, `Allowed tools set to: ${formatAllowedTools(tools)}.`);
+}
 
-  if (text.startsWith("/new ")) {
+async function setMcp(chatId, arg) {
+  const value = arg.trim().toLowerCase();
+  if (!["on", "off"].includes(value)) {
+    await sendMessage(chatId, "Use /mcp on or /mcp off.");
+    return;
+  }
+  state.chats[chatId].mcpTools = value === "on";
+  clearSessionMapping(chatId);
+  await saveState();
+  await sendMessage(chatId, `MCP tools ${value}. New session ready; send a task or use /new <task>.`);
+}
+
+async function setTimeoutSeconds(chatId, arg) {
+  const value = arg.trim().toLowerCase();
+  if (!value) {
+    await sendMessage(chatId, "Use /timeout <seconds> or /timeout off.");
+    return;
+  }
+  if (["off", "default", "none"].includes(value)) {
+    delete state.chats[chatId].timeout_seconds;
     clearSessionMapping(chatId);
     await saveState();
-    await dispatchMessage(chatId, text.slice(5).trim());
+    await sendMessage(chatId, "Timeout override cleared.");
     return;
   }
-
-  if (text.startsWith("/think ")) {
-    const effort = text.slice(7).trim();
-    if (!["low", "medium", "high", "xhigh", "max"].includes(effort)) {
-      await sendMessage(chatId, "Use /think low, /think medium, /think high, or /think xhigh.");
-      return;
-    }
-    state.chats[chatId].reasoningEffort = effort === "max" ? "xhigh" : effort;
-    await saveState();
-    await sendMessage(chatId, `Reasoning set to ${state.chats[chatId].reasoningEffort}.`);
+  const seconds = Number(value);
+  if (!Number.isInteger(seconds) || seconds < 1) {
+    await sendMessage(chatId, "Timeout must be a whole number of seconds.");
     return;
   }
+  state.chats[chatId].timeout_seconds = seconds;
+  clearSessionMapping(chatId);
+  await saveState();
+  await sendMessage(chatId, `Timeout set to ${seconds} seconds for new sessions.`);
+}
 
-  if (text.startsWith("/model ")) {
-    const model = text.slice(7).trim();
-    if (!model) {
-      await sendMessage(chatId, "Use /model <model-id>.");
-      return;
-    }
-    state.chats[chatId].model = model;
-    await saveState();
-    await sendMessage(chatId, `Model set to ${model}.`);
+async function setPrompt(chatId, arg) {
+  const value = arg.trim();
+  if (!value) {
+    await sendMessage(chatId, "Use /prompt <system prompt text> or /prompt off.");
     return;
   }
-
-  if (text.startsWith("/agent ")) {
-    const agentId = text.slice(7).trim();
-    if (!agentId) {
-      await sendMessage(chatId, "Use /agent <agent-id> or /agent off.");
-      return;
-    }
-    if (agentId === "off" || agentId === "none") {
-      delete state.chats[chatId].agent_id;
-      clearSessionMapping(chatId);
-      await saveState();
-      await sendMessage(chatId, "Agent routing disabled for new sessions.");
-      return;
-    }
-    state.chats[chatId].agent_id = agentId;
+  if (["off", "default", "none"].includes(value.toLowerCase())) {
+    delete state.chats[chatId].prompt;
     clearSessionMapping(chatId);
     await saveState();
-    await sendMessage(chatId, `New sessions will use agent ${agentId}.`);
+    await sendMessage(chatId, "Ad-hoc prompt override cleared.");
     return;
   }
+  state.chats[chatId].prompt = value;
+  clearSessionMapping(chatId);
+  await saveState();
+  await sendMessage(chatId, "Ad-hoc prompt set for new sessions.");
+}
 
-  if (text.startsWith("/verbose ")) {
-    const value = text.slice(9).trim().toLowerCase();
-    if (!["on", "off"].includes(value)) {
-      await sendMessage(chatId, "Use /verbose on or /verbose off.");
-      return;
-    }
-    state.chats[chatId].verbose = value === "on";
-    await saveState();
-    await sendMessage(chatId, `Verbose mode ${value}.`);
+async function setVerbose(chatId, arg) {
+  const value = arg.trim().toLowerCase();
+  if (!["on", "off"].includes(value)) {
+    await sendMessage(chatId, "Use /verbose on or /verbose off.");
     return;
   }
+  state.chats[chatId].verbose = value === "on";
+  await saveState();
+  await sendMessage(chatId, `Verbose mode ${value}.`);
+}
 
-  await dispatchMessage(chatId, text);
+async function sendSettings(chatId) {
+  ensureChat(chatId);
+  const chat = state.chats[chatId];
+  const sessionId = chat.session_id;
+  const route = chat.agent_id ? `agent ${chat.agent_id}` : "ad-hoc";
+  await sendMessage(
+    chatId,
+    [
+      "Dispatch settings",
+      `Route: ${route}`,
+      `Session: ${sessionId || "none"}`,
+      `CLI: ${chat.cli || process.env.SATURN_ADHOC_CLI || process.env.SATURN_CLI || "claude-bedrock"}`,
+      `Model: ${chat.model || process.env.SATURN_ADHOC_MODEL || process.env.SATURN_MODEL || "default"}`,
+      `Reasoning: ${chat.reasoningEffort || process.env.SATURN_ADHOC_REASONING_EFFORT || process.env.SATURN_REASONING_EFFORT || "default"}`,
+      `Project: ${projectDisplay(chat)}`,
+      `Tools: ${chat.allowedTools ? formatAllowedTools(chat.allowedTools) : formatAllowedToolsCsv(process.env.SATURN_ADHOC_ALLOWED_TOOLS) || "default"}`,
+      `MCP tools: ${chat.mcpTools === undefined ? "default" : chat.mcpTools ? "on" : "off"}`,
+      `Timeout: ${chat.timeout_seconds || process.env.SATURN_ADHOC_TIMEOUT_SECONDS || "default"}`,
+      `Verbose: ${chat.verbose ? "on" : "off"}`,
+      chat.prompt ? "Prompt: custom" : `Prompt: ${process.env.SATURN_ADHOC_PROMPT ? "launchd default" : "default"}`,
+    ].join("\n"),
+  );
 }
 
 async function dispatchMessage(chatId, text) {
@@ -228,9 +578,10 @@ async function dispatchMessage(chatId, text) {
 function buildCreateSessionBody(chat, message) {
   const body = {
     message,
-    cli: process.env.SATURN_CLI || undefined,
+    cli: chat.cli || process.env.SATURN_CLI || undefined,
     model: chat.model || process.env.SATURN_MODEL || undefined,
     reasoningEffort: chat.reasoningEffort || process.env.SATURN_REASONING_EFFORT || undefined,
+    mcpTools: chat.mcpTools,
   };
 
   const agentId = chat.agent_id || process.env.SATURN_AGENT_ID;
@@ -241,17 +592,17 @@ function buildCreateSessionBody(chat, message) {
   return {
     ...body,
     adhoc_config: {
-      cli: process.env.SATURN_ADHOC_CLI || process.env.SATURN_CLI || "claude-bedrock",
+      cli: chat.cli || process.env.SATURN_ADHOC_CLI || process.env.SATURN_CLI || "claude-bedrock",
       model: chat.model || process.env.SATURN_ADHOC_MODEL || process.env.SATURN_MODEL || undefined,
       reasoningEffort:
         chat.reasoningEffort ||
         process.env.SATURN_ADHOC_REASONING_EFFORT ||
         process.env.SATURN_REASONING_EFFORT ||
         undefined,
-      prompt: process.env.SATURN_ADHOC_PROMPT || "You are Saturn Dispatch. Help the user from Telegram.",
-      cwd: process.env.SATURN_ADHOC_CWD || undefined,
-      allowedTools: csv(process.env.SATURN_ADHOC_ALLOWED_TOOLS),
-      timeout_seconds: numberOrUndefined(process.env.SATURN_ADHOC_TIMEOUT_SECONDS),
+      prompt: chat.prompt || process.env.SATURN_ADHOC_PROMPT || defaultPrompt,
+      cwd: effectiveProjectCwd(chat),
+      allowedTools: chat.allowedTools ?? csv(process.env.SATURN_ADHOC_ALLOWED_TOOLS),
+      timeout_seconds: chat.timeout_seconds || numberOrUndefined(process.env.SATURN_ADHOC_TIMEOUT_SECONDS),
     },
   };
 }
@@ -259,15 +610,17 @@ function buildCreateSessionBody(chat, message) {
 function buildMessageBody(chat, message) {
   return {
     message,
-    cli: process.env.SATURN_CLI || undefined,
+    cli: chat.cli || process.env.SATURN_CLI || undefined,
     model: chat.model || process.env.SATURN_MODEL || undefined,
+    mcpTools: chat.mcpTools,
     reasoningEffort: chat.reasoningEffort || process.env.SATURN_REASONING_EFFORT || undefined,
   };
 }
 
 async function monitorSession(chatId, sessionId) {
-  if (pendingMonitors.has(chatId)) return;
-  pendingMonitors.add(chatId);
+  const monitorKey = `${chatId}:${sessionId}`;
+  if (pendingMonitors.has(monitorKey)) return;
+  pendingMonitors.add(monitorKey);
 
   const deadline = Date.now() + waitSeconds * 1000;
   try {
@@ -282,7 +635,7 @@ async function monitorSession(chatId, sessionId) {
           delete state.chats[chatId].pending_session_id;
           await saveState();
         }
-        pendingMonitors.delete(chatId);
+        pendingMonitors.delete(monitorKey);
         await drainQueuedMessages(chatId);
         return;
       }
@@ -292,7 +645,7 @@ async function monitorSession(chatId, sessionId) {
 
     await sendMessage(chatId, `Session is still running: ${sessionId}`);
   } finally {
-    pendingMonitors.delete(chatId);
+    pendingMonitors.delete(monitorKey);
   }
 }
 
@@ -323,8 +676,12 @@ async function sendStatus(chatId) {
   const queued = chat.queue?.length || 0;
   const settings = [
     chat.agent_id ? `Agent: ${chat.agent_id}` : null,
+    chat.cli ? `CLI: ${chat.cli}` : null,
     chat.model ? `Model: ${chat.model}` : null,
     chat.reasoningEffort ? `Reasoning: ${chat.reasoningEffort}` : null,
+    chat.agent_id ? null : `Project: ${projectDisplay(chat)}`,
+    chat.allowedTools ? `Tools: ${formatAllowedTools(chat.allowedTools)}` : null,
+    chat.timeout_seconds ? `Timeout: ${chat.timeout_seconds}s` : null,
   ].filter(Boolean);
   await sendMessage(
     chatId,
@@ -336,6 +693,112 @@ async function sendStatus(chatId) {
       ...settings,
     ].join("\n"),
   );
+}
+
+function normalizeCliValue(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "claude") return "claude-bedrock";
+  return cliValues.has(normalized) ? normalized : "";
+}
+
+function expandHome(dir) {
+  if (dir === "~") return process.env.HOME || dir;
+  if (dir.startsWith("~/")) return path.join(process.env.HOME || "", dir.slice(2));
+  return dir;
+}
+
+function normalizeDir(dir) {
+  return path.resolve(expandHome(dir.trim()));
+}
+
+async function assertDirectory(dir) {
+  const normalized = normalizeDir(dir);
+  const stat = await fs.stat(normalized).catch(() => null);
+  if (!stat?.isDirectory()) throw new Error(`Directory not found: ${normalized}`);
+  return normalized;
+}
+
+async function ensureDefaultDispatchCwd() {
+  await fs.mkdir(defaultDispatchCwd, { recursive: true });
+}
+
+function effectiveProjectCwd(chat) {
+  return chat?.cwd || process.env.SATURN_ADHOC_CWD || defaultDispatchCwd;
+}
+
+function projectDisplay(chat) {
+  if (chat?.cwd) return chat.cwd;
+  if (process.env.SATURN_ADHOC_CWD) return `${process.env.SATURN_ADHOC_CWD} (launchd default)`;
+  return `${defaultDispatchCwd} (Dispatch default)`;
+}
+
+function formatProjectOption(dir) {
+  if (dir === defaultDispatchCwd) return `${dir} (Dispatch default)`;
+  if (process.env.SATURN_ADHOC_CWD && normalizeDir(process.env.SATURN_ADHOC_CWD) === dir) {
+    return `${dir} (launchd default)`;
+  }
+  return dir;
+}
+
+async function listAgents() {
+  const file = path.join(root, "agents.json");
+  try {
+    const parsed = JSON.parse(await fs.readFile(file, "utf8"));
+    return (parsed.agents || []).filter((agent) => agent && typeof agent.id === "string");
+  } catch {
+    return [];
+  }
+}
+
+async function findAgent(agentId) {
+  const agents = await listAgents();
+  return agents.find((agent) => agent.id === agentId);
+}
+
+async function listProjects() {
+  const seen = new Set();
+  const projects = [];
+  const add = async (dir) => {
+    if (!dir) return;
+    const normalized = normalizeDir(dir);
+    if (seen.has(normalized)) return;
+    const stat = await fs.stat(normalized).catch(() => null);
+    if (!stat?.isDirectory()) return;
+    seen.add(normalized);
+    projects.push(normalized);
+  };
+
+  try {
+    const parsed = JSON.parse(await fs.readFile(path.join(root, "working-directories.json"), "utf8"));
+    for (const entry of parsed.directories || []) await add(entry.path);
+  } catch {}
+
+  for (const dir of [
+    defaultDispatchCwd,
+    process.env.SATURN_ADHOC_CWD,
+    root,
+    path.join(process.env.HOME || "", "programming"),
+    path.join(process.env.HOME || "", "Desktop"),
+  ]) {
+    await add(dir);
+  }
+
+  return projects;
+}
+
+async function recordProject(dir) {
+  const file = path.join(root, "working-directories.json");
+  let parsed = { directories: [] };
+  try {
+    parsed = JSON.parse(await fs.readFile(file, "utf8"));
+  } catch {}
+  const normalized = normalizeDir(dir);
+  const entry = { path: normalized, last_used_at: new Date().toISOString() };
+  const directories = [
+    entry,
+    ...(parsed.directories || []).filter((item) => item?.path && normalizeDir(item.path) !== normalized),
+  ].slice(0, 75);
+  await fs.writeFile(file, JSON.stringify({ directories }, null, 2), "utf8");
 }
 
 async function isSessionRunning(sessionId) {
@@ -395,6 +858,19 @@ async function refreshBotIdentity() {
   }
 }
 
+async function syncBotCommands() {
+  try {
+    await telegram("setMyCommands", {
+      commands: botCommands,
+      scope: { type: "default" },
+    });
+    state.bot_commands_synced_at = new Date().toISOString();
+    await saveState();
+  } catch (err) {
+    console.error("[telegram-dispatch] setMyCommands failed", err);
+  }
+}
+
 async function sendMessage(chatId, text) {
   return telegram("sendMessage", {
     chat_id: chatId,
@@ -431,6 +907,9 @@ function ensureChat(chatId) {
   state.chats ||= {};
   state.chats[chatId] ||= { queue: [] };
   state.chats[chatId].queue ||= [];
+  if (Array.isArray(state.chats[chatId].allowedTools) && state.chats[chatId].allowedTools.length === 0) {
+    state.chats[chatId].allowedTools = [noToolsSentinel];
+  }
 }
 
 function clearSessionMapping(chatId) {
@@ -438,6 +917,16 @@ function clearSessionMapping(chatId) {
   delete state.chats[chatId].session_id;
   delete state.chats[chatId].pending_session_id;
   state.chats[chatId].queue = [];
+}
+
+function formatAllowedTools(tools) {
+  if (!Array.isArray(tools) || tools.length === 0 || tools.includes(noToolsSentinel)) return "none";
+  return tools.join(", ");
+}
+
+function formatAllowedToolsCsv(value) {
+  const tools = csv(value);
+  return tools ? formatAllowedTools(tools) : "";
 }
 
 function isAllowed(chatId) {
@@ -475,7 +964,7 @@ function csv(value) {
 function numberOrUndefined(value) {
   if (!value) return undefined;
   const n = Number(value);
-  return Number.isFinite(n) ? n : undefined;
+  return Number.isInteger(n) && n > 0 ? n : undefined;
 }
 
 function sleep(ms) {

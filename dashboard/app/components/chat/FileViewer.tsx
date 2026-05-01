@@ -54,7 +54,7 @@ type DiffState =
   | { status: "error"; message: string }
   | { status: "ok"; data: DiffContent };
 
-type ViewMode = "preview" | "diff";
+type ViewMode = "preview" | "source" | "diff";
 type DiffLineKind = "add" | "del" | "ctx";
 
 type ParsedDiffRow =
@@ -95,6 +95,11 @@ function extOf(p: string): string {
 
 function langOf(p: string): BundledLanguage {
   return EXT_TO_LANG[extOf(p)] ?? "plaintext";
+}
+
+function isHtmlFile(data: FileContent): boolean {
+  const mime = data.mimeType.toLowerCase();
+  return mime.startsWith("text/html") || ["html", "htm"].includes(extOf(data.name || data.path));
 }
 
 function formatBytes(n: number): string {
@@ -265,6 +270,16 @@ export function FileViewer({ filePath, sessionId, refreshKey, onClose }: Props) 
   const parts = filePath.split("/");
   const fileName = parts.pop() ?? filePath;
   const dirPart = parts.join("/");
+  const viewModes = state.status === "ok" && isHtmlFile(state.data)
+    ? ([
+        ["preview", "Preview"],
+        ["source", "Source"],
+        ["diff", "Diff"],
+      ] as const)
+    : ([
+        ["preview", "Preview"],
+        ["diff", "Diff"],
+      ] as const);
 
   return (
     <div className={`file-viewer ${expanded ? "expanded" : ""}`}>
@@ -291,20 +306,16 @@ export function FileViewer({ filePath, sessionId, refreshKey, onClose }: Props) 
         )}
         {state.status === "ok" && (
           <div className="file-viewer-modes" aria-label="File view mode">
-            <button
-              type="button"
-              className={`file-viewer-mode ${mode === "preview" ? "active" : ""}`}
-              onClick={() => setMode("preview")}
-            >
-              Preview
-            </button>
-            <button
-              type="button"
-              className={`file-viewer-mode ${mode === "diff" ? "active" : ""}`}
-              onClick={() => setMode("diff")}
-            >
-              Diff
-            </button>
+            {viewModes.map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                className={`file-viewer-mode ${mode === key ? "active" : ""}`}
+                onClick={() => setMode(key)}
+              >
+                {label}
+              </button>
+            ))}
           </div>
         )}
         <a
@@ -368,6 +379,7 @@ export function FileViewer({ filePath, sessionId, refreshKey, onClose }: Props) 
             <FilePreview
               data={state.data}
               html={state.html}
+              mode={mode}
               rawUrl={rawUrl}
               activeSheetIndex={activeSheetIndex}
               setActiveSheetIndex={setActiveSheetIndex}
@@ -482,15 +494,21 @@ function FilePreview({
   activeSheetIndex,
   data,
   html,
+  mode,
   rawUrl,
   setActiveSheetIndex,
 }: {
   activeSheetIndex: number;
   data: FileContent;
   html?: string;
+  mode: ViewMode;
   rawUrl: string;
   setActiveSheetIndex: (index: number) => void;
 }) {
+  if (isHtmlFile(data) && mode === "preview") {
+    return <HtmlPreview name={data.name} rawUrl={rawUrl} />;
+  }
+
   if (data.kind === "text" && html) {
     return (
       /* Shiki output: static pre/code/span with inline styles; no user script content. */
@@ -554,6 +572,18 @@ function FilePreview({
   }
 
   return <EmptyPreview label="Preview is not available for this file type." rawUrl={rawUrl} />;
+}
+
+function HtmlPreview({ name, rawUrl }: { name: string; rawUrl: string }) {
+  return (
+    <iframe
+      className="file-viewer-frame file-viewer-html-frame"
+      src={rawUrl}
+      title={name}
+      sandbox="allow-forms allow-modals allow-popups allow-scripts"
+      referrerPolicy="no-referrer"
+    />
+  );
 }
 
 function DataTable({ sheet }: { sheet: TableSheet }) {

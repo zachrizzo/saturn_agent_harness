@@ -380,6 +380,20 @@ capture_saturn_memory() {
     >/dev/null 2>> "$STDERR_FILE" || true
 }
 
+sync_saturn_tasks() {
+  [[ -n "${SATURN_BASE_URL:-}" ]] || return 0
+  command -v curl >/dev/null 2>&1 || return 0
+
+  local payload
+  payload="$(jq -nc --arg turn_id "$TURN_ID" '{turn_id: $turn_id}')"
+  curl -fsS --max-time 30 \
+    -X POST \
+    -H "content-type: application/json" \
+    --data "$payload" \
+    "${SATURN_BASE_URL%/}/api/sessions/$SESSION_ID/tasks/sync" \
+    >/dev/null 2>> "$STDERR_FILE" || true
+}
+
 emit_native_mcp_turn() {
   local parse_file parse_err_file
   local parse_failed="0"
@@ -747,6 +761,7 @@ jq \
 # Write final.md for the session (latest assistant reply)
 printf '%s\n' "$FINAL_TEXT" > "$SESSION_DIR/final.md"
 
+sync_saturn_tasks
 capture_saturn_memory "$STATUS"
 
 # Cleanup

@@ -122,19 +122,19 @@ export function JobsWorkspace({ jobs, runsByJob, allRuns }: Props): JSX.Element 
           <h1>Jobs</h1>
           <p>Watch scheduled automations, spot failures, and run the right job without digging.</p>
         </div>
-        <div className="flex items-center gap-3 flex-wrap">
-        <button
-          type="button"
-          onClick={() => router.push("/jobs/new")}
-          className="btn btn-primary text-[12px] py-1.5 px-3"
-        >
-          + New job
-        </button>
-        <div className="jobs-hero-meta">
-          <Metric label="Scheduled" value={String(jobs.length)} />
-          <Metric label="Running" value={String(runningNow.length)} tone={runningNow.length ? "warn" : undefined} />
-          <Metric label="24h success" value={finished24h.length ? `${rate24h}%` : "—"} tone={rate24h >= 80 ? "success" : finished24h.length ? "fail" : undefined} />
-        </div>
+        <div className="jobs-hero-actions">
+          <button
+            type="button"
+            onClick={() => router.push("/jobs/new")}
+            className="btn btn-primary jobs-new-button"
+          >
+            + New job
+          </button>
+          <div className="jobs-hero-meta">
+            <Metric label="Scheduled" value={String(jobs.length)} />
+            <Metric label="Running" value={String(runningNow.length)} tone={runningNow.length ? "warn" : undefined} />
+            <Metric label="24h success" value={finished24h.length ? `${rate24h}%` : "—"} tone={rate24h >= 80 ? "success" : finished24h.length ? "fail" : undefined} />
+          </div>
         </div>
       </header>
 

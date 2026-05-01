@@ -20,16 +20,34 @@
     <string>__PATH__</string>
     <key>SATURN_BASE_URL</key>
     <string>http://127.0.0.1:3737</string>
+    <key>SATURN_PUBLIC_URL</key>
+    <string>http://127.0.0.1:3737</string>
     <key>TELEGRAM_BOT_TOKEN</key>
     <string>replace-with-botfather-token</string>
     <key>TELEGRAM_BOT_USERNAME</key>
     <string>replace-with-bot-username</string>
     <key>TELEGRAM_ALLOWED_CHAT_IDS</key>
     <string>replace-with-your-chat-id</string>
+    <key>TELEGRAM_ALLOW_ALL</key>
+    <string>0</string>
     <key>SATURN_ADHOC_CLI</key>
     <string>claude-bedrock</string>
     <key>SATURN_ADHOC_MODEL</key>
     <string>claude-sonnet-4-6</string>
+    <key>SATURN_ADHOC_REASONING_EFFORT</key>
+    <string></string>
+    <key>SATURN_ADHOC_PROMPT</key>
+    <string></string>
+    <key>SATURN_ADHOC_CWD</key>
+    <string></string>
+    <key>SATURN_DISPATCH_DEFAULT_CWD</key>
+    <string></string>
+    <key>SATURN_ADHOC_ALLOWED_TOOLS</key>
+    <string></string>
+    <key>SATURN_ADHOC_TIMEOUT_SECONDS</key>
+    <string></string>
+    <key>SATURN_AGENT_ID</key>
+    <string></string>
   </dict>
 
   <key>RunAtLoad</key>

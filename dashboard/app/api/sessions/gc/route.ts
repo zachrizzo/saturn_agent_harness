@@ -1,14 +1,14 @@
 import { NextResponse } from "next/server";
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { sessionsRoot } from "@/lib/paths";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -67,7 +67,7 @@ export async function POST() {
       // Remove sandbox
       try {
         if (sandbox_mode === "worktree") {
-          await execAsync(`git worktree remove --force "${sandbox_path}"`);
+          await execFileAsync("git", ["worktree", "remove", "--force", sandbox_path]);
         } else {
           // tmpfs — plain directory removal
           await fs.rm(sandbox_path, { recursive: true, force: true });

@@ -28,6 +28,8 @@ type ClaudeInternal = {
   model?: string;
   reasoningEffort?: ModelReasoningEffort;
   abort?: AbortController;
+  pendingInjections?: NeutralMessage[];
+  pendingSeed?: string;
 };
 
 async function providerOptions(cli: CLI, model?: string): Promise<Pick<Options, "env" | "model" | "settingSources">> {
@@ -94,6 +96,41 @@ function messagesToUserString(seed: NeutralTranscript | undefined): string | und
   return parts.join("\n");
 }
 
+function neutralMessageText(message: NeutralMessage): string {
+  const parts: string[] = [];
+  for (const part of message.parts) {
+    if (part.type === "text") {
+      parts.push(part.text);
+    } else if (part.type === "tool_use") {
+      parts.push(`Tool use ${part.name}: ${JSON.stringify(part.input)}`);
+    } else if (part.type === "tool_result") {
+      parts.push(`Tool result ${part.tool_use_id}: ${JSON.stringify(part.content)}`);
+    }
+  }
+  return parts.join("\n");
+}
+
+function injectedContextPrompt(items: NeutralMessage[]): string {
+  return [
+    "Additional context injected by the Saturn harness. Treat it as context, not as a new user request.",
+    "",
+    ...items.flatMap((item) => {
+      const text = neutralMessageText(item).trim();
+      return text ? [`${roleLabel(item.role)}: ${text}`] : [];
+    }),
+  ].join("\n");
+}
+
+function consumePendingContext(internal: ClaudeInternal, userMessage: string): string {
+  const blocks: string[] = [];
+  if (internal.pendingSeed?.trim()) blocks.push(internal.pendingSeed.trim());
+  if (internal.pendingInjections?.length) blocks.push(injectedContextPrompt(internal.pendingInjections));
+  internal.pendingSeed = undefined;
+  internal.pendingInjections = [];
+  if (!blocks.length) return userMessage;
+  return `${blocks.join("\n\n")}\n\n---\n\nCurrent user request:\n${userMessage}`;
+}
+
 export class ClaudeAdapter implements RunnableAdapter {
   readonly cli = "claude-bedrock" as const;
 
@@ -129,6 +166,7 @@ export class ClaudeAdapter implements RunnableAdapter {
     ) as ClaudeEffort | undefined;
     const allowedTools = overrides?.allowedTools ?? internal.allowedTools;
     const provider = await providerOptions(internal.cli, model);
+    const prompt = consumePendingContext(internal, userMessage);
 
     yield { kind: "turn_start", ts: new Date().toISOString(), model: provider.model };
 
@@ -138,7 +176,7 @@ export class ClaudeAdapter implements RunnableAdapter {
 
     try {
       const q = query({
-        prompt: userMessage,
+        prompt,
         options: {
           resume: handle.native_session_id,
           model: provider.model,
@@ -226,10 +264,7 @@ export class ClaudeAdapter implements RunnableAdapter {
   }
 
   async injectContext(handle: SessionHandle, items: NeutralMessage[]): Promise<void> {
-    // Claude Agent SDK has no stateful "inject context" API. Items get stitched
-    // into the next user turn's prompt by whoever calls sendTurn.
-    // We attach them to the internal state so the caller can pull them off.
-    const internal = (handle.internal ?? {}) as ClaudeInternal & { pendingInjections?: NeutralMessage[] };
+    const internal = (handle.internal ?? {}) as ClaudeInternal;
     internal.pendingInjections = [...(internal.pendingInjections ?? []), ...items];
   }
 
@@ -316,10 +351,7 @@ export class ClaudeAdapter implements RunnableAdapter {
       harness_session_id: opts.harness_session_id,
       internal,
     };
-    if (seedPrompt) {
-      // Consume the seed on next turn via injectContext style.
-      (internal as ClaudeInternal & { pendingSeed?: string }).pendingSeed = seedPrompt;
-    }
+    if (seedPrompt) internal.pendingSeed = seedPrompt;
     return handle;
   }
 

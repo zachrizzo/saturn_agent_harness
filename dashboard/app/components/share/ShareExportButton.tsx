@@ -78,11 +78,19 @@ export function ShareExportButton({ endpoint, filename, label = "Share", classNa
       </Button>
 
       {open && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="share-export-title"
+          onKeyDown={(event) => {
+            if (event.key === "Escape") setOpen(false);
+          }}
+        >
           <div className="w-full max-w-2xl rounded-lg border border-border bg-bg p-4 shadow-xl">
             <div className="mb-3 flex items-center gap-3">
               <div className="min-w-0 flex-1">
-                <div className="text-[14px] font-semibold text-fg">Share JSON</div>
+                <div id="share-export-title" className="text-[14px] font-semibold text-fg">Share JSON</div>
                 {status && <div className="mt-0.5 text-[12px] text-muted">{status}</div>}
               </div>
               <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>

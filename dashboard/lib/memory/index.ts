@@ -146,6 +146,7 @@ interface MemoryQueryOptions {
   tag?: string;
   tags?: string[];
   limit?: number;
+  offset?: number;
   includeGlobal?: boolean;
   retrievalMode?: MemoryRetrievalMode;
 }
@@ -637,6 +638,7 @@ export async function listMemoryNotes(opts?: {
   tag?: string;
   tags?: string[];
   limit?: number;
+  offset?: number;
   includeGlobal?: boolean;
 }): Promise<MemoryIndexEntry[]> {
   const index = await buildMemoryIndex();
@@ -651,7 +653,8 @@ export async function listMemoryNotes(opts?: {
     notes = notes.filter((entry) => wanted.every((tag) => entry.tags.some((entryTag) => entryTag.toLowerCase() === tag)));
   }
   notes = [...notes].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-  return opts?.limit ? notes.slice(0, opts.limit) : notes;
+  const offset = Math.max(0, opts?.offset ?? 0);
+  return opts?.limit ? notes.slice(offset, offset + opts.limit) : notes.slice(offset);
 }
 
 export async function getMemoryNote(id: string): Promise<MemoryNote | null> {
@@ -764,9 +767,13 @@ export async function searchMemory(opts: {
   tag?: string;
   tags?: string[];
   limit?: number;
+  offset?: number;
   includeGlobal?: boolean;
   retrievalMode?: MemoryRetrievalMode;
 }): Promise<MemorySearchResult[]> {
+  const limit = opts.limit ?? 10;
+  const offset = Math.max(0, opts.offset ?? 0);
+  const end = offset + limit;
   const scopeFilter = scopeFromQueryOptions(opts);
   let settings: AppSettings | undefined;
   try {
@@ -858,7 +865,7 @@ export async function searchMemory(opts: {
     .sort((a, b) => b.score - a.score || b.note.updated_at.localeCompare(a.note.updated_at));
 
   if (mode === "keyword" || !queryText.trim()) {
-    return keywordOnly.slice(0, opts.limit ?? 10);
+    return keywordOnly.slice(offset, end);
   }
 
   let semanticResults: SemanticMemoryResult[] = [];
@@ -873,11 +880,11 @@ export async function searchMemory(opts: {
       types: opts.types,
       tag: opts.tag,
       tags: opts.tags,
-      limit: Math.max(opts.limit ?? 10, 20),
+      limit: Math.max(end, 20),
     });
   } catch {
     if (mode === "semantic") return [];
-    return keywordOnly.slice(0, opts.limit ?? 10);
+    return keywordOnly.slice(offset, end);
   }
 
   const byId = new Map<string, MemorySearchResult>();
@@ -918,7 +925,7 @@ export async function searchMemory(opts: {
   });
   return merged
     .sort((a, b) => b.score - a.score || b.note.updated_at.localeCompare(a.note.updated_at))
-    .slice(0, opts.limit ?? 10);
+    .slice(offset, end);
 }
 
 export async function getMemoryGraph(opts?: {

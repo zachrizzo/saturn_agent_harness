@@ -10,14 +10,14 @@ import {
 import { listTasks } from "@/lib/tasks";
 import { formatTokens } from "@/lib/format";
 import { dailyTokenSeries, detectIssues } from "@/lib/analytics";
-import { AutoRefresh } from "../auto-refresh";
-import { NowStrip } from "../components/dashboard/NowStrip";
-import { KpiRow } from "../components/dashboard/KpiRow";
-import { RecentChatsRail } from "../components/dashboard/RecentChatsRail";
-import { IssuesCallout } from "../components/dashboard/IssuesCallout";
-import { JobsTable } from "../components/dashboard/JobsTable";
-import { TokensChart } from "../components/dashboard/TokensChart";
-import { TasksWidget } from "../components/dashboard/TasksWidget";
+import { AutoRefresh } from "./auto-refresh";
+import { NowStrip } from "./components/dashboard/NowStrip";
+import { KpiRow } from "./components/dashboard/KpiRow";
+import { RecentChatsRail } from "./components/dashboard/RecentChatsRail";
+import { IssuesCallout } from "./components/dashboard/IssuesCallout";
+import { JobsTable } from "./components/dashboard/JobsTable";
+import { TokensChart } from "./components/dashboard/TokensChart";
+import { TasksWidget } from "./components/dashboard/TasksWidget";
 
 export const revalidate = 0;
 export const dynamic = "force-dynamic";

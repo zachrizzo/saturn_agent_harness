@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button, Chip, Input, Select, Textarea } from "@/app/components/ui";
@@ -92,6 +92,18 @@ const EMPTY_DRAFT: MemoryDraft = {
 const MARKDOWN_PLUGINS = [remarkGfm];
 const MEMORY_LIST_DEBOUNCE_MS = 180;
 const MEMORY_LIST_POLL_MS = 4000;
+const MEMORY_LIST_PAGE_SIZE = 50;
+
+type MemoryPageInfo = {
+  limit: number;
+  offset: number;
+  nextOffset: number;
+  hasMore: boolean;
+};
+
+type MemoryWorkspaceProps = {
+  defaultCwd?: string | null;
+};
 
 function isRecord(value: unknown): value is RawRecord {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -256,22 +268,55 @@ function normalizeMemoryList(data: unknown): MemoryNote[] {
     .filter((item): item is MemoryNote => Boolean(item));
 }
 
+function normalizeMemoryPageInfo(data: unknown, fallbackOffset: number, loadedCount: number): MemoryPageInfo {
+  const record = isRecord(data) && isRecord(data.pageInfo) ? data.pageInfo : {};
+  const offset = typeof record.offset === "number" ? record.offset : fallbackOffset;
+  const limit = typeof record.limit === "number" ? record.limit : MEMORY_LIST_PAGE_SIZE;
+  return {
+    limit,
+    offset,
+    nextOffset: typeof record.nextOffset === "number" ? record.nextOffset : offset + loadedCount,
+    hasMore: typeof record.hasMore === "boolean" ? record.hasMore : loadedCount >= limit,
+  };
+}
+
+function mergeMemoryNote(existing: MemoryNote | undefined, next: MemoryNote): MemoryNote {
+  if (!existing) return next;
+  const sameUpdatedAt = (existing.updatedAt ?? "") === (next.updatedAt ?? "");
+  if (!sameUpdatedAt) return next;
+  return {
+    ...next,
+    content: existing.content.length > next.content.length ? existing.content : next.content,
+    backlinks: existing.backlinks.length ? existing.backlinks : next.backlinks,
+    related: existing.related.length ? existing.related : next.related,
+    sourceSessions: existing.sourceSessions.length ? existing.sourceSessions : next.sourceSessions,
+  };
+}
+
 function mergeMemoryList(current: MemoryNote[], next: MemoryNote[]): MemoryNote[] {
   if (!current.length) return next;
-  const byId = new Map(current.map((note) => [note.id, note]));
-  return next.map((note) => {
-    const existing = byId.get(note.id);
-    if (!existing) return note;
-    const sameUpdatedAt = (existing.updatedAt ?? "") === (note.updatedAt ?? "");
-    if (!sameUpdatedAt) return note;
-    return {
-      ...note,
-      content: existing.content.length > note.content.length ? existing.content : note.content,
-      backlinks: existing.backlinks.length ? existing.backlinks : note.backlinks,
-      related: existing.related.length ? existing.related : note.related,
-      sourceSessions: existing.sourceSessions.length ? existing.sourceSessions : note.sourceSessions,
-    };
-  });
+  const currentById = new Map(current.map((note) => [note.id, note]));
+  const nextIds = new Set(next.map((note) => note.id));
+  return [
+    ...next.map((note) => mergeMemoryNote(currentById.get(note.id), note)),
+    ...current.filter((note) => !nextIds.has(note.id)),
+  ];
+}
+
+function appendMemoryList(current: MemoryNote[], next: MemoryNote[]): MemoryNote[] {
+  if (!current.length) return next;
+  const indexes = new Map(current.map((note, index) => [note.id, index]));
+  const merged = [...current];
+  for (const note of next) {
+    const existingIndex = indexes.get(note.id);
+    if (existingIndex === undefined) {
+      indexes.set(note.id, merged.length);
+      merged.push(note);
+    } else {
+      merged[existingIndex] = mergeMemoryNote(merged[existingIndex], note);
+    }
+  }
+  return merged;
 }
 
 function normalizeGraph(data: unknown, notes: MemoryNote[]): GraphData {
@@ -479,51 +524,118 @@ function groupNotes(notes: MemoryNote[]): Array<{ key: string; label: string; no
     }));
 }
 
-function useMemoryList(search: string, scope: string, type: string) {
+function useMemoryList(search: string, scope: string, type: string, defaultCwd?: string | null) {
   const [notes, setNotes] = useState<MemoryNote[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [pageInfo, setPageInfo] = useState<MemoryPageInfo>({
+    limit: MEMORY_LIST_PAGE_SIZE,
+    offset: 0,
+    nextOffset: 0,
+    hasMore: false,
+  });
   const [error, setError] = useState<string | null>(null);
   const loadedRef = useRef(false);
+  const controllerRef = useRef<AbortController | null>(null);
+  const requestSeqRef = useRef(0);
+
+  const loadNotes = useCallback(async (
+    offset: number,
+    mode: "replace" | "append" | "refresh",
+    showLoading = false,
+  ) => {
+    const projectCwd = scope === "project" ? defaultCwd?.trim() : "";
+    if (scope === "project" && !projectCwd) {
+      controllerRef.current?.abort();
+      setNotes([]);
+      setPageInfo({
+        limit: MEMORY_LIST_PAGE_SIZE,
+        offset: 0,
+        nextOffset: 0,
+        hasMore: false,
+      });
+      setError("Project filter requires a default working directory in Settings.");
+      setLoading(false);
+      setLoadingMore(false);
+      loadedRef.current = true;
+      return;
+    }
+
+    const requestSeq = requestSeqRef.current + 1;
+    requestSeqRef.current = requestSeq;
+    controllerRef.current?.abort();
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    const signal = controller.signal;
+
+    if (mode === "append") setLoadingMore(true);
+    if (mode === "replace" && (showLoading || !loadedRef.current)) setLoading(true);
+
+    const params = new URLSearchParams();
+    if (search.trim()) params.set("q", search.trim());
+    if (scope !== "all") params.set("scope", scope);
+    if (projectCwd) params.set("cwd", projectCwd);
+    if (type !== "all") params.set("type", type);
+    params.set("limit", String(MEMORY_LIST_PAGE_SIZE));
+    if (offset > 0) params.set("offset", String(offset));
+
+    try {
+      const res = await fetch(`/api/memory?${params.toString()}`, { signal });
+      if (!res.ok) throw new Error(`Memory request failed: ${res.status}`);
+      const data = await res.json();
+      const next = normalizeMemoryList(data);
+      const nextPageInfo = normalizeMemoryPageInfo(data, offset, next.length);
+      if (signal.aborted) return;
+
+      setNotes((current) => {
+        if (mode === "append") return appendMemoryList(current, next);
+        if (mode === "refresh") return mergeMemoryList(current, next);
+        return next;
+      });
+      setPageInfo((current) => (
+        mode === "refresh"
+          ? {
+              ...current,
+              hasMore: current.hasMore || nextPageInfo.hasMore,
+            }
+          : nextPageInfo
+      ));
+      loadedRef.current = true;
+      setError(null);
+    } catch (err) {
+      if (signal.aborted) return;
+      if (!loadedRef.current || showLoading || mode === "append") {
+        setError(err instanceof Error ? err.message : "Unable to load memory.");
+      }
+    } finally {
+      if (mode === "append") setLoadingMore(false);
+      if (!signal.aborted && requestSeqRef.current === requestSeq) {
+        if (mode === "replace") setLoading(false);
+      }
+    }
+  }, [defaultCwd, search, scope, type]);
 
   useEffect(() => {
     let stopped = false;
-    let controller: AbortController | null = null;
-
-    async function loadNotes(showLoading: boolean) {
-      controller?.abort();
-      controller = new AbortController();
-      const signal = controller.signal;
-      if (showLoading || !loadedRef.current) setLoading(true);
-
-      const params = new URLSearchParams();
-      if (search.trim()) params.set("q", search.trim());
-      if (scope !== "all") params.set("scope", scope);
-      if (type !== "all") params.set("type", type);
-      params.set("limit", "100");
-
-      try {
-        const res = await fetch(`/api/memory?${params.toString()}`, { signal });
-        if (!res.ok) throw new Error(`Memory request failed: ${res.status}`);
-        const next = normalizeMemoryList(await res.json());
-        if (stopped || signal.aborted) return;
-        setNotes((current) => mergeMemoryList(current, next));
-        loadedRef.current = true;
-        setError(null);
-      } catch (err) {
-        if (stopped || signal.aborted) return;
-        if (!loadedRef.current || showLoading) {
-          setError(err instanceof Error ? err.message : "Unable to load memory.");
-        }
-      } finally {
-        if (!stopped && !signal.aborted) setLoading(false);
-      }
-    }
+    loadedRef.current = false;
+    setNotes([]);
+    setPageInfo({
+      limit: MEMORY_LIST_PAGE_SIZE,
+      offset: 0,
+      nextOffset: 0,
+      hasMore: false,
+    });
+    setError(null);
+    setLoading(true);
+    setLoadingMore(false);
 
     const pollIfVisible = () => {
-      if (document.visibilityState === "visible") void loadNotes(false);
+      if (document.visibilityState === "visible" && loadedRef.current) void loadNotes(0, "refresh");
     };
 
-    const timer = window.setTimeout(() => void loadNotes(true), MEMORY_LIST_DEBOUNCE_MS);
+    const timer = window.setTimeout(() => {
+      if (!stopped) void loadNotes(0, "replace", true);
+    }, MEMORY_LIST_DEBOUNCE_MS);
     const interval = window.setInterval(pollIfVisible, MEMORY_LIST_POLL_MS);
     document.addEventListener("visibilitychange", pollIfVisible);
 
@@ -532,11 +644,24 @@ function useMemoryList(search: string, scope: string, type: string) {
       window.clearTimeout(timer);
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", pollIfVisible);
-      controller?.abort();
+      controllerRef.current?.abort();
     };
-  }, [search, scope, type]);
+  }, [loadNotes]);
 
-  return { notes, setNotes, loading, error };
+  const loadMore = useCallback(() => {
+    if (loading || loadingMore || !pageInfo.hasMore) return;
+    void loadNotes(pageInfo.nextOffset, "append");
+  }, [loadNotes, loading, loadingMore, pageInfo.hasMore, pageInfo.nextOffset]);
+
+  return {
+    notes,
+    setNotes,
+    loading,
+    loadingMore,
+    error,
+    hasMore: pageInfo.hasMore,
+    loadMore,
+  };
 }
 
 function useMemoryGraph(enabled: boolean, notes: MemoryNote[]) {
@@ -544,7 +669,7 @@ function useMemoryGraph(enabled: boolean, notes: MemoryNote[]) {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    setGraph((current) => (current.nodes.length ? current : graphFromNotes(notes)));
+    setGraph(graphFromNotes(notes));
   }, [notes]);
 
   useEffect(() => {
@@ -584,7 +709,7 @@ function EmptyState({ title, body }: { title: string; body: string }) {
   );
 }
 
-export function MemoryWorkspace() {
+export function MemoryWorkspace({ defaultCwd = null }: MemoryWorkspaceProps) {
   const [search, setSearch] = useState("");
   const [scopeFilter, setScopeFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
@@ -599,7 +724,12 @@ export function MemoryWorkspace() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
-  const { notes, setNotes, loading, error } = useMemoryList(search, scopeFilter, typeFilter);
+  const { notes, setNotes, loading, loadingMore, error, hasMore, loadMore } = useMemoryList(
+    search,
+    scopeFilter,
+    typeFilter,
+    defaultCwd,
+  );
   const selected = useMemo(
     () => notes.find((note) => note.id === selectedId) ?? notes[0] ?? null,
     [notes, selectedId],
@@ -815,7 +945,7 @@ export function MemoryWorkspace() {
         <div className="memory-pane-header">
           <div>
             <h1>Memory</h1>
-            <p>{loading ? "Loading notes" : `${notes.length} notes indexed`}</p>
+            <p>{loading ? "Loading notes" : `${notes.length}${hasMore ? "+" : ""} notes indexed`}</p>
           </div>
           <Button type="button" size="sm" onClick={startNewNote}>New</Button>
         </div>
@@ -877,6 +1007,13 @@ export function MemoryWorkspace() {
               })}
             </section>
           ))}
+          {!error && grouped.length > 0 && hasMore && (
+            <div className="memory-list-footer">
+              <Button type="button" size="sm" disabled={loadingMore} onClick={loadMore}>
+                {loadingMore ? "Loading..." : "Load more"}
+              </Button>
+            </div>
+          )}
         </div>
       </aside>
 

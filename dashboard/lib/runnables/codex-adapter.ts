@@ -26,6 +26,8 @@ type CodexInternal = {
   reasoningEffort?: ModelReasoningEffort;
   cwd?: string;
   abort?: AbortController;
+  pendingInjections?: NeutralMessage[];
+  pendingSeed?: string;
 };
 
 function threadOptions(
@@ -75,6 +77,41 @@ function seedPromptFromTranscript(seed?: NeutralTranscript): string | undefined 
   return lines.join("\n");
 }
 
+function neutralMessageText(message: NeutralMessage): string {
+  const parts: string[] = [];
+  for (const part of message.parts) {
+    if (part.type === "text") {
+      parts.push(part.text);
+    } else if (part.type === "tool_use") {
+      parts.push(`Tool use ${part.name}: ${JSON.stringify(part.input)}`);
+    } else if (part.type === "tool_result") {
+      parts.push(`Tool result ${part.tool_use_id}: ${JSON.stringify(part.content)}`);
+    }
+  }
+  return parts.join("\n");
+}
+
+function injectedContextPrompt(items: NeutralMessage[]): string {
+  return [
+    "Additional context injected by the Saturn harness. Treat it as context, not as a new user request.",
+    "",
+    ...items.flatMap((item) => {
+      const text = neutralMessageText(item).trim();
+      return text ? [`${roleLabel(item.role)}: ${text}`] : [];
+    }),
+  ].join("\n");
+}
+
+function consumePendingContext(internal: CodexInternal, userMessage: string): string {
+  const blocks: string[] = [];
+  if (internal.pendingSeed?.trim()) blocks.push(internal.pendingSeed.trim());
+  if (internal.pendingInjections?.length) blocks.push(injectedContextPrompt(internal.pendingInjections));
+  internal.pendingSeed = undefined;
+  internal.pendingInjections = [];
+  if (!blocks.length) return userMessage;
+  return `${blocks.join("\n\n")}\n\n---\n\nCurrent user request:\n${userMessage}`;
+}
+
 export class CodexAdapter implements RunnableAdapter {
   readonly cli = "codex" as const;
 
@@ -119,13 +156,14 @@ export class CodexAdapter implements RunnableAdapter {
 
     const thread = internal.thread;
     if (!thread) throw new Error("codex: thread not initialized");
+    const prompt = consumePendingContext(internal, userMessage);
 
     yield { kind: "turn_start", ts: new Date().toISOString(), model: internal.model };
 
     let usage = { input: 0, output: 0, cache_read: 0, cache_creation: 0, total: 0 };
 
     try {
-      const { events } = await thread.runStreamed(userMessage, { signal: abort.signal });
+      const { events } = await thread.runStreamed(prompt, { signal: abort.signal });
       for await (const ev of events as AsyncGenerator<ThreadEvent>) {
         if (ev.type === "thread.started") {
           handle.native_session_id = ev.thread_id;
@@ -213,7 +251,7 @@ export class CodexAdapter implements RunnableAdapter {
   }
 
   async injectContext(handle: SessionHandle, items: NeutralMessage[]): Promise<void> {
-    const internal = handle.internal as CodexInternal & { pendingInjections?: NeutralMessage[] };
+    const internal = handle.internal as CodexInternal;
     internal.pendingInjections = [...(internal.pendingInjections ?? []), ...items];
   }
 
@@ -251,7 +289,7 @@ export class CodexAdapter implements RunnableAdapter {
   async importState(neutral: NeutralTranscript, opts: StartSessionOpts): Promise<SessionHandle> {
     const codex = this.ensureClient();
     const thread = codex.startThread(threadOptions(opts.model, opts.cwd, opts.reasoningEffort));
-    const internal: CodexInternal & { pendingSeed?: string } = {
+    const internal: CodexInternal = {
       codex,
       thread,
       model: opts.model,

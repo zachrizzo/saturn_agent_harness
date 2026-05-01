@@ -65,7 +65,7 @@ export async function recordWorkingDirectory(dir: string): Promise<WorkingDirect
   return entry;
 }
 
-export async function listWorkingDirectories(): Promise<WorkingDirectoryEntry[]> {
+export async function listWorkingDirectories(options: { limit?: number | null } = {}): Promise<WorkingDirectoryEntry[]> {
   const stored = await readStoredWorkingDirectories();
   const entries = new Map<string, WorkingDirectoryEntry>();
 
@@ -110,8 +110,10 @@ export async function listWorkingDirectories(): Promise<WorkingDirectoryEntry[]>
     }
   }
 
-  return [...entries.values()]
+  const sorted = [...entries.values()]
     .filter((entry) => entry.path)
-    .sort((a, b) => b.last_used_at.localeCompare(a.last_used_at))
-    .slice(0, MAX_RECENTS);
+    .sort((a, b) => b.last_used_at.localeCompare(a.last_used_at));
+
+  const limit = options.limit === undefined ? MAX_RECENTS : options.limit;
+  return limit && limit > 0 ? sorted.slice(0, limit) : sorted;
 }

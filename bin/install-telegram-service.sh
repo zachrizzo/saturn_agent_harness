@@ -49,14 +49,22 @@ xml() {
 
 ROOT_XML="$(xml "$AUTOMATIONS_ROOT")"
 NODE_XML="$(xml "$NODE_BIN")"
+PROGRAM_COMMAND_XML="$(xml "exec $(saturn_env_double_quote "$NODE_BIN") $(saturn_env_double_quote "$AUTOMATIONS_ROOT/bin/telegram-dispatch.mjs")")"
 PATH_XML="$(xml "$SERVICE_PATH")"
 TOKEN_XML="$(xml "$TELEGRAM_BOT_TOKEN")"
 BOT_USERNAME_XML="$(xml "${BOT_USERNAME:-replace-with-bot-username}")"
 ALLOWED_XML="$(xml "${TELEGRAM_ALLOWED_CHAT_IDS:-}")"
 ALLOW_ALL_XML="$(xml "${TELEGRAM_ALLOW_ALL:-0}")"
 BASE_URL_XML="$(xml "${SATURN_BASE_URL:-http://127.0.0.1:3737}")"
+PUBLIC_URL_XML="$(xml "${SATURN_PUBLIC_URL:-${SATURN_BASE_URL:-http://127.0.0.1:3737}}")"
 ADHOC_CLI_XML="$(xml "${SATURN_ADHOC_CLI:-claude-bedrock}")"
 ADHOC_MODEL_XML="$(xml "${SATURN_ADHOC_MODEL:-claude-sonnet-4-6}")"
+ADHOC_REASONING_XML="$(xml "${SATURN_ADHOC_REASONING_EFFORT:-}")"
+ADHOC_PROMPT_XML="$(xml "${SATURN_ADHOC_PROMPT:-}")"
+ADHOC_CWD_XML="$(xml "${SATURN_ADHOC_CWD:-}")"
+DISPATCH_DEFAULT_CWD_XML="$(xml "${SATURN_DISPATCH_DEFAULT_CWD:-}")"
+ADHOC_ALLOWED_TOOLS_XML="$(xml "${SATURN_ADHOC_ALLOWED_TOOLS:-}")"
+ADHOC_TIMEOUT_XML="$(xml "${SATURN_ADHOC_TIMEOUT_SECONDS:-}")"
 AGENT_ID_XML="$(xml "${SATURN_AGENT_ID:-}")"
 
 cat > "$PLIST" <<EOF
@@ -71,7 +79,7 @@ cat > "$PLIST" <<EOF
   <array>
     <string>/bin/bash</string>
     <string>-lc</string>
-    <string>exec "$NODE_XML" "$ROOT_XML/bin/telegram-dispatch.mjs"</string>
+    <string>$PROGRAM_COMMAND_XML</string>
   </array>
 
   <key>EnvironmentVariables</key>
@@ -82,6 +90,8 @@ cat > "$PLIST" <<EOF
     <string>$PATH_XML</string>
     <key>SATURN_BASE_URL</key>
     <string>$BASE_URL_XML</string>
+    <key>SATURN_PUBLIC_URL</key>
+    <string>$PUBLIC_URL_XML</string>
     <key>TELEGRAM_BOT_TOKEN</key>
     <string>$TOKEN_XML</string>
     <key>TELEGRAM_BOT_USERNAME</key>
@@ -94,6 +104,18 @@ cat > "$PLIST" <<EOF
     <string>$ADHOC_CLI_XML</string>
     <key>SATURN_ADHOC_MODEL</key>
     <string>$ADHOC_MODEL_XML</string>
+    <key>SATURN_ADHOC_REASONING_EFFORT</key>
+    <string>$ADHOC_REASONING_XML</string>
+    <key>SATURN_ADHOC_PROMPT</key>
+    <string>$ADHOC_PROMPT_XML</string>
+    <key>SATURN_ADHOC_CWD</key>
+    <string>$ADHOC_CWD_XML</string>
+    <key>SATURN_DISPATCH_DEFAULT_CWD</key>
+    <string>$DISPATCH_DEFAULT_CWD_XML</string>
+    <key>SATURN_ADHOC_ALLOWED_TOOLS</key>
+    <string>$ADHOC_ALLOWED_TOOLS_XML</string>
+    <key>SATURN_ADHOC_TIMEOUT_SECONDS</key>
+    <string>$ADHOC_TIMEOUT_XML</string>
     <key>SATURN_AGENT_ID</key>
     <string>$AGENT_ID_XML</string>
   </dict>

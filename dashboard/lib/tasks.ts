@@ -153,6 +153,8 @@ export async function updateTask(
   actor: string
 ): Promise<Task> {
   const task = await readMeta(id);
+  if (Object.keys(patch).length === 0) return task;
+
   const now = new Date().toISOString();
   const updated: Task = { ...task, ...patch, updated_at: now };
   await writeMeta(updated);
@@ -176,6 +178,8 @@ export async function claimTask(
   claimedBy: string,
   ttlMinutes = DEFAULT_TTL_MINUTES
 ): Promise<{ ok: true } | { ok: false; conflict: true; claimed_by: string; expires_at: string }> {
+  await readMeta(id);
+
   const now = new Date();
   const existing = await readClaim(id);
 
@@ -210,6 +214,8 @@ export async function releaseTask(
   claimedBy: string,
   newStatus?: TaskStatus
 ): Promise<{ ok: true } | { ok: false; forbidden: true }> {
+  await readMeta(id);
+
   const claim = await readClaim(id);
   if (!claim || claim.claimed_by !== claimedBy) return { ok: false, forbidden: true };
 
@@ -225,6 +231,8 @@ export async function renewTaskClaim(
   claimedBy: string,
   ttlMinutes = DEFAULT_TTL_MINUTES
 ): Promise<{ ok: true; expires_at: string } | { ok: false; forbidden: true }> {
+  await readMeta(id);
+
   const claim = await readClaim(id);
   if (!claim || claim.claimed_by !== claimedBy) return { ok: false, forbidden: true };
 
