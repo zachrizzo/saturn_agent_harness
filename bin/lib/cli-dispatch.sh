@@ -32,6 +32,39 @@ setup_bedrock_env() {
   export AWS_REGION="${AWS_REGION:-us-east-1}"
 }
 
+shell_join_quoted() {
+  local out="" quoted arg
+  for arg in "$@"; do
+    printf -v quoted "%q" "$arg"
+    if [[ -n "$out" ]]; then
+      out+=" $quoted"
+    else
+      out="$quoted"
+    fi
+  done
+  printf '%s' "$out"
+}
+
+bedrock_settings_json() {
+  local profile="${AWS_PROFILE:-sondermind-development-new}"
+  local region="${AWS_REGION:-us-east-1}"
+  local refresh_cmd
+  refresh_cmd="$(shell_join_quoted "$AUTOMATIONS_ROOT/bin/bedrock-auth-refresh.sh" "$profile" "$region")"
+
+  jq -nc \
+    --arg refresh "$refresh_cmd" \
+    --arg profile "$profile" \
+    --arg region "$region" \
+    '{
+      awsAuthRefresh: $refresh,
+      env: {
+        CLAUDE_CODE_USE_BEDROCK: "1",
+        AWS_PROFILE: $profile,
+        AWS_REGION: $region
+      }
+    }'
+}
+
 normalize_cli_id() {
   case "${1:-}" in
     claude|"")       echo "claude-bedrock" ;;
@@ -132,6 +165,9 @@ build_cli_args() {
       else
         # Bedrock (or default) path — inject AWS auth if not already set.
         setup_bedrock_env
+        if [[ "${SATURN_BEDROCK_AUTH_REFRESH:-1}" != "0" ]]; then
+          RUN_ARGS+=(--settings "$(bedrock_settings_json)")
+        fi
       fi
       ;;
     *)

@@ -1,6 +1,7 @@
 // Claude Code adapter — uses @anthropic-ai/claude-agent-sdk to drive Claude
 // sessions programmatically. Translates SDKMessage events to NeutralEvent.
 
+import path from "node:path";
 import { query, forkSession, getSessionMessages, type Options, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type {
   RunnableAdapter,
@@ -17,6 +18,7 @@ import { isBedrockCli, isLocalClaudeCli, isPersonalClaudeCli, normalizeCli } fro
 import type { CLI } from "../clis";
 import { toBedrockId } from "../claude-models";
 import { readBedrockConfig } from "../bedrock-auth";
+import { binDir } from "../paths";
 
 type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -32,10 +34,31 @@ type ClaudeInternal = {
   pendingSeed?: string;
 };
 
-async function providerOptions(cli: CLI, model?: string): Promise<Pick<Options, "env" | "model" | "settingSources">> {
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function bedrockSettings(profile: string, region: string): string {
+  const refresh = [
+    shellQuote(path.join(binDir(), "bedrock-auth-refresh.sh")),
+    shellQuote(profile),
+    shellQuote(region),
+  ].join(" ");
+  return JSON.stringify({
+    awsAuthRefresh: refresh,
+    env: {
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      AWS_PROFILE: profile,
+      AWS_REGION: region,
+    },
+  });
+}
+
+async function providerOptions(cli: CLI, model?: string): Promise<Pick<Options, "env" | "model" | "settingSources" | "settings">> {
   const env: Record<string, string | undefined> = { ...process.env };
   let effectiveModel = model;
   let settingSources: SettingSource[] | undefined;
+  let settings: string | undefined;
 
   if (isBedrockCli(cli)) {
     const bedrockConfig = await readBedrockConfig();
@@ -43,6 +66,7 @@ async function providerOptions(cli: CLI, model?: string): Promise<Pick<Options, 
     env.AWS_PROFILE = bedrockConfig.profile;
     env.AWS_REGION = bedrockConfig.region;
     effectiveModel = toBedrockId(model);
+    settings = bedrockSettings(bedrockConfig.profile, bedrockConfig.region);
   } else if (isLocalClaudeCli(cli)) {
     env.CLAUDE_CODE_USE_BEDROCK = "0";
     env.ANTHROPIC_BASE_URL = "http://0.0.0.0:4000";
@@ -57,7 +81,7 @@ async function providerOptions(cli: CLI, model?: string): Promise<Pick<Options, 
     settingSources = ["project", "local"];
   }
 
-  return { env, model: effectiveModel, settingSources };
+  return { env, model: effectiveModel, settingSources, settings };
 }
 
 function roleLabel(role: NeutralMessage["role"]): string {
@@ -181,6 +205,7 @@ export class ClaudeAdapter implements RunnableAdapter {
           resume: handle.native_session_id,
           model: provider.model,
           env: provider.env,
+          settings: provider.settings,
           settingSources: provider.settingSources,
           effort: reasoningEffort,
           cwd: internal.cwd,
