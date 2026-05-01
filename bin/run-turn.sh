@@ -564,6 +564,7 @@ if [[ -n "${MCP_CONFIG_PATH:-}" && -f "$MCP_CONFIG_PATH" && "$ENGINE" == "claude
   MCP_CONFIG_ARGS+=("$MCP_CONFIG_PATH")
 fi
 if [[ -n "${PLUGIN_MCP_CONFIG_PATH:-}" && -f "$PLUGIN_MCP_CONFIG_PATH" && "$ENGINE" == "claude" ]]; then
+  prefer_plugin_mcp_servers "$PLUGIN_MCP_CONFIG_PATH"
   MCP_CONFIG_ARGS+=("$PLUGIN_MCP_CONFIG_PATH")
 fi
 if [[ ${#MCP_CONFIG_ARGS[@]} -gt 0 ]]; then

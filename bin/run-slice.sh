@@ -91,6 +91,7 @@ if [[ "$SLICE_CLI" == claude-* && "${STRICT_MCP:-}" != "1" ]]; then
       2>> "$STDERR_FILE" || true
   )"
   if [[ -n "$PLUGIN_MCP_CONFIG_PATH" && -f "$PLUGIN_MCP_CONFIG_PATH" ]]; then
+    prefer_plugin_mcp_servers "$PLUGIN_MCP_CONFIG_PATH"
     RUN_ARGS+=(--mcp-config "$PLUGIN_MCP_CONFIG_PATH")
   fi
 fi

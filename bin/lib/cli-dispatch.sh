@@ -65,6 +65,23 @@ bedrock_settings_json() {
     }'
 }
 
+prefer_plugin_mcp_servers() {
+  local config_path="$1"
+  if [[ ! -f "$config_path" ]]; then
+    return 0
+  fi
+
+  # Claude Code 2.1.x auto-loads claude.ai connectors and then suppresses
+  # plugin MCP servers it thinks duplicate those connectors. For Figma and
+  # Slack, the plugin-auth server is the connected one in print turns, so keep
+  # plugin MCPs visible by disabling automatic claude.ai connector loading.
+  if jq -e '
+    (.mcpServers // {}) | keys[] | select(. == "plugin:figma:figma" or . == "plugin:slack:slack")
+  ' "$config_path" >/dev/null 2>&1; then
+    export ENABLE_CLAUDEAI_MCP_SERVERS="${ENABLE_CLAUDEAI_MCP_SERVERS:-0}"
+  fi
+}
+
 normalize_cli_id() {
   case "${1:-}" in
     claude|"")       echo "claude-bedrock" ;;

@@ -2,6 +2,7 @@
 // sessions programmatically. Translates SDKMessage events to NeutralEvent.
 
 import path from "node:path";
+import { promises as fs } from "node:fs";
 import { query, forkSession, getSessionMessages, type Options, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type {
   RunnableAdapter,
@@ -34,6 +35,8 @@ type ClaudeInternal = {
   pendingSeed?: string;
 };
 
+type McpServers = NonNullable<Options["mcpServers"]>;
+
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
@@ -54,7 +57,148 @@ function bedrockSettings(profile: string, region: string): string {
   });
 }
 
-async function providerOptions(cli: CLI, model?: string): Promise<Pick<Options, "env" | "model" | "settingSources" | "settings">> {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+async function readJson(file: string): Promise<unknown> {
+  try {
+    return JSON.parse(await fs.readFile(file, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+async function fileExists(file: string): Promise<boolean> {
+  try {
+    await fs.access(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function firstExisting(paths: string[]): Promise<string | undefined> {
+  for (const candidate of paths) {
+    if (await fileExists(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+async function installedPluginPaths(home: string, pluginId: string, installedPlugins: unknown): Promise<string[]> {
+  const entries = isRecord(installedPlugins)
+    && isRecord(installedPlugins.plugins)
+    && Array.isArray(installedPlugins.plugins[pluginId])
+    ? installedPlugins.plugins[pluginId]
+    : [];
+
+  const paths: string[] = [];
+  for (const entry of entries) {
+    if (!isRecord(entry) || typeof entry.installPath !== "string") continue;
+    try {
+      const info = await fs.stat(entry.installPath);
+      if (info.isDirectory()) paths.push(entry.installPath);
+    } catch {
+      // Ignore stale plugin registry entries.
+    }
+  }
+
+  if (paths.length === 0) {
+    const [pluginName, marketplace] = pluginId.split("@");
+    if (pluginName && marketplace) {
+      const cacheRoot = path.join(home, ".claude", "plugins", "cache", marketplace, pluginName);
+      try {
+        const versions = await fs.readdir(cacheRoot);
+        paths.push(...versions.map((version) => path.join(cacheRoot, version)));
+      } catch {
+        // No cache fallback available.
+      }
+    }
+  }
+
+  return paths;
+}
+
+async function readPluginMcpServers(pluginPath: string): Promise<Record<string, unknown> | undefined> {
+  const mcpPath = await firstExisting([
+    path.join(pluginPath, ".mcp.json"),
+    path.join(pluginPath, "mcp.json"),
+    path.join(pluginPath, "figma-power", "mcp.json"),
+  ]);
+  if (mcpPath) {
+    const config = await readJson(mcpPath);
+    if (isRecord(config) && isRecord(config.mcpServers)) return config.mcpServers;
+  }
+
+  const server = await readJson(path.join(pluginPath, "server.json"));
+  if (!isRecord(server) || !Array.isArray(server.remotes)) return undefined;
+
+  const remote = server.remotes.find((item): item is Record<string, unknown> => (
+    isRecord(item) && typeof item.url === "string"
+  ));
+  if (!remote) return undefined;
+
+  const pluginName = path.basename(path.dirname(pluginPath));
+  return {
+    [pluginName]: {
+      type: remote.type === "streamable-http" ? "http" : remote.type ?? "http",
+      url: remote.url,
+    },
+  };
+}
+
+async function readEnabledPluginMcpServers(env: Record<string, string | undefined>): Promise<McpServers | undefined> {
+  const home = env.HOME || process.env.HOME;
+  if (!home) return undefined;
+
+  const enabledPlugins: Record<string, unknown> = {};
+  for (const file of [
+    path.join(home, ".claude", "settings.json"),
+    path.join(home, ".claude", "settings.local.json"),
+    path.join(home, ".claude", "settings-local.json"),
+  ]) {
+    const settings = await readJson(file);
+    if (isRecord(settings) && isRecord(settings.enabledPlugins)) {
+      Object.assign(enabledPlugins, settings.enabledPlugins);
+    }
+  }
+
+  const installedPlugins = await readJson(path.join(home, ".claude", "plugins", "installed_plugins.json"));
+  const mcpServers: McpServers = {};
+
+  for (const [pluginId, enabled] of Object.entries(enabledPlugins)) {
+    if (enabled !== true) continue;
+    const pluginName = pluginId.split("@")[0];
+    if (!pluginName) continue;
+
+    const pluginPaths = await installedPluginPaths(home, pluginId, installedPlugins);
+    for (const pluginPath of pluginPaths) {
+      const servers = await readPluginMcpServers(pluginPath);
+      if (!servers) continue;
+
+      for (const [serverName, serverConfig] of Object.entries(servers)) {
+        if (isRecord(serverConfig)) {
+          mcpServers[`plugin:${pluginName}:${serverName}`] = serverConfig as McpServers[string];
+        }
+      }
+      break;
+    }
+  }
+
+  return Object.keys(mcpServers).length > 0 ? mcpServers : undefined;
+}
+
+function hasPreferredPluginMcpServer(mcpServers: McpServers | undefined): boolean {
+  return Boolean(
+    mcpServers
+    && (
+      Object.hasOwn(mcpServers, "plugin:figma:figma")
+      || Object.hasOwn(mcpServers, "plugin:slack:slack")
+    ),
+  );
+}
+
+async function providerOptions(cli: CLI, model?: string): Promise<Pick<Options, "env" | "model" | "settingSources" | "settings" | "mcpServers">> {
   const env: Record<string, string | undefined> = { ...process.env };
   let effectiveModel = model;
   let settingSources: SettingSource[] | undefined;
@@ -81,7 +225,12 @@ async function providerOptions(cli: CLI, model?: string): Promise<Pick<Options, 
     settingSources = ["project", "local"];
   }
 
-  return { env, model: effectiveModel, settingSources, settings };
+  const mcpServers = isLocalClaudeCli(cli) ? undefined : await readEnabledPluginMcpServers(env);
+  if (hasPreferredPluginMcpServer(mcpServers)) {
+    env.ENABLE_CLAUDEAI_MCP_SERVERS = env.ENABLE_CLAUDEAI_MCP_SERVERS || "0";
+  }
+
+  return { env, model: effectiveModel, settingSources, settings, mcpServers };
 }
 
 function roleLabel(role: NeutralMessage["role"]): string {
@@ -206,6 +355,7 @@ export class ClaudeAdapter implements RunnableAdapter {
           model: provider.model,
           env: provider.env,
           settings: provider.settings,
+          mcpServers: provider.mcpServers,
           settingSources: provider.settingSources,
           effort: reasoningEffort,
           cwd: internal.cwd,
