@@ -176,6 +176,8 @@ export type SessionReadOptions = {
   eventMode?: SessionEventReadMode;
   recentTurns?: number;
   recentMaxBytes?: number;
+  compactEvents?: boolean;
+  compactValueChars?: number;
 };
 
 export type RunMeta = {
@@ -219,6 +221,9 @@ const RECENT_SESSION_EVENT_TURNS = 4;
 const RECENT_SESSION_EVENT_MAX_BYTES = 2 * 1024 * 1024;
 const SESSION_STREAM_TAIL_CHUNK_BYTES = 256 * 1024;
 const TURN_START_MARKER = "saturn.turn_start";
+const COMPACT_EVENT_VALUE_CHARS = 1200;
+const COMPACT_EVENT_ARRAY_ITEMS = 10;
+const COMPACT_EVENT_OBJECT_KEYS = 18;
 
 type SessionStreamRead = {
   raw: string;
@@ -328,6 +333,117 @@ async function readSessionStream(
     Math.max(1, options.recentTurns ?? RECENT_SESSION_EVENT_TURNS),
     Math.max(SESSION_STREAM_TAIL_CHUNK_BYTES, options.recentMaxBytes ?? RECENT_SESSION_EVENT_MAX_BYTES),
   );
+}
+
+function compactString(value: string, maxChars: number): string {
+  if (/^data:(image|video|audio)\//i.test(value)) {
+    return `[media data omitted from initial load: ${value.length.toLocaleString()} chars]`;
+  }
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars)}\n...[${(value.length - maxChars).toLocaleString()} chars omitted from initial load]`;
+}
+
+function compactEventValue(value: unknown, maxChars: number, depth = 0): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") return compactString(value, maxChars);
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (depth >= 3) {
+    if (Array.isArray(value)) return `[${value.length.toLocaleString()} items omitted from initial load]`;
+    if (typeof value === "object") {
+      return `{${Object.keys(value as Record<string, unknown>).length.toLocaleString()} keys omitted from initial load}`;
+    }
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    const head = value
+      .slice(0, COMPACT_EVENT_ARRAY_ITEMS)
+      .map((item) => compactEventValue(item, Math.max(160, Math.floor(maxChars / 2)), depth + 1));
+    if (value.length > COMPACT_EVENT_ARRAY_ITEMS) {
+      head.push(`[${(value.length - COMPACT_EVENT_ARRAY_ITEMS).toLocaleString()} items omitted from initial load]`);
+    }
+    return head;
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    const record = value as Record<string, unknown>;
+    const mimeType = typeof record.mimeType === "string"
+      ? record.mimeType
+      : typeof record.media_type === "string"
+        ? record.media_type
+        : undefined;
+    if (typeof record.data === "string" && mimeType && /^(image|video|audio)\//i.test(mimeType)) {
+      const out: Record<string, unknown> = {};
+      for (const [key, entryValue] of entries) {
+        if (key === "data") continue;
+        out[key] = compactEventValue(entryValue, Math.max(160, Math.floor(maxChars / 2)), depth + 1);
+      }
+      out.data_omitted_chars = record.data.length;
+      return out;
+    }
+
+    const out: Record<string, unknown> = {};
+    for (const [key, entryValue] of entries.slice(0, COMPACT_EVENT_OBJECT_KEYS)) {
+      out[key] = compactEventValue(entryValue, Math.max(160, Math.floor(maxChars / 2)), depth + 1);
+    }
+    if (entries.length > COMPACT_EVENT_OBJECT_KEYS) {
+      out.__omittedKeys = entries.length - COMPACT_EVENT_OBJECT_KEYS;
+    }
+    return out;
+  }
+  return String(value);
+}
+
+function compactRawForEvent(raw: unknown): Record<string, unknown> {
+  const src = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  const out: Record<string, unknown> = {};
+  for (const key of [
+    "type",
+    "subtype",
+    "session_id",
+    "thread_id",
+    "turn_id",
+    "started_at",
+    "cli",
+    "model",
+    "parent_tool_use_id",
+  ]) {
+    if (src[key] !== undefined) out[key] = src[key];
+  }
+
+  const item = src.item && typeof src.item === "object" ? src.item as Record<string, unknown> : null;
+  if (item?.server || item?.name) {
+    out.item = {
+      ...(typeof item.server === "string" ? { server: item.server } : {}),
+      ...(typeof item.name === "string" ? { name: item.name } : {}),
+    };
+  }
+  return out;
+}
+
+function compactStreamEvents(events: StreamEvent[], maxChars: number): StreamEvent[] {
+  return events.map((event): StreamEvent => {
+    const raw = compactRawForEvent(event.raw);
+    switch (event.kind) {
+      case "assistant_text":
+        return { ...event, text: compactString(event.text, maxChars * 8), raw };
+      case "plan_text":
+        return { ...event, text: compactString(event.text, maxChars * 8), raw };
+      case "thinking":
+        return { ...event, text: compactString(event.text, maxChars), raw };
+      case "tool_use":
+        return { ...event, input: compactEventValue(event.input, maxChars), raw };
+      case "tool_result":
+        return { ...event, content: compactEventValue(event.content, maxChars), raw };
+      case "todo_list":
+      case "result":
+      case "system":
+      case "user":
+      case "other":
+        return { ...event, raw } as StreamEvent;
+      default:
+        return event;
+    }
+  });
 }
 
 async function readJobsFile(): Promise<{ jobs: Job[] }> {
@@ -687,7 +803,13 @@ export async function getSession(
     fs.readFile(path.join(dir, "stderr.log"), "utf8").catch(() => ""),
   ]);
 
-  return { meta, events: parseStreamJsonl(stream.raw), stderr, eventsPartial: stream.partial };
+  const parsedEvents = parseStreamJsonl(stream.raw);
+  const shouldCompactEvents = Boolean(options.compactEvents && meta.status !== "running");
+  const events = shouldCompactEvents
+    ? compactStreamEvents(parsedEvents, options.compactValueChars ?? COMPACT_EVENT_VALUE_CHARS)
+    : parsedEvents;
+
+  return { meta, events, stderr, eventsPartial: stream.partial || shouldCompactEvents };
 }
 
 function normalizeAgentCliFields(agent: Agent | undefined): void {

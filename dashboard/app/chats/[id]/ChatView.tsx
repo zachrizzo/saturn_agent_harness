@@ -319,6 +319,18 @@ export function ChatView({
     () => chunks.slice(hiddenTurnCount),
     [chunks, hiddenTurnCount],
   );
+  const historyGateLabel = historyLoading
+    ? "Loading..."
+    : eventsPartial
+      ? "Load full details"
+      : hiddenTurnCount > 0
+      ? `Load ${Math.min(VISIBLE_TURN_INCREMENT, hiddenTurnCount)} earlier`
+      : "Load full details";
+  const historyGateDetail = eventsPartial && hiddenTurnCount > 0
+    ? `${hiddenTurnCount.toLocaleString()} older turn${hiddenTurnCount === 1 ? "" : "s"} and full tool details hidden`
+    : hiddenTurnCount > 0
+    ? `${hiddenTurnCount.toLocaleString()} older turn${hiddenTurnCount === 1 ? "" : "s"} hidden`
+    : "Full tool details are deferred for faster opening";
 
   const loadEarlierTurns = useCallback(async () => {
     if (historyLoading) return;
@@ -777,12 +789,12 @@ export function ChatView({
                 Send a message to start the conversation.
               </div>
             )}
-            {hiddenTurnCount > 0 && (
+            {(hiddenTurnCount > 0 || eventsPartial) && (
               <div className="chat-history-gate">
                 <Button size="sm" variant="ghost" disabled={historyLoading} onClick={loadEarlierTurns}>
-                  {historyLoading ? "Loading..." : `Load ${Math.min(VISIBLE_TURN_INCREMENT, hiddenTurnCount)} earlier`}
+                  {historyGateLabel}
                 </Button>
-                <span>{hiddenTurnCount.toLocaleString()} older turn{hiddenTurnCount === 1 ? "" : "s"} hidden</span>
+                <span>{historyGateDetail}</span>
               </div>
             )}
             {visibleChunks.map((chunk) => {

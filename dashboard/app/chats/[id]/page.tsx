@@ -33,7 +33,7 @@ export default async function ChatSessionPage({
 }) {
   const [{ id }, sp] = await Promise.all([params, searchParams]);
   let [session, settings] = await Promise.all([
-    getSessionWithCreateRaceRetry(id, { eventMode: "recent" }),
+    getSessionWithCreateRaceRetry(id, { eventMode: "recent", compactEvents: true }),
     readAppSettings(),
   ]);
   if (!session) notFound();
