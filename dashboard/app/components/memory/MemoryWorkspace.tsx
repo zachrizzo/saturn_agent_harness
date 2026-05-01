@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button, Chip, Input, Select, Textarea } from "@/app/components/ui";
+import { MemorySettingsPanel } from "@/app/components/memory/MemorySettingsPanel";
 
 type RawRecord = Record<string, unknown>;
 
@@ -550,7 +551,7 @@ function useMemoryGraph(enabled: boolean, notes: MemoryNote[]) {
     if (!enabled) return;
     const controller = new AbortController();
     setLoading(true);
-    fetch("/api/memory/graph", { signal: controller.signal })
+    fetch("/api/memory/graph?semantic=1", { signal: controller.signal })
       .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`Graph request failed: ${res.status}`))))
       .then((data) => setGraph(normalizeGraph(data, notes)))
       .catch(() => {
@@ -975,6 +976,7 @@ export function MemoryWorkspace() {
       </main>
 
       <aside className="memory-pane memory-pane-right">
+        <MemorySettingsPanel compact className="memory-inspector-settings" />
         {selected && !creating ? (
           <MemoryInspector
             note={selected}

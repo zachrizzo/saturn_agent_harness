@@ -28,7 +28,7 @@ Resources:
   agents  list|get|create|update
   slices  list|get|create|update
   jobs    list|get|create|update
-  memory  list|get|create|update|delete|graph|recall|capture
+  memory  list|get|create|update|delete|graph|recall|capture|embeddings-status|embeddings-rebuild|curate
 
 Payloads:
   --json '<json>'       JSON payload for create/update/claim/release
@@ -51,6 +51,9 @@ Examples:
   saturn memory create --json '{"title":"Retry policy","type":"Decisions","scope":"project","cwd":"/path/to/project","content":"Use [[Backoff]] for transient failures."}'
   saturn memory graph --scope global
   saturn memory recall --json '{"message":"What did we decide about retries?","cwd":"/path/to/project"}'
+  saturn memory embeddings-status
+  saturn memory embeddings-rebuild --json '{"force":true}'
+  saturn memory curate <session-id> --dry-run
 `;
 }
 
@@ -249,6 +252,18 @@ async function main() {
     if (!target) fail("memory capture requires a session id");
     method = "POST";
     path = resourcePath(resource, undefined, `capture/session/${encodeSegment(target)}`);
+    body = await payloadFrom(flags, false);
+  } else if (resource === "memory" && action === "embeddings-status") {
+    method = "GET";
+    path = resourcePath(resource, undefined, "embeddings/status");
+  } else if (resource === "memory" && action === "embeddings-rebuild") {
+    method = "POST";
+    path = resourcePath(resource, undefined, "embeddings/rebuild");
+    body = await payloadFrom(flags, false);
+  } else if (resource === "memory" && action === "curate") {
+    if (!target) fail("memory curate requires a session id");
+    method = "POST";
+    path = resourcePath(resource, undefined, `embeddings/curate/${encodeSegment(target)}`);
     body = await payloadFrom(flags, false);
   } else if (resource === "tasks" && action === "claim") {
     if (!target) fail("tasks claim requires a task id");

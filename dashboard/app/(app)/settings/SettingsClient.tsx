@@ -10,6 +10,7 @@ import { Button, Input, Select } from "@/app/components/ui";
 import { DirPicker } from "@/app/components/DirPicker";
 import { CLI_LABELS, CLI_VALUES } from "@/lib/clis";
 import { IconUser } from "@/app/components/shell/icons";
+import { MemorySettingsPanel } from "@/app/components/memory/MemorySettingsPanel";
 
 type Props = {
   initialSettings: AppSettings;
@@ -26,6 +27,8 @@ type ClaudePersonalAuthStatus = {
   apiProvider?: string;
   error?: string;
 };
+
+type SettingsRecord = AppSettings & Record<string, unknown>;
 
 export function SettingsClient({ initialSettings, workingDirectories, mcpServers, awsProfiles }: Props) {
   const [settings, setSettings] = useState<AppSettings>(initialSettings);
@@ -155,6 +158,10 @@ export function SettingsClient({ initialSettings, workingDirectories, mcpServers
       else hidden.add(serverName);
       return { ...prev, hiddenMcpImageServers: [...hidden].sort((a, b) => a.localeCompare(b)) };
     });
+  };
+
+  const updateMemorySettings = (next: SettingsRecord) => {
+    setSettings(next as AppSettings);
   };
 
   const launchClaudePersonalAuth = async () => {
@@ -387,6 +394,11 @@ export function SettingsClient({ initialSettings, workingDirectories, mcpServers
             </span>
           </label>
         </div>
+
+        <MemorySettingsPanel
+          settings={settings as SettingsRecord}
+          onSettingsChange={updateMemorySettings}
+        />
 
         {workingDirectories.length > 0 && (
           <div className="space-y-2">

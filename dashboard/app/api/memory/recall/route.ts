@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { buildMemoryRecallBlock, searchMemory } from "@/lib/memory";
 import { readAppSettings } from "@/lib/settings";
+import { callOptionalEmbeddingsStatus, memoryRetrievalSettings } from "../embeddings/_helpers";
 import { badRequest, cleanString, parseJsonObject, parseLimit, projectScopeForCwd, serverError } from "../_helpers";
 
 export const dynamic = "force-dynamic";
@@ -42,9 +43,10 @@ export async function POST(req: NextRequest) {
   };
 
   try {
-    const [blockResult, searchResult] = await Promise.all([
+    const [blockResult, searchResult, embeddingsStatus] = await Promise.all([
       callBuildMemoryRecallBlock(message, options),
-      callSearchMemory(message, { scope: "all", ...options }),
+      callSearchMemory(message, options),
+      callOptionalEmbeddingsStatus(settings),
     ]);
     const blockRecord = parseJsonObject(blockResult);
     const searchRecord = parseJsonObject(searchResult);
@@ -55,6 +57,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       block: typeof blockResult === "string" ? blockResult : blockRecord?.block ?? "",
       results,
+      retrieval: {
+        settings: memoryRetrievalSettings(settings),
+        status: embeddingsStatus,
+      },
     });
   } catch (err) {
     return serverError(err, "failed to recall memory");

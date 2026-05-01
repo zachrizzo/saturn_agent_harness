@@ -2,6 +2,15 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { memoryRoot } from "../paths";
+import { readAppSettings, type AppSettings, type MemoryRetrievalMode } from "../settings";
+import {
+  enqueueMemoryEmbeddingRefresh,
+  curateCapturedMemory,
+  getSemanticGraphEdges,
+  processMemoryEmbeddingQueue,
+  semanticSearchMemory,
+  type SemanticMemoryResult,
+} from "./embeddings";
 
 export const MEMORY_TYPES = [
   "Entities",
@@ -57,6 +66,14 @@ export interface MemorySearchResult {
   score: number;
   snippet: string;
   reasons: string[];
+  retrieval?: {
+    keywordScore?: number;
+    semanticScore?: number;
+    graphScore?: number;
+    recencyScore?: number;
+    chunkId?: string;
+    mode?: MemoryRetrievalMode;
+  };
 }
 
 export interface MemoryGraph {
@@ -97,6 +114,7 @@ export interface MemoryCaptureSummary {
   skipped: boolean;
   notes: Array<{ id: string; title: string; type: MemoryType }>;
   errors: string[];
+  curator?: { skipped: boolean; applied: number; errors: string[] };
 }
 
 interface UpsertMemoryNoteInput {
@@ -129,6 +147,7 @@ interface MemoryQueryOptions {
   tags?: string[];
   limit?: number;
   includeGlobal?: boolean;
+  retrievalMode?: MemoryRetrievalMode;
 }
 
 interface MemoryIndexFile {
@@ -685,6 +704,7 @@ export async function upsertMemoryNote(input: UpsertMemoryNoteInput): Promise<Me
   await buildMemoryIndex();
   const note = await getMemoryNote(id);
   if (!note) throw new Error(`Failed to read memory note after write: ${id}`);
+  void enqueueMemoryEmbeddingRefresh(note.id, "refresh").catch(() => {});
   return note;
 }
 
@@ -693,6 +713,7 @@ export async function deleteMemoryNote(id: string): Promise<void> {
   if (!filePath) return;
   await fs.rm(filePath, { force: true });
   await buildMemoryIndex();
+  void enqueueMemoryEmbeddingRefresh(id, "delete").catch(() => {});
 }
 
 function tokenize(value: string): string[] {
@@ -744,10 +765,22 @@ export async function searchMemory(opts: {
   tags?: string[];
   limit?: number;
   includeGlobal?: boolean;
+  retrievalMode?: MemoryRetrievalMode;
 }): Promise<MemorySearchResult[]> {
   const scopeFilter = scopeFromQueryOptions(opts);
+  let settings: AppSettings | undefined;
+  try {
+    settings = await readAppSettings();
+  } catch {
+    settings = undefined;
+  }
+  const mode = opts.retrievalMode ?? settings?.memoryRetrievalMode ?? "keyword";
   const index = await buildMemoryIndex();
+  if (mode !== "keyword") {
+    void processMemoryEmbeddingQueue().catch(() => {});
+  }
   const terms = tokenize(opts.query ?? opts.q ?? opts.message ?? "");
+  const queryText = opts.query ?? opts.q ?? opts.message ?? "";
   const wantedTags = (opts.tags ?? (opts.tag ? [opts.tag] : [])).map((tag) => tag.toLowerCase());
   const filtered = index.notes.filter((entry) => {
     if (!scopeMatches(entry, scopeFilter.scope, scopeFilter.includeGlobal)) return false;
@@ -765,14 +798,16 @@ export async function searchMemory(opts: {
     }
   }
 
-  const results = await Promise.all(filtered.map(async (entry) => {
+  const keywordResults = await Promise.all(filtered.map(async (entry) => {
     const content = await noteContentForEntry(entry);
     const titleTokens = tokenize(entry.title);
     const tagTokens = tokenize(entry.tags.join(" "));
     const aliasTokens = tokenize(entry.aliases.join(" "));
     const bodyTokens = tokenize(content);
     const reasons: string[] = [];
-    let score = recencyScore(entry.updated_at);
+    const recent = recencyScore(entry.updated_at);
+    let score = recent;
+    let graphScore = 0;
 
     if (!terms.length) {
       reasons.push("recent");
@@ -799,6 +834,7 @@ export async function searchMemory(opts: {
 
     const proximity = graphBoost(entry, seedIds);
     if (proximity) {
+      graphScore = proximity;
       score += proximity;
       reasons.push("graph");
     }
@@ -808,11 +844,79 @@ export async function searchMemory(opts: {
       score,
       snippet: snippetFor(content || entry.excerpt, terms),
       reasons: dedupeStrings(reasons),
+      retrieval: {
+        keywordScore: score,
+        graphScore,
+        recencyScore: recent,
+        mode,
+      },
     };
   }));
 
-  return results
+  const keywordOnly = keywordResults
     .filter((result) => !terms.length || result.reasons.length > 0)
+    .sort((a, b) => b.score - a.score || b.note.updated_at.localeCompare(a.note.updated_at));
+
+  if (mode === "keyword" || !queryText.trim()) {
+    return keywordOnly.slice(0, opts.limit ?? 10);
+  }
+
+  let semanticResults: SemanticMemoryResult[] = [];
+  try {
+    semanticResults = await semanticSearchMemory({
+      query: queryText,
+      entries: filtered,
+      settings,
+      scope: scopeFilter.scope,
+      includeGlobal: scopeFilter.includeGlobal,
+      type: opts.type,
+      types: opts.types,
+      tag: opts.tag,
+      tags: opts.tags,
+      limit: Math.max(opts.limit ?? 10, 20),
+    });
+  } catch {
+    if (mode === "semantic") return [];
+    return keywordOnly.slice(0, opts.limit ?? 10);
+  }
+
+  const byId = new Map<string, MemorySearchResult>();
+  for (const result of keywordOnly) byId.set(result.note.id, result);
+  const entriesById = new Map(filtered.map((entry) => [entry.id, entry]));
+
+  for (const semantic of semanticResults) {
+    const entry = entriesById.get(semantic.noteId);
+    if (!entry) continue;
+    const existing = byId.get(entry.id);
+    const semanticScore = semantic.score;
+    const keywordScore = existing?.retrieval?.keywordScore ?? 0;
+    const graphScore = existing?.retrieval?.graphScore ?? 0;
+    const recent = recencyScore(entry.updated_at);
+    const score = mode === "semantic"
+      ? semanticScore * 100 + recent
+      : semanticScore * 55 + Math.min(1, keywordScore / 20) * 30 + Math.min(1, graphScore / 4) * 10 + Math.min(1, recent / 5) * 5;
+    byId.set(entry.id, {
+      note: entry,
+      score,
+      snippet: semantic.snippet || existing?.snippet || entry.excerpt,
+      reasons: dedupeStrings([...(existing?.reasons ?? []), ...semantic.reasons, "semantic"]),
+      retrieval: {
+        keywordScore,
+        semanticScore,
+        graphScore,
+        recencyScore: recent,
+        chunkId: semantic.chunkId,
+        mode,
+      },
+    });
+  }
+
+  const merged = [...byId.values()].filter((result) => {
+    if (!terms.length) return true;
+    if (mode === "semantic") return typeof result.retrieval?.semanticScore === "number";
+    return result.reasons.length > 0;
+  });
+  return merged
     .sort((a, b) => b.score - a.score || b.note.updated_at.localeCompare(a.note.updated_at))
     .slice(0, opts.limit ?? 10);
 }
@@ -826,6 +930,7 @@ export async function getMemoryGraph(opts?: {
   types?: MemoryType[];
   tag?: string;
   includeGlobal?: boolean;
+  semantic?: boolean;
 }): Promise<MemoryGraph> {
   const scopeFilter = scopeFromQueryOptions(opts);
   const index = await buildMemoryIndex();
@@ -842,7 +947,21 @@ export async function getMemoryGraph(opts?: {
       .filter((target) => nodeIds.has(target))
       .map((target) => ({ source: node.id, target, label: "wikilink" }))
   ));
-  return { nodes, edges };
+  if (!opts?.semantic) return { nodes, edges };
+  try {
+    const semanticEdges = await getSemanticGraphEdges({ entries: nodes });
+    return {
+      nodes,
+      edges: [
+        ...edges,
+        ...semanticEdges
+          .filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target))
+          .map((edge) => ({ source: edge.source, target: edge.target, label: `semantic:${edge.score.toFixed(2)}` })),
+      ],
+    };
+  } catch {
+    return { nodes, edges };
+  }
 }
 
 export async function buildMemoryRecallBlock(opts: {
@@ -1054,6 +1173,23 @@ export async function captureMemoryFromTurn(input: MemoryCaptureInput): Promise<
         content: heuristicContent(title, candidate.type, line, sessionTitle),
       });
       summary.notes.push({ id: note.id, title: note.title, type: note.type });
+    }
+
+    try {
+      summary.curator = await curateCapturedMemory({
+        input,
+        text,
+        scope,
+        sessionTitle,
+        metadata,
+        capturedAt,
+      });
+    } catch (err) {
+      summary.curator = {
+        skipped: false,
+        applied: 0,
+        errors: [(err as Error)?.message ?? String(err)],
+      };
     }
 
     summary.captured = summary.notes.length;

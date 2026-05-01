@@ -13,6 +13,7 @@ export async function GET(req: NextRequest) {
     const graph = await getMemoryGraph({
       ...filters,
       ...(cleanString(req.nextUrl.searchParams.get("q")) ? { q: cleanString(req.nextUrl.searchParams.get("q")) } : {}),
+      semantic: req.nextUrl.searchParams.get("semantic") === "1" || req.nextUrl.searchParams.get("semantic") === "true",
     });
     return NextResponse.json(graph);
   } catch (err) {

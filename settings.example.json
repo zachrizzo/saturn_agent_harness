@@ -9,5 +9,16 @@
   "memoryEnabled": true,
   "memoryAutoCapture": true,
   "memoryRecallLimit": 5,
+  "memoryRetrievalMode": "hybrid",
+  "memoryEmbeddingProvider": "disabled",
+  "memoryEmbeddingModel": "text-embedding-3-small",
+  "memoryEmbeddingBaseUrl": "https://api.openai.com/v1",
+  "memoryEmbeddingApiKey": "",
+  "memoryEmbeddingDimensions": 1536,
+  "memoryCuratorEnabled": false,
+  "memoryCuratorProvider": "disabled",
+  "memoryCuratorModel": "gpt-4.1-mini",
+  "memoryCuratorBaseUrl": "https://api.openai.com/v1",
+  "memoryCuratorApiKey": "",
   "hiddenMcpImageServers": []
 }
