@@ -694,6 +694,11 @@ export function ChatView({
   const agentId = snap?.id ?? meta.agent_id;
   const agentCliModels = snap?.models;
   const agentCliReasoningEfforts = snap?.reasoningEfforts;
+  const headerDetails = [
+    meta.agent_snapshot?.description,
+    meta.agent_snapshot?.cwd,
+    sessionId,
+  ].filter(Boolean).join(" | ");
 
   const selectInspectorTool = useCallback((t: InspectorTool) => {
     setActiveToolId(t.id);
@@ -712,25 +717,27 @@ export function ChatView({
         style={{ "--inspector-width": `${inspectorWidth}px` } as CSSProperties}
       >
         <div className="chat-main">
-          <header className="chat-header">
-            <h1 className="truncate">{agentName}</h1>
-            <Chip variant="accent">{CLI_SHORT_LABELS[currentCli]}</Chip>
-            {currentModel && (
-              <Chip>
-                <span className="mono truncate max-w-[180px]">{toClaudeAlias(currentModel) ?? currentModel}</span>
-              </Chip>
-            )}
-            {streaming && (
-              <Chip variant="warn" dot>
-                live
-              </Chip>
-            )}
-            {awaitingPlanApproval && !streaming && (
-              <Chip variant="accent" dot>
-                plan ready
-              </Chip>
-            )}
-            <div className="ml-auto flex items-center gap-2">
+          <header className="chat-header" title={headerDetails || sessionId}>
+            <div className="chat-title-row">
+              <h1 className="truncate">{agentName}</h1>
+              <Chip variant="accent">{CLI_SHORT_LABELS[currentCli]}</Chip>
+              {currentModel && (
+                <Chip className="chat-model-chip">
+                  <span className="mono truncate">{toClaudeAlias(currentModel) ?? currentModel}</span>
+                </Chip>
+              )}
+              {streaming && (
+                <Chip variant="warn" dot>
+                  live
+                </Chip>
+              )}
+              {awaitingPlanApproval && !streaming && (
+                <Chip variant="accent" dot>
+                  plan ready
+                </Chip>
+              )}
+            </div>
+            <div className="chat-header-actions">
               {agentId && agentId !== "__adhoc__" && (
                 <Link href={`/agents/${encodeURIComponent(agentId)}/edit`}>
                   <Button size="sm" variant="ghost">
@@ -762,20 +769,6 @@ export function ChatView({
                 Panel
               </Button>
             </div>
-            {meta.agent_snapshot?.description && (
-              <p className="text-[12px] text-muted mt-1 truncate" style={{ flexBasis: "100%" }}>
-                {meta.agent_snapshot.description}
-              </p>
-            )}
-            {meta.agent_snapshot?.cwd && (
-              <p className="text-[11px] text-subtle mt-0.5 flex items-center gap-1 truncate" style={{ flexBasis: "100%" }} title={meta.agent_snapshot.cwd}>
-                <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
-                </svg>
-                <span className="mono truncate">{meta.agent_snapshot.cwd}</span>
-              </p>
-            )}
-            <div className="session-id">{sessionId}</div>
           </header>
 
           <div className="chat-stream" data-shell="chat-scroll">
