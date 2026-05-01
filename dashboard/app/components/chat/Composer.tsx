@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  forwardRef, useCallback, useEffect, useImperativeHandle,
+  forwardRef, memo, useCallback, useEffect, useImperativeHandle,
   useRef, useState,
 } from "react";
 import type { CLI } from "@/lib/runs";
@@ -81,7 +81,7 @@ export type ComposerHandle = {
   clearPendingFiles: () => void;
 };
 
-export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
+const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
   { currentCli, currentModel, currentReasoningEffort, currentMcpTools, availableClis, agentCliModels, agentCliReasoningEfforts, disabled, onSend, onStop, placeholder, variant = "sticky", sendLabel, header, sessionId, attachmentsEnabled = true, cwd },
   ref
 ) {
@@ -1190,3 +1190,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
     </div>
   );
 });
+
+ComposerInner.displayName = "Composer";
+
+export const Composer = memo(ComposerInner);

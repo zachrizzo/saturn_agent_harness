@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -26,6 +26,16 @@ type Props = {
   hiddenMcpImageServers?: string[];
 };
 
+const STREAM_EVENT_FLUSH_MS = 250;
+
+function streamEventKey(raw: unknown): string {
+  try {
+    return JSON.stringify(raw) ?? String(raw);
+  } catch {
+    return String(raw);
+  }
+}
+
 export function ChatView({
   sessionId,
   initialMeta,
@@ -34,6 +44,11 @@ export function ChatView({
   hiddenMcpImageServers,
 }: Props) {
   const router = useRouter();
+
+  useEffect(() => {
+    router.prefetch("/chats");
+    router.prefetch("/chats/new");
+  }, [router]);
 
   // Refresh the layout (sidebar recents) once on mount when arriving from a
   // fresh session create — the new session is in meta.json by the time we land.
@@ -61,9 +76,11 @@ export function ChatView({
   const [meta, setMeta] = useState<SessionMeta>(initialMetaWithSynthetic);
   const metaRef = useRef<SessionMeta>(initialMetaWithSynthetic);
   const [events, setEvents] = useState<StreamEvent[]>(initialEvents);
-  const seenRef = useRef(new Set(initialEvents.map((e) => JSON.stringify(e.raw))));
+  const renderedEvents = useDeferredValue(events);
+  const seenRef = useRef(new Set(initialEvents.map((e) => streamEventKey(e.raw))));
   const pendingEventsRef = useRef<StreamEvent[]>([]);
   const eventFlushRef = useRef<number | null>(null);
+  const sseActiveRef = useRef(false);
   const [streaming, setStreaming] = useState(initialMeta.status === "running");
   const [autoScroll, setAutoScroll] = useState(true);
   const composerRef = useRef<ComposerHandle>(null);
@@ -108,12 +125,19 @@ export function ChatView({
     const pending = pendingEventsRef.current;
     if (pending.length === 0) return;
     pendingEventsRef.current = [];
-    setEvents((prev) => [...prev, ...pending]);
+    startTransition(() => {
+      setEvents((prev) => [...prev, ...pending]);
+    });
   }, []);
+
+  const scheduleEventFlush = useCallback(() => {
+    if (eventFlushRef.current !== null) return;
+    eventFlushRef.current = window.setTimeout(flushPendingEvents, STREAM_EVENT_FLUSH_MS);
+  }, [flushPendingEvents]);
 
   const cancelPendingEventFlush = useCallback(() => {
     if (eventFlushRef.current !== null) {
-      window.cancelAnimationFrame(eventFlushRef.current);
+      window.clearTimeout(eventFlushRef.current);
       eventFlushRef.current = null;
     }
     pendingEventsRef.current = [];
@@ -125,14 +149,17 @@ export function ChatView({
       setStreaming(incoming.status === "running");
     }
     cancelPendingEventFlush();
-    setEvents((prev) => {
-      if (incomingEvents.length < prev.length) return prev;
-      seenRef.current = new Set(incomingEvents.map((event) => JSON.stringify(event.raw)));
-      return incomingEvents;
+    startTransition(() => {
+      setEvents((prev) => {
+        if (incomingEvents.length < prev.length) return prev;
+        seenRef.current = new Set(incomingEvents.map((event) => streamEventKey(event.raw)));
+        return incomingEvents;
+      });
     });
   }, [cancelPendingEventFlush]);
 
   const refreshSessionSnapshot = useCallback(async () => {
+    if (sseActiveRef.current && metaRef.current.status === "running") return;
     try {
       const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
         cache: "no-store",
@@ -161,6 +188,10 @@ export function ChatView({
     );
     let closedByTerminalMeta = false;
 
+    es.onopen = () => {
+      sseActiveRef.current = true;
+    };
+
     es.onmessage = (e) => {
       let obj: Record<string, unknown>;
       try {
@@ -175,23 +206,24 @@ export function ChatView({
         // optimistic state, run-turn.sh hasn't written the new turn yet.
         if (incoming.turns.length < metaRef.current.turns.length) return;
         closedByTerminalMeta = true;
+        sseActiveRef.current = false;
+        flushPendingEvents();
         setMeta(incoming);
         setStreaming(false);
-        router.refresh();
+        startTransition(() => router.refresh());
         es.close();
         return;
       }
-      const key = JSON.stringify(obj);
+      const key = e.data;
       if (seenRef.current.has(key)) return;
       seenRef.current.add(key);
       const parsed = toEvents(obj);
       if (parsed.length === 0) return;
       pendingEventsRef.current.push(...parsed);
-      if (eventFlushRef.current === null) {
-        eventFlushRef.current = window.requestAnimationFrame(flushPendingEvents);
-      }
+      scheduleEventFlush();
     };
     es.onerror = () => {
+      sseActiveRef.current = false;
       void refreshSessionSnapshot();
       if (!closedByTerminalMeta && metaRef.current.status === "running") {
         return;
@@ -201,10 +233,11 @@ export function ChatView({
     };
 
     return () => {
+      sseActiveRef.current = false;
       es.close();
       cancelPendingEventFlush();
     };
-  }, [cancelPendingEventFlush, flushPendingEvents, refreshSessionSnapshot, router, sessionId, meta.status]);
+  }, [cancelPendingEventFlush, flushPendingEvents, refreshSessionSnapshot, router, scheduleEventFlush, sessionId, meta.status]);
 
   const getChatScrollElement = useCallback(() => (
     chatBottomRef.current?.closest<HTMLElement>('[data-shell="chat-scroll"]')
@@ -244,7 +277,7 @@ export function ChatView({
     if (streaming && autoScroll) {
       scrollToEnd("auto");
     }
-  }, [events.length, streaming, autoScroll, scrollToEnd]);
+  }, [renderedEvents.length, streaming, autoScroll, scrollToEnd]);
 
   // Track whether the user is near the bottom — shows/hides the scroll-to-bottom button
   const [atBottom, setAtBottom] = useState(true);
@@ -303,13 +336,13 @@ export function ChatView({
   // Collect tool events (order preserved) for the inspector's summary.
   const tools = useMemo<InspectorTool[]>(() => {
     const results = new Map<string, { content: unknown; isError: boolean }>();
-    for (const ev of events) {
+    for (const ev of renderedEvents) {
       if (ev.kind === "tool_result") {
         results.set(ev.toolUseId, { content: ev.content, isError: ev.isError });
       }
     }
     const out: InspectorTool[] = [];
-    for (const ev of events) {
+    for (const ev of renderedEvents) {
       if (ev.kind !== "tool_use") continue;
       const res = results.get(ev.id);
       out.push({
@@ -321,7 +354,7 @@ export function ChatView({
       });
     }
     return out;
-  }, [events]);
+  }, [renderedEvents]);
 
   // Auto-select the latest failed tool while streaming so errors surface immediately.
   useEffect(() => {
@@ -340,19 +373,19 @@ export function ChatView({
     setActiveTool(refreshed);
   }, [tools, activeToolId]);
 
-  const tokens = useMemo(() => getTokenBreakdown(events), [events]);
+  const tokens = useMemo(() => getTokenBreakdown(renderedEvents), [renderedEvents]);
   const runningTools = useMemo(() => tools.filter((tool) => tool.status === "run"), [tools]);
   const streamActivityLabel = useMemo(() => {
     const latestTool = [...runningTools].reverse()[0];
     if (latestTool) return `Running ${latestTool.name}`;
-    if (events.length > 0) {
-      const latest = events[events.length - 1];
+    if (renderedEvents.length > 0) {
+      const latest = renderedEvents[renderedEvents.length - 1];
       if (latest.kind === "assistant_text") return "Receiving answer";
       if (latest.kind === "thinking") return "Reasoning";
       if (latest.kind === "tool_result") return "Processing tool result";
     }
     return "Waiting for first token";
-  }, [events, runningTools]);
+  }, [renderedEvents, runningTools]);
   const streamActivityDetail = useMemo(() => {
     if (runningTools.length > 0) {
       return `${runningTools.length} tool${runningTools.length === 1 ? "" : "s"} active`;
@@ -361,8 +394,8 @@ export function ChatView({
   }, [events.length, runningTools.length]);
 
   const chunks = useMemo<TurnChunk[]>(() => {
-    return buildTurnChunks(meta, events);
-  }, [events, meta.turns, meta.status]);
+    return buildTurnChunks(meta, renderedEvents);
+  }, [renderedEvents, meta.turns, meta.status]);
 
   const awaitingPlanApproval = meta.plan_mode?.status === "awaiting_approval";
 
@@ -396,7 +429,7 @@ export function ChatView({
     // the atTurn-th result (exclusive of subsequent events).
     setEvents((prev) => {
       if (atTurn === 0) {
-        seenRef.current = new Set();
+        seenRef.current = new Set<string>();
         return [];
       }
       let resultsSeen = 0;
@@ -408,7 +441,7 @@ export function ChatView({
         }
       }
       const kept = prev.slice(0, cutIdx);
-      seenRef.current = new Set(kept.map((e) => JSON.stringify(e.raw)));
+      seenRef.current = new Set(kept.map((e) => streamEventKey(e.raw)));
       return kept;
     });
 
@@ -461,7 +494,7 @@ export function ChatView({
     composerRef.current?.insertText(text);
   }, []);
 
-  const stopGeneration = async () => {
+  const stopGeneration = useCallback(async () => {
     try {
       await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/abort`, { method: "POST" });
       await refreshSessionSnapshot();
@@ -469,9 +502,9 @@ export function ChatView({
       setStreaming(false);
       setMeta((m) => ({ ...m, status: "failed" }));
     }
-  };
+  }, [refreshSessionSnapshot, sessionId]);
 
-  const sendMessage = async (
+  const sendMessage = useCallback(async (
     message: string,
     cli: CLI,
     model?: string,
@@ -520,7 +553,7 @@ export function ChatView({
       setStreaming(false);
       alert(e instanceof Error ? e.message : "Failed to send");
     }
-  };
+  }, [sessionId]);
 
   const approvePlan = () => {
     void sendMessage(
@@ -552,13 +585,15 @@ export function ChatView({
   const agentCliModels = snap?.models;
   const agentCliReasoningEfforts = snap?.reasoningEfforts;
 
-  const toolSelection = {
+  const selectInspectorTool = useCallback((t: InspectorTool) => {
+    setActiveToolId(t.id);
+    setActiveTool(t);
+  }, []);
+
+  const toolSelection = useMemo(() => ({
     activeId: activeToolId,
-    select: (t: InspectorTool) => {
-      setActiveToolId(t.id);
-      setActiveTool(t);
-    },
-  };
+    select: selectInspectorTool,
+  }), [activeToolId, selectInspectorTool]);
 
   return (
     <ToolSelectionProvider value={toolSelection}>
@@ -646,7 +681,7 @@ export function ChatView({
               return (
                 <div
                   key={chunk.turnIndex}
-                  className="space-y-2"
+                  className={`chat-turn space-y-2 ${chunk.streaming ? "chat-turn-live" : ""}`.trim()}
                   ref={(el) => {
                     if (el && chunk.turnIndex >= 0) turnRefs.current.set(chunk.turnIndex, el);
                   }}
@@ -779,7 +814,7 @@ export function ChatView({
           activeTool={activeTool}
           tools={tools}
           tokens={tokens}
-          events={events}
+          events={renderedEvents}
           width={inspectorWidth}
           onWidthChange={setInspectorWidth}
           referencedFiles={referencedFiles}

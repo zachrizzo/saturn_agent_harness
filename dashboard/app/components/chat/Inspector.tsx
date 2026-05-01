@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -675,7 +675,7 @@ function KVRow({ label, value }: { label: string; value?: string | null }) {
   );
 }
 
-function JsonBlock({ value, error }: { value: unknown; error?: boolean }) {
+const JsonBlock = memo(function JsonBlock({ value, error }: { value: unknown; error?: boolean }) {
   const text = value === undefined || value === null ? "" : toJsonString(value);
   if (!text) return <span className="text-[11px] text-subtle italic">—</span>;
   return (
@@ -683,7 +683,7 @@ function JsonBlock({ value, error }: { value: unknown; error?: boolean }) {
       {text}
     </pre>
   );
-}
+});
 
 function GitStatusBadge({ change }: { change: GitChange }) {
   const label = change.untracked ? "new" : change.status.trim() || change.status;
@@ -809,7 +809,7 @@ function FileTree({
   );
 }
 
-export function Inspector({
+export const Inspector = memo(function Inspector({
   session,
   activeTool,
   tools,
@@ -851,7 +851,8 @@ export function Inspector({
   const xtermResizeListenerRef = useRef<IDisposable | null>(null);
   const pendingPtyDataRef = useRef("");
   const latestTurn = session.turns.at(-1);
-  const fileRefreshKey = `${events.length}:${session.status}:${latestTurn?.finished_at ?? ""}`;
+  const latestTurnFinishedAt = latestTurn?.finished_at ?? "";
+  const fileRefreshKey = `${tab === "files" ? events.length : 0}:${session.status}:${latestTurnFinishedAt}`;
 
   const startResize = (ev: ReactPointerEvent<HTMLButtonElement>) => {
     ev.preventDefault();
@@ -1055,7 +1056,7 @@ export function Inspector({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [events.length, session.session_id, session.status]);
+  }, [session.session_id, session.status]);
 
   const createInspectorTerminal = async () => {
     const cwd = terminalCwd.trim();
@@ -1268,8 +1269,11 @@ export function Inspector({
   }, [selectedTerminal?.id, selectedTerminal?.source]);
 
   const files = useMemo(
-    () => collectInspectableFiles(tools, events, session, referencedFiles),
-    [tools, events, session, referencedFiles],
+    () => {
+      if (session.status === "running" && tab !== "files") return referencedFiles;
+      return collectInspectableFiles(tools, events, session, referencedFiles);
+    },
+    [tools, events, session, referencedFiles, tab],
   );
   const gitFiles = gitChanges.status === "ok" ? gitChanges.files : [];
   const { root: fileTreeRoot } = useMemo(() => buildFilePathTree(files), [files]);
@@ -1323,7 +1327,7 @@ export function Inspector({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [events.length, session.session_id, session.status]);
+  }, [latestTurnFinishedAt, session.session_id, session.status]);
 
   const fileTabCount = files.length + gitFiles.length;
   const showGitChanges = filesFilter !== "files";
@@ -1859,4 +1863,4 @@ export function Inspector({
       )}
     </aside>
   );
-}
+});

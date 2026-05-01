@@ -906,6 +906,14 @@ function MarkdownArticle({
   );
 }
 
+function PlainTextArticle({ text }: { text: string }) {
+  return (
+    <article className="prose-dashboard leading-relaxed whitespace-pre-wrap">
+      {text}
+    </article>
+  );
+}
+
 function PlanProposal({
   text,
   sessionId,
@@ -1082,12 +1090,16 @@ function AssistantBlock({
                 />
               )
               : (
-                <MarkdownArticle
-                  key={`${index}-text`}
-                  text={segment.text}
-                  sessionId={sessionId}
-                  onOpenFile={onOpenFile}
-                />
+                streaming ? (
+                  <PlainTextArticle key={`${index}-text`} text={segment.text} />
+                ) : (
+                  <MarkdownArticle
+                    key={`${index}-text`}
+                    text={segment.text}
+                    sessionId={sessionId}
+                    onOpenFile={onOpenFile}
+                  />
+                )
               )
           ))}
         </div>
