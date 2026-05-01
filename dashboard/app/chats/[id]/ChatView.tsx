@@ -80,6 +80,7 @@ export function ChatView({
   const seenRef = useRef(new Set(initialEvents.map((e) => streamEventKey(e.raw))));
   const pendingEventsRef = useRef<StreamEvent[]>([]);
   const eventFlushRef = useRef<number | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
   const sseActiveRef = useRef(false);
   const [streaming, setStreaming] = useState(initialMeta.status === "running");
   const [autoScroll, setAutoScroll] = useState(true);
@@ -143,6 +144,30 @@ export function ChatView({
     pendingEventsRef.current = [];
   }, []);
 
+  const pauseLiveUpdatesForNavigation = useCallback(() => {
+    sseActiveRef.current = false;
+    eventSourceRef.current?.close();
+    eventSourceRef.current = null;
+    cancelPendingEventFlush();
+  }, [cancelPendingEventFlush]);
+
+  useEffect(() => {
+    const onInternalNavigation = (event: PointerEvent) => {
+      const target = event.target as Element | null;
+      const anchor = target?.closest?.("a[href]") as HTMLAnchorElement | null;
+      if (!anchor) return;
+      const href = anchor.getAttribute("href") ?? "";
+      if (!href.startsWith("/") || href.startsWith("//") || href.startsWith("/api/")) return;
+
+      const nextUrl = new URL(href, window.location.origin);
+      if (nextUrl.pathname === window.location.pathname && nextUrl.search === window.location.search) return;
+      pauseLiveUpdatesForNavigation();
+    };
+
+    document.addEventListener("pointerdown", onInternalNavigation, true);
+    return () => document.removeEventListener("pointerdown", onInternalNavigation, true);
+  }, [pauseLiveUpdatesForNavigation]);
+
   const applySessionSnapshot = useCallback((incoming: SessionMeta, incomingEvents: StreamEvent[]) => {
     if (incoming.turns.length >= metaRef.current.turns.length) {
       setMeta(incoming);
@@ -186,6 +211,7 @@ export function ChatView({
     const es = new EventSource(
       `/api/sessions/${encodeURIComponent(sessionId)}/stream`
     );
+    eventSourceRef.current = es;
     let closedByTerminalMeta = false;
 
     es.onopen = () => {
@@ -212,6 +238,7 @@ export function ChatView({
         setStreaming(false);
         startTransition(() => router.refresh());
         es.close();
+        if (eventSourceRef.current === es) eventSourceRef.current = null;
         return;
       }
       const key = e.data;
@@ -229,12 +256,14 @@ export function ChatView({
         return;
       }
       es.close();
+      if (eventSourceRef.current === es) eventSourceRef.current = null;
       setStreaming(false);
     };
 
     return () => {
       sseActiveRef.current = false;
       es.close();
+      if (eventSourceRef.current === es) eventSourceRef.current = null;
       cancelPendingEventFlush();
     };
   }, [cancelPendingEventFlush, flushPendingEvents, refreshSessionSnapshot, router, scheduleEventFlush, sessionId, meta.status]);
