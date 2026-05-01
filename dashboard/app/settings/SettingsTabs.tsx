@@ -8,12 +8,14 @@ import type { Agent, CLI, Job } from "@/lib/runs";
 import type { WorkingDirectoryEntry } from "@/lib/working-directories";
 import { formatReasoningEffort } from "@/lib/models";
 import { CLI_SHORT_LABELS, DEFAULT_CLI, normalizeCli } from "@/lib/clis";
+import { Button } from "@/app/components/ui";
 
 type McpServerSummary = {
   name: string;
   type: string;
   target: string;
   envKeys: string[];
+  targets?: string[];
 };
 
 type ConfiguredPath = readonly [string, string];
@@ -75,6 +77,8 @@ export function SettingsTabs({
   configuredPaths,
 }: Props) {
   const [activeTab, setActiveTab] = useState<SettingsTabId>("defaults");
+  const [mcpAuthLaunching, setMcpAuthLaunching] = useState<string | null>(null);
+  const [mcpAuthMessages, setMcpAuthMessages] = useState<Record<string, string>>({});
   const activeLabel = useMemo(
     () => SETTINGS_TABS.find((tab) => tab.id === activeTab)?.label ?? "Settings",
     [activeTab],
@@ -95,6 +99,28 @@ export function SettingsTabs({
     const nextHash = `#${tabHash(tab)}`;
     if (window.location.hash !== nextHash) {
       window.history.replaceState(null, "", nextHash);
+    }
+  };
+
+  const launchMcpAuth = async (serverName: string) => {
+    setMcpAuthLaunching(serverName);
+    setMcpAuthMessages((prev) => ({ ...prev, [serverName]: "" }));
+    try {
+      const res = await fetch("/api/mcp/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ server: serverName }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "failed to open MCP login");
+      setMcpAuthMessages((prev) => ({ ...prev, [serverName]: "Codex MCP login window opened" }));
+    } catch (err) {
+      setMcpAuthMessages((prev) => ({
+        ...prev,
+        [serverName]: err instanceof Error ? err.message : "failed to open MCP login",
+      }));
+    } finally {
+      setMcpAuthLaunching(null);
     }
   };
 
@@ -252,6 +278,22 @@ export function SettingsTabs({
                     {server.envKeys.length > 0 ? server.envKeys.join(", ") : "none"}
                   </span>
                 </div>
+                {server.type === "remote" && (!server.targets?.length || server.targets.includes("codex")) && (
+                  <div className="mt-3 flex items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => launchMcpAuth(server.name)}
+                      disabled={mcpAuthLaunching === server.name}
+                    >
+                      {mcpAuthLaunching === server.name ? "Opening..." : "Authorize Codex"}
+                    </Button>
+                    {mcpAuthMessages[server.name] && (
+                      <span className="text-[11px] text-subtle">{mcpAuthMessages[server.name]}</span>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
           </div>

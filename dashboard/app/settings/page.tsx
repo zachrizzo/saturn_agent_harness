@@ -20,6 +20,7 @@ type McpServerSummary = {
   type: string;
   target: string;
   envKeys: string[];
+  targets: string[];
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -42,19 +43,33 @@ async function loadMcpSummaries(): Promise<McpServerSummary[]> {
   try {
     const raw = await fs.readFile(mcpConfigFile(), "utf8");
     const parsed = JSON.parse(raw);
-    const servers = isRecord(parsed?.mcpServers) ? parsed.mcpServers : isRecord(parsed) ? parsed : {};
+    const servers = isRecord(parsed?.mcpServers)
+      ? parsed.mcpServers
+      : isRecord(parsed?.servers)
+        ? parsed.servers
+        : isRecord(parsed)
+          ? parsed
+          : {};
     return Object.entries(servers)
       .flatMap(([name, rawServer]) => {
         if (!isRecord(rawServer)) return [];
         const server = rawServer;
-        const command = typeof server.command === "string" ? server.command : "";
+        const command = typeof server.command === "string"
+          ? server.command
+          : Array.isArray(server.command)
+            ? server.command.map((item) => String(item)).join(" ")
+            : "";
         const url = typeof server.url === "string" ? redactUrl(server.url) : "";
         const env = isRecord(server.env) ? server.env : {};
+        const targets = Array.isArray(server.targets)
+          ? server.targets.filter((item): item is string => typeof item === "string")
+          : [];
         return [{
           name,
-          type: url ? "remote" : "stdio",
+          type: url || server.type === "remote" ? "remote" : "stdio",
           target: url || command || "configured",
           envKeys: Object.keys(env).sort(),
+          targets,
         }];
       })
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -96,6 +111,7 @@ async function loadObservedMcpServers(limit = 100): Promise<McpServerSummary[]> 
     type: "observed",
     target: "seen in chat history",
     envKeys: [],
+    targets: [],
   }));
 }
 
@@ -141,6 +157,7 @@ export default async function SettingsPage() {
     type: "hidden",
     target: "saved image filter",
     envKeys: [],
+    targets: [],
   }));
   const mcpServers = mergeMcpServers(configuredMcpServers, observedMcpServers, hiddenOnlyServers);
 

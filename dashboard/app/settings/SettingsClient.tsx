@@ -28,6 +28,13 @@ type ClaudePersonalAuthStatus = {
   error?: string;
 };
 
+type BedrockAuthStatus = {
+  ready: boolean;
+  profile: string;
+  region: string;
+  error?: string;
+};
+
 type SettingsRecord = AppSettings & Record<string, unknown>;
 
 export function SettingsClient({ initialSettings, workingDirectories, mcpServers, awsProfiles }: Props) {
@@ -40,6 +47,10 @@ export function SettingsClient({ initialSettings, workingDirectories, mcpServers
   const [authLoading, setAuthLoading] = useState(true);
   const [authLaunching, setAuthLaunching] = useState(false);
   const [authMessage, setAuthMessage] = useState<string | null>(null);
+  const [bedrockAuthStatus, setBedrockAuthStatus] = useState<BedrockAuthStatus | null>(null);
+  const [bedrockAuthLoading, setBedrockAuthLoading] = useState(true);
+  const [bedrockAuthLaunching, setBedrockAuthLaunching] = useState(false);
+  const [bedrockAuthMessage, setBedrockAuthMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -74,6 +85,34 @@ export function SettingsClient({ initialSettings, workingDirectories, mcpServers
 
   useEffect(() => {
     void refreshClaudePersonalAuth();
+  }, []);
+
+  const refreshBedrockAuth = async () => {
+    setBedrockAuthLoading(true);
+    try {
+      const params = new URLSearchParams({
+        profile: settings.bedrockProfile,
+        region: settings.bedrockRegion,
+      });
+      const res = await fetch(`/api/bedrock/auth?${params.toString()}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "failed to check Bedrock auth");
+      setBedrockAuthStatus(data.status ?? null);
+    } catch (err) {
+      setBedrockAuthStatus({
+        ready: false,
+        profile: settings.bedrockProfile,
+        region: settings.bedrockRegion,
+        error: err instanceof Error ? err.message : "failed to check Bedrock auth",
+      });
+    } finally {
+      setBedrockAuthLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refreshBedrockAuth();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const selectedModel = useMemo(() => {
@@ -184,6 +223,29 @@ export function SettingsClient({ initialSettings, workingDirectories, mcpServers
     }
   };
 
+  const launchBedrockAuth = async () => {
+    setBedrockAuthLaunching(true);
+    setBedrockAuthMessage(null);
+    try {
+      const res = await fetch("/api/bedrock/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profile: settings.bedrockProfile,
+          region: settings.bedrockRegion,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "failed to open AWS SSO login");
+      setBedrockAuthStatus(data.status ?? bedrockAuthStatus);
+      setBedrockAuthMessage("AWS SSO login window opened");
+    } catch (err) {
+      setBedrockAuthMessage(err instanceof Error ? err.message : "failed to open AWS SSO login");
+    } finally {
+      setBedrockAuthLaunching(false);
+    }
+  };
+
   const authDetail = authLoading
     ? "Checking status"
     : authStatus?.loggedIn
@@ -191,6 +253,13 @@ export function SettingsClient({ initialSettings, workingDirectories, mcpServers
       : authStatus?.error
         ? authStatus.error
         : "Not signed in";
+  const bedrockAuthDetail = bedrockAuthLoading
+    ? "Checking status"
+    : bedrockAuthStatus?.ready
+      ? `Ready for ${bedrockAuthStatus.profile} in ${bedrockAuthStatus.region}`
+      : bedrockAuthStatus?.error
+        ? bedrockAuthStatus.error
+        : "Not authenticated";
 
   return (
     <section className="space-y-4">
@@ -245,10 +314,34 @@ export function SettingsClient({ initialSettings, workingDirectories, mcpServers
         </div>
 
         <div className="rounded-lg border border-border bg-bg-subtle p-4 space-y-3">
-          <div>
-            <div className="text-[13px] font-medium">Claude Bedrock AWS</div>
-            <div className="text-[12px] text-subtle mt-1">
-              Saturn stores the AWS profile and region only. Credentials stay in the AWS CLI.
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div className="min-w-0">
+              <div className="text-[13px] font-medium">Claude Bedrock AWS</div>
+              <div className={`text-[12px] mt-1 ${bedrockAuthStatus?.error ? "text-[var(--fail)]" : "text-subtle"}`}>
+                {bedrockAuthDetail}
+              </div>
+              {bedrockAuthMessage && (
+                <div className="text-[12px] text-subtle mt-1" aria-live="polite">
+                  {bedrockAuthMessage}
+                </div>
+              )}
+              <div className="text-[12px] text-subtle mt-1">
+                Saturn stores the AWS profile and region only. Credentials stay in the AWS CLI.
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button type="button" size="sm" variant="ghost" onClick={refreshBedrockAuth} disabled={bedrockAuthLoading}>
+                {bedrockAuthLoading ? "Checking..." : "Refresh"}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="primary"
+                onClick={launchBedrockAuth}
+                disabled={bedrockAuthLaunching}
+              >
+                {bedrockAuthLaunching ? "Opening..." : "Open AWS SSO login"}
+              </Button>
             </div>
           </div>
           <div className="grid gap-3 md:grid-cols-2">

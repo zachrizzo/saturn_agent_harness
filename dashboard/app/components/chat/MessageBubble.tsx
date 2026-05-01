@@ -2,7 +2,7 @@
 
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Children, isValidElement, useEffect, useId, useMemo, useState } from "react";
+import { Children, isValidElement, memo, useEffect, useId, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import type { StreamEvent } from "@/lib/events";
 import type { CLI } from "@/lib/runs";
@@ -41,12 +41,54 @@ type AssistantProps = {
 
 type Props = UserProps | AssistantProps;
 
-export function MessageBubble(props: Props) {
+function sameEventArray(a: StreamEvent[], b: StreamEvent[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  if (a.length === 0) return true;
+  return a[0] === b[0] && a[a.length - 1] === b[b.length - 1];
+}
+
+function sameStringArray(a?: string[], b?: string[]): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  return a.every((item, index) => item === b[index]);
+}
+
+function areMessageBubblePropsEqual(prev: Props, next: Props): boolean {
+  if (prev.kind !== next.kind) return false;
+  if (prev.kind === "user" && next.kind === "user") {
+    return (
+      prev.message === next.message &&
+      prev.cli === next.cli &&
+      prev.model === next.model &&
+      prev.reasoningEffort === next.reasoningEffort &&
+      prev.sessionId === next.sessionId &&
+      prev.turnIndex === next.turnIndex &&
+      prev.editing === next.editing &&
+      Boolean(prev.onFork) === Boolean(next.onFork) &&
+      Boolean(prev.onEdit) === Boolean(next.onEdit)
+    );
+  }
+  if (prev.kind === "assistant" && next.kind === "assistant") {
+    return (
+      prev.streaming === next.streaming &&
+      prev.liveActivity === next.liveActivity &&
+      prev.liveDetail === next.liveDetail &&
+      prev.sessionId === next.sessionId &&
+      prev.onOpenFile === next.onOpenFile &&
+      sameStringArray(prev.hiddenMcpImageServers, next.hiddenMcpImageServers) &&
+      sameEventArray(prev.events, next.events)
+    );
+  }
+  return false;
+}
+
+export const MessageBubble = memo(function MessageBubble(props: Props) {
   if (props.kind === "user") {
     return <UserBubble {...props} />;
   }
   return <AssistantBlock {...props} />;
-}
+}, areMessageBubblePropsEqual);
 
 function CopyButton({ getText }: { getText: () => string }) {
   const [copied, setCopied] = useState(false);
@@ -428,37 +470,10 @@ function LiveThinkingRow({ activity, detail }: { activity?: string; detail?: str
       aria-live="polite"
       aria-label={statusParts.join(", ")}
     >
-      <span className="live-neural-field" aria-hidden="true">
-        <svg className="live-neural-map" viewBox="0 0 120 58" preserveAspectRatio="xMidYMid meet">
-          <g className="live-neural-layer layer-back">
-            <path className="live-neural-axon axon-a" d="M6 33 C25 10 47 15 59 28 S87 50 115 27" />
-            <path className="live-neural-axon axon-b" d="M14 46 C36 30 53 51 72 31 S95 8 114 36" />
-          </g>
-          <g className="live-neural-layer layer-front">
-            <path className="live-neural-edge edge-1" d="M12 32 L31 18 L53 27 L72 12 L96 24 L112 39" />
-            <path className="live-neural-edge edge-2" d="M20 45 L53 27 L66 46 L96 24" />
-            <path className="live-neural-edge edge-3" d="M31 18 L44 7 L72 12" />
-            <path className="live-neural-edge edge-4" d="M12 32 L20 45 L66 46 L112 39" />
-            <circle className="live-neural-pulse pulse-a" r="2.8">
-              <animateMotion dur="2.05s" repeatCount="indefinite" path="M12 32 L31 18 L53 27 L72 12 L96 24 L112 39" />
-            </circle>
-            <circle className="live-neural-pulse pulse-b" r="2.4">
-              <animateMotion dur="2.7s" begin="-0.9s" repeatCount="indefinite" path="M20 45 L53 27 L66 46 L96 24" />
-            </circle>
-            <circle className="live-neural-pulse pulse-c" r="2.2">
-              <animateMotion dur="2.45s" begin="-1.35s" repeatCount="indefinite" path="M112 39 L96 24 L72 12 L44 7 L31 18" />
-            </circle>
-            <circle className="live-neural-node node-a" cx="12" cy="32" r="3.8" />
-            <circle className="live-neural-node node-b" cx="20" cy="45" r="3.2" />
-            <circle className="live-neural-node node-c" cx="31" cy="18" r="4.1" />
-            <circle className="live-neural-node node-d" cx="44" cy="7" r="2.9" />
-            <circle className="live-neural-node node-e" cx="53" cy="27" r="4.4" />
-            <circle className="live-neural-node node-f" cx="66" cy="46" r="3.2" />
-            <circle className="live-neural-node node-g" cx="72" cy="12" r="3.7" />
-            <circle className="live-neural-node node-h" cx="96" cy="24" r="4.1" />
-            <circle className="live-neural-node node-i" cx="112" cy="39" r="3.5" />
-          </g>
-        </svg>
+      <span className="live-thinking-indicator" aria-hidden="true">
+        <span className="live-thinking-dot dot-a" />
+        <span className="live-thinking-dot dot-b" />
+        <span className="live-thinking-dot dot-c" />
       </span>
       <span className="live-thinking-copy">
         <span className="live-thinking-label">Thinking</span>

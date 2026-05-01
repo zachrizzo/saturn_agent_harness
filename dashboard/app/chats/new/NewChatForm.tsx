@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { CLI, Agent } from "@/lib/runs";
 import type { ModelReasoningEffort } from "@/lib/models";
-import { Composer } from "@/app/components/chat/Composer";
+import { Composer, type ComposerHandle } from "@/app/components/chat/Composer";
 import { DirPicker } from "@/app/components/DirPicker";
 import { Input, Textarea } from "@/app/components/ui";
 import { DEFAULT_CLAUDE_ALIAS, toBedrockId } from "@/lib/claude-models";
@@ -17,6 +17,7 @@ type Props = {
 
 export function NewChatForm({ initialAgentId }: Props) {
   const router = useRouter();
+  const composerRef = useRef<ComposerHandle>(null);
   const [cwd, setCwd] = useState("");
   const [cwdTouched, setCwdTouched] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -83,6 +84,8 @@ export function NewChatForm({ initialAgentId }: Props) {
     setStarting(true);
     setError(null);
     try {
+      const pendingFiles = composerRef.current?.getPendingFiles() ?? [];
+      const initialMessage = message.trim() || (pendingFiles.length > 0 ? "Please inspect the attached file(s)." : message);
       let body: Record<string, unknown>;
 
       if (selectedAgent) {
@@ -98,7 +101,7 @@ export function NewChatForm({ initialAgentId }: Props) {
 
         body = {
           agent_id: selectedAgent.id,
-          message,
+          message: initialMessage,
           cli,
           model: model || undefined,
           mcpTools,
@@ -107,7 +110,7 @@ export function NewChatForm({ initialAgentId }: Props) {
         };
       } else {
         body = {
-          message,
+          message: initialMessage,
           mcpTools,
           adhoc_config: {
             cli,
@@ -118,17 +121,28 @@ export function NewChatForm({ initialAgentId }: Props) {
         };
       }
 
-      const res = await fetch("/api/sessions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const res = pendingFiles.length > 0
+        ? await (() => {
+            const form = new FormData();
+            form.append("payload", JSON.stringify(body));
+            pendingFiles.forEach((file) => form.append("files", file));
+            return fetch("/api/sessions", {
+              method: "POST",
+              body: form,
+            });
+          })()
+        : await fetch("/api/sessions", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
       if (!res.ok) {
         const data = await res.json().catch(() => null) as { error?: string } | null;
         throw new Error(data?.error ?? `Request failed (${res.status})`);
       }
-      const { session_id } = await res.json();
-      router.push(`/chats/${session_id}?m=${encodeURIComponent(message)}`);
+      const { session_id, message: routedMessage } = await res.json() as { session_id: string; message?: string };
+      composerRef.current?.clearPendingFiles();
+      router.push(`/chats/${session_id}?m=${encodeURIComponent(routedMessage ?? initialMessage)}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "failed");
       setStarting(false);
@@ -261,6 +275,7 @@ export function NewChatForm({ initialAgentId }: Props) {
       )}
 
       <Composer
+        ref={composerRef}
         variant="inline"
         currentCli={defaultCli}
         currentModel={defaultModel}
@@ -270,7 +285,6 @@ export function NewChatForm({ initialAgentId }: Props) {
         agentCliModels={selectedAgent?.models}
         agentCliReasoningEfforts={selectedAgent?.reasoningEfforts}
         cwd={showCwdPicker ? cwd : selectedAgent?.cwd}
-        attachmentsEnabled={false}
         disabled={starting}
         onSend={start}
         placeholder="What do you want to work on?"

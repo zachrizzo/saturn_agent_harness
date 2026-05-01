@@ -17,6 +17,7 @@ import { assertBedrockReady, isBedrockNotReadyError } from "@/lib/bedrock-auth";
 import { isBedrockCli } from "@/lib/clis";
 import { agentSupportedClis } from "@/lib/session-utils";
 import { markSessionRunnerFailed } from "@/lib/session-lifecycle";
+import { appendUploadReferences, saveSessionUploads } from "@/lib/session-uploads";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -38,6 +39,11 @@ type CreateSessionBody = {
     timeout_seconds?: number;
   };
   overrides?: SessionMeta["overrides"];
+};
+
+type CreateSessionRequest = {
+  body: CreateSessionBody;
+  files: File[];
 };
 
 function adhocAgent(config: CreateSessionBody["adhoc_config"]): Agent {
@@ -89,13 +95,29 @@ function validateSessionOverrides(overrides: CreateSessionBody["overrides"]): st
   );
 }
 
+async function readCreateSessionRequest(req: NextRequest): Promise<CreateSessionRequest> {
+  const contentType = req.headers.get("content-type") ?? "";
+  if (!contentType.toLowerCase().includes("multipart/form-data")) {
+    return { body: (await req.json()) as CreateSessionBody, files: [] };
+  }
+
+  const form = await req.formData();
+  const payload = form.get("payload");
+  if (typeof payload !== "string") {
+    throw new Error("multipart session create requires a JSON payload field");
+  }
+  const parsed = JSON.parse(payload) as CreateSessionBody;
+  const files = form.getAll("files").filter((value): value is File => value instanceof File);
+  return { body: parsed, files };
+}
+
 export async function GET() {
   const sessions = await listSessions();
   return NextResponse.json({ sessions });
 }
 
 export async function POST(req: NextRequest) {
-  const body = (await req.json()) as CreateSessionBody;
+  const { body, files } = await readCreateSessionRequest(req);
   const message = body.message?.trim();
   if (!message) {
     return NextResponse.json({ error: "message is required" }, { status: 400 });
@@ -161,12 +183,13 @@ export async function POST(req: NextRequest) {
   await fs.writeFile(path.join(dir, "stderr.log"), "", "utf8");
 
   try {
-    await spawnTurn(session_id, cli, model, message, agent, body.mcpTools, reasoningEffort);
+    const uploads = await saveSessionUploads(session_id, files);
+    const messageWithUploads = appendUploadReferences(message, uploads);
+    await spawnTurn(session_id, cli, model, messageWithUploads, agent, body.mcpTools, reasoningEffort);
+    return NextResponse.json({ session_id, message: messageWithUploads });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     await markSessionRunnerFailed(session_id, `failed to start runner: ${detail}`);
     return NextResponse.json({ error: detail }, { status: 500 });
   }
-
-  return NextResponse.json({ session_id });
 }

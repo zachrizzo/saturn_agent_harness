@@ -62,6 +62,8 @@ export function ChatView({
   const metaRef = useRef<SessionMeta>(initialMetaWithSynthetic);
   const [events, setEvents] = useState<StreamEvent[]>(initialEvents);
   const seenRef = useRef(new Set(initialEvents.map((e) => JSON.stringify(e.raw))));
+  const pendingEventsRef = useRef<StreamEvent[]>([]);
+  const eventFlushRef = useRef<number | null>(null);
   const [streaming, setStreaming] = useState(initialMeta.status === "running");
   const [autoScroll, setAutoScroll] = useState(true);
   const composerRef = useRef<ComposerHandle>(null);
@@ -101,17 +103,34 @@ export function ChatView({
   // Keep metaRef in sync for use inside SSE callbacks
   useEffect(() => { metaRef.current = meta; }, [meta]);
 
+  const flushPendingEvents = useCallback(() => {
+    eventFlushRef.current = null;
+    const pending = pendingEventsRef.current;
+    if (pending.length === 0) return;
+    pendingEventsRef.current = [];
+    setEvents((prev) => [...prev, ...pending]);
+  }, []);
+
+  const cancelPendingEventFlush = useCallback(() => {
+    if (eventFlushRef.current !== null) {
+      window.cancelAnimationFrame(eventFlushRef.current);
+      eventFlushRef.current = null;
+    }
+    pendingEventsRef.current = [];
+  }, []);
+
   const applySessionSnapshot = useCallback((incoming: SessionMeta, incomingEvents: StreamEvent[]) => {
     if (incoming.turns.length >= metaRef.current.turns.length) {
       setMeta(incoming);
       setStreaming(incoming.status === "running");
     }
+    cancelPendingEventFlush();
     setEvents((prev) => {
       if (incomingEvents.length < prev.length) return prev;
       seenRef.current = new Set(incomingEvents.map((event) => JSON.stringify(event.raw)));
       return incomingEvents;
     });
-  }, []);
+  }, [cancelPendingEventFlush]);
 
   const refreshSessionSnapshot = useCallback(async () => {
     try {
@@ -167,7 +186,10 @@ export function ChatView({
       seenRef.current.add(key);
       const parsed = toEvents(obj);
       if (parsed.length === 0) return;
-      setEvents((prev) => [...prev, ...parsed]);
+      pendingEventsRef.current.push(...parsed);
+      if (eventFlushRef.current === null) {
+        eventFlushRef.current = window.requestAnimationFrame(flushPendingEvents);
+      }
     };
     es.onerror = () => {
       void refreshSessionSnapshot();
@@ -178,8 +200,11 @@ export function ChatView({
       setStreaming(false);
     };
 
-    return () => es.close();
-  }, [refreshSessionSnapshot, router, sessionId, meta.status]);
+    return () => {
+      es.close();
+      cancelPendingEventFlush();
+    };
+  }, [cancelPendingEventFlush, flushPendingEvents, refreshSessionSnapshot, router, sessionId, meta.status]);
 
   const getChatScrollElement = useCallback(() => (
     chatBottomRef.current?.closest<HTMLElement>('[data-shell="chat-scroll"]')
@@ -217,7 +242,7 @@ export function ChatView({
   // Auto-scroll when new events arrive (while streaming AND user hasn't scrolled up)
   useEffect(() => {
     if (streaming && autoScroll) {
-      scrollToEnd("smooth");
+      scrollToEnd("auto");
     }
   }, [events.length, streaming, autoScroll, scrollToEnd]);
 

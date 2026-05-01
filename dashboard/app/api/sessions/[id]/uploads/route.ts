@@ -1,14 +1,9 @@
-import { promises as fs } from "node:fs";
-import path from "node:path";
 import { NextRequest, NextResponse } from "next/server";
-import { getSession, sessionDir } from "@/lib/runs";
+import { getSession } from "@/lib/runs";
+import { saveSessionUploads } from "@/lib/session-uploads";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-
-function safeName(name: string): string {
-  return name.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+/, "") || "attachment";
-}
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -17,16 +12,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const form = await req.formData();
   const files = form.getAll("files").filter((v): v is File => v instanceof File);
-  const uploadDir = path.join(sessionDir(id), "uploads");
-  await fs.mkdir(uploadDir, { recursive: true });
-
-  const saved = [];
-  for (const file of files) {
-    const name = `${Date.now()}-${safeName(file.name)}`;
-    const abs = path.join(uploadDir, name);
-    await fs.writeFile(abs, Buffer.from(await file.arrayBuffer()));
-    saved.push({ name: file.name, path: abs });
-  }
+  const saved = await saveSessionUploads(id, files);
 
   return NextResponse.json({ files: saved });
 }

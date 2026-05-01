@@ -228,7 +228,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
     };
   }, []);
 
-  const uploadsEnabled = attachmentsEnabled && Boolean(sessionId);
+  const uploadsEnabled = attachmentsEnabled;
 
   const uploadFiles = useCallback(async (files: File[]) => {
     if (files.length === 0) return;
