@@ -538,16 +538,36 @@ else
   build_cli_args "$CLI" "$MODEL" "$AGENT_ALLOWED_TOOLS" "$RESUME_ID" "$IS_RESUME" "$REASONING_EFFORT"
 fi
 
-# If an MCP config was generated for this session (orchestrator), pass it to Claude
-if [[ -n "${MCP_CONFIG_PATH:-}" && -f "$MCP_CONFIG_PATH" && "$ENGINE" == "claude" ]]; then
-  RUN_ARGS+=(--mcp-config "$MCP_CONFIG_PATH")
-fi
-
 # Suppress all MCPs (global ~/.claude.json, plugins, cwd .mcp.json) for
 # claude-local fast-prefill sessions. --mcp-config alone MERGES rather than
 # replaces — --strict-mcp-config is required to actually exclude them.
 if [[ "${STRICT_MCP:-}" == "1" && "$ENGINE" == "claude" ]]; then
   RUN_ARGS+=(--strict-mcp-config)
+fi
+
+# Claude Code print-mode currently reports plugin MCP servers in `claude mcp
+# list`, but does not inject them into the turn unless they are passed as MCP
+# config under their plugin-auth namespace (`plugin:<plugin>:<server>`).
+if [[ "$ENGINE" == "claude" && "${STRICT_MCP:-}" != "1" ]]; then
+  PLUGIN_MCP_CONFIG_PATH="${PLUGIN_MCP_CONFIG_PATH:-}"
+  if [[ -z "$PLUGIN_MCP_CONFIG_PATH" ]]; then
+    PLUGIN_MCP_CONFIG_PATH="$(
+      node "$AUTOMATIONS_ROOT/bin/lib/build-plugin-mcp-config.mjs" \
+        "$SESSION_DIR/plugin-mcp-config.json" \
+        2>> "$STDERR_FILE" || true
+    )"
+  fi
+fi
+
+MCP_CONFIG_ARGS=()
+if [[ -n "${MCP_CONFIG_PATH:-}" && -f "$MCP_CONFIG_PATH" && "$ENGINE" == "claude" ]]; then
+  MCP_CONFIG_ARGS+=("$MCP_CONFIG_PATH")
+fi
+if [[ -n "${PLUGIN_MCP_CONFIG_PATH:-}" && -f "$PLUGIN_MCP_CONFIG_PATH" && "$ENGINE" == "claude" ]]; then
+  MCP_CONFIG_ARGS+=("$PLUGIN_MCP_CONFIG_PATH")
+fi
+if [[ ${#MCP_CONFIG_ARGS[@]} -gt 0 ]]; then
+  RUN_ARGS+=(--mcp-config "${MCP_CONFIG_ARGS[@]}")
 fi
 
 # For claude-local sessions, write settings to a temp file to avoid shell quoting issues
