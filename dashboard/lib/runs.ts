@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { jobsFile, runsRoot, agentsFile, sessionsRoot } from "./paths";
 import { parseStreamJsonl, type StreamEvent } from "./events";
@@ -169,6 +170,14 @@ export type SessionTriagePatch = {
   tags?: string[];
 };
 
+export type SessionEventReadMode = "all" | "recent";
+
+export type SessionReadOptions = {
+  eventMode?: SessionEventReadMode;
+  recentTurns?: number;
+  recentMaxBytes?: number;
+};
+
 export type RunMeta = {
   name: string;
   slug: string;
@@ -204,6 +213,121 @@ export type RunTokenSummary = TokenUsageSummary & {
 
 function isENOENT(err: unknown): boolean {
   return (err as NodeJS.ErrnoException)?.code === "ENOENT";
+}
+
+const RECENT_SESSION_EVENT_TURNS = 4;
+const RECENT_SESSION_EVENT_MAX_BYTES = 2 * 1024 * 1024;
+const SESSION_STREAM_TAIL_CHUNK_BYTES = 256 * 1024;
+const TURN_START_MARKER = "saturn.turn_start";
+
+type SessionStreamRead = {
+  raw: string;
+  partial: boolean;
+};
+
+async function readStreamFile(streamFile: string): Promise<string> {
+  return fs.readFile(streamFile, "utf8").catch(() => "");
+}
+
+function stripPartialFirstLine(raw: string, startsAtBeginning: boolean): string {
+  if (startsAtBeginning) return raw;
+  const firstNewline = raw.indexOf("\n");
+  return firstNewline === -1 ? "" : raw.slice(firstNewline + 1);
+}
+
+function countTurnStartMarkers(raw: string): number {
+  let count = 0;
+  let idx = raw.indexOf(TURN_START_MARKER);
+  while (idx !== -1) {
+    count += 1;
+    idx = raw.indexOf(TURN_START_MARKER, idx + TURN_START_MARKER.length);
+  }
+  return count;
+}
+
+function trimToRecentTurns(raw: string, recentTurns: number): { raw: string; trimmed: boolean } {
+  const lines = raw.split("\n");
+  const turnStartLines: number[] = [];
+  lines.forEach((line, idx) => {
+    if (line.includes(TURN_START_MARKER)) turnStartLines.push(idx);
+  });
+
+  if (turnStartLines.length <= recentTurns) {
+    return { raw, trimmed: false };
+  }
+
+  const startLine = turnStartLines[turnStartLines.length - recentTurns];
+  return { raw: lines.slice(startLine).join("\n"), trimmed: true };
+}
+
+async function readRecentSessionStream(
+  streamFile: string,
+  recentTurns: number,
+  maxBytes: number,
+): Promise<SessionStreamRead> {
+  let handle: FileHandle;
+  try {
+    handle = await fs.open(streamFile, "r");
+  } catch (err) {
+    if (isENOENT(err)) return { raw: "", partial: false };
+    throw err;
+  }
+
+  try {
+    const stat = await handle.stat();
+    if (stat.size === 0) return { raw: "", partial: false };
+
+    let offset = stat.size;
+    let loadedBytes = 0;
+    const buffers: Buffer[] = [];
+    let candidate = "";
+    let candidateStart = stat.size;
+
+    while (offset > 0 && loadedBytes < maxBytes) {
+      const length = Math.min(
+        SESSION_STREAM_TAIL_CHUNK_BYTES,
+        offset,
+        maxBytes - loadedBytes,
+      );
+      offset -= length;
+      const buffer = Buffer.allocUnsafe(length);
+      const result = await handle.read(buffer, 0, length, offset);
+      buffers.unshift(result.bytesRead === length ? buffer : buffer.subarray(0, result.bytesRead));
+      loadedBytes += result.bytesRead;
+      candidateStart = offset;
+
+      const raw = Buffer.concat(buffers).toString("utf8");
+      candidate = stripPartialFirstLine(raw, candidateStart === 0);
+      if (countTurnStartMarkers(candidate) >= recentTurns) break;
+    }
+
+    if (candidateStart > 0 && countTurnStartMarkers(candidate) === 0) {
+      return { raw: await readStreamFile(streamFile), partial: false };
+    }
+
+    const trimmed = trimToRecentTurns(candidate, recentTurns);
+    return {
+      raw: trimmed.raw,
+      partial: candidateStart > 0 || trimmed.trimmed,
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readSessionStream(
+  streamFile: string,
+  options: SessionReadOptions,
+): Promise<SessionStreamRead> {
+  if (options.eventMode !== "recent") {
+    return { raw: await readStreamFile(streamFile), partial: false };
+  }
+
+  return readRecentSessionStream(
+    streamFile,
+    Math.max(1, options.recentTurns ?? RECENT_SESSION_EVENT_TURNS),
+    Math.max(SESSION_STREAM_TAIL_CHUNK_BYTES, options.recentMaxBytes ?? RECENT_SESSION_EVENT_MAX_BYTES),
+  );
 }
 
 async function readJobsFile(): Promise<{ jobs: Job[] }> {
@@ -544,8 +668,9 @@ export async function listSessionTokenSummaries(): Promise<SessionTokenSummary[]
 }
 
 export async function getSession(
-  sessionId: string
-): Promise<{ meta: SessionMeta; events: StreamEvent[]; stderr: string } | null> {
+  sessionId: string,
+  options: SessionReadOptions = {},
+): Promise<{ meta: SessionMeta; events: StreamEvent[]; stderr: string; eventsPartial: boolean } | null> {
   const dir = sessionDir(sessionId);
   const metaRaw = await fs.readFile(path.join(dir, "meta.json"), "utf8").catch(() => null);
   if (metaRaw === null || !metaRaw.trim()) return null;
@@ -557,12 +682,12 @@ export async function getSession(
   }
   normalizeSessionMeta(meta);
 
-  const [streamRaw, stderr] = await Promise.all([
-    fs.readFile(path.join(dir, "stream.jsonl"), "utf8").catch(() => ""),
+  const [stream, stderr] = await Promise.all([
+    readSessionStream(path.join(dir, "stream.jsonl"), options),
     fs.readFile(path.join(dir, "stderr.log"), "utf8").catch(() => ""),
   ]);
 
-  return { meta, events: parseStreamJsonl(streamRaw), stderr };
+  return { meta, events: parseStreamJsonl(stream.raw), stderr, eventsPartial: stream.partial };
 }
 
 function normalizeAgentCliFields(agent: Agent | undefined): void {

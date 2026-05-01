@@ -4,9 +4,10 @@ import { getSession, updateSessionMeta } from "@/lib/runs";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const session = await getSession(id);
+  const eventMode = req.nextUrl.searchParams.get("events") === "recent" ? "recent" : "all";
+  const session = await getSession(id, { eventMode });
   if (!session) return NextResponse.json({ error: "not found" }, { status: 404 });
   return NextResponse.json(session);
 }

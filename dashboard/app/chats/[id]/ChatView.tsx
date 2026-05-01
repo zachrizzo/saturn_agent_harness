@@ -1,6 +1,6 @@
 "use client";
 
-import { startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -22,11 +22,14 @@ type Props = {
   sessionId: string;
   initialMeta: SessionMeta;
   initialEvents: StreamEvent[];
+  initialEventsPartial?: boolean;
   pendingMessage?: string;
   hiddenMcpImageServers?: string[];
 };
 
 const STREAM_EVENT_FLUSH_MS = 250;
+const INITIAL_VISIBLE_TURNS = 4;
+const VISIBLE_TURN_INCREMENT = 8;
 
 function streamEventKey(raw: unknown): string {
   try {
@@ -40,6 +43,7 @@ export function ChatView({
   sessionId,
   initialMeta,
   initialEvents,
+  initialEventsPartial,
   pendingMessage,
   hiddenMcpImageServers,
 }: Props) {
@@ -76,6 +80,7 @@ export function ChatView({
   const [meta, setMeta] = useState<SessionMeta>(initialMetaWithSynthetic);
   const metaRef = useRef<SessionMeta>(initialMetaWithSynthetic);
   const [events, setEvents] = useState<StreamEvent[]>(initialEvents);
+  const [eventsPartial, setEventsPartial] = useState(Boolean(initialEventsPartial));
   const renderedEvents = useDeferredValue(events);
   const seenRef = useRef(new Set(initialEvents.map((e) => streamEventKey(e.raw))));
   const pendingEventsRef = useRef<StreamEvent[]>([]);
@@ -84,8 +89,12 @@ export function ChatView({
   const sseActiveRef = useRef(false);
   const [streaming, setStreaming] = useState(initialMeta.status === "running");
   const [autoScroll, setAutoScroll] = useState(true);
+  const [atBottom, setAtBottom] = useState(true);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const composerRef = useRef<ComposerHandle>(null);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
+  const didInitialBottomPinRef = useRef(false);
+  const preserveScrollRef = useRef<{ top: number; height: number } | null>(null);
   const [editingTurnIndex, setEditingTurnIndex] = useState<number | null>(null);
   const turnRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const [inspectorWidth, setInspectorWidth] = useState(420);
@@ -93,6 +102,7 @@ export function ChatView({
   const [referencedFiles, setReferencedFiles] = useState<string[]>([]);
   const [fileOpenRequest, setFileOpenRequest] = useState<{ path: string; requestId: number } | null>(null);
   const fileOpenRequestId = useRef(0);
+  const [visibleTurnCount, setVisibleTurnCount] = useState(INITIAL_VISIBLE_TURNS);
 
   // Tool selection — drives Inspector content.
   const [activeToolId, setActiveToolId] = useState<string | null>(null);
@@ -176,8 +186,10 @@ export function ChatView({
     cancelPendingEventFlush();
     startTransition(() => {
       setEvents((prev) => {
-        if (incomingEvents.length < prev.length) return prev;
-        seenRef.current = new Set(incomingEvents.map((event) => streamEventKey(event.raw)));
+        const incomingKeys = incomingEvents.map((event) => streamEventKey(event.raw));
+        const hasUnseenIncomingEvent = incomingKeys.some((key) => !seenRef.current.has(key));
+        if (incomingEvents.length < prev.length && !hasUnseenIncomingEvent) return prev;
+        seenRef.current = new Set(incomingKeys);
         return incomingEvents;
       });
     });
@@ -186,14 +198,16 @@ export function ChatView({
   const refreshSessionSnapshot = useCallback(async () => {
     if (sseActiveRef.current && metaRef.current.status === "running") return;
     try {
-      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+      const eventsMode = eventsPartial ? "?events=recent" : "";
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}${eventsMode}`, {
         cache: "no-store",
       });
       if (!res.ok) return;
-      const data = await res.json() as { meta: SessionMeta; events: StreamEvent[] };
+      const data = await res.json() as { meta: SessionMeta; events: StreamEvent[]; eventsPartial?: boolean };
       applySessionSnapshot(data.meta, data.events ?? []);
+      setEventsPartial(Boolean(data.eventsPartial));
     } catch {}
-  }, [applySessionSnapshot, sessionId]);
+  }, [applySessionSnapshot, eventsPartial, sessionId]);
 
   useEffect(() => {
     if (meta.status !== "running" && !streaming) return;
@@ -296,10 +310,79 @@ export function ChatView({
     scrollEl.scrollTo({ top: Math.max(0, targetHeight - scrollEl.clientHeight), behavior });
   }, [getChatScrollElement]);
 
-  // Jump to bottom on first mount (instant).
-  useEffect(() => {
-    scrollToEnd();
-  }, [scrollToEnd]);
+  const chunks = useMemo<TurnChunk[]>(() => {
+    return buildTurnChunks(meta, renderedEvents);
+  }, [renderedEvents, meta.turns, meta.status]);
+
+  const hiddenTurnCount = Math.max(0, chunks.length - visibleTurnCount);
+  const visibleChunks = useMemo(
+    () => chunks.slice(hiddenTurnCount),
+    [chunks, hiddenTurnCount],
+  );
+
+  const loadEarlierTurns = useCallback(async () => {
+    if (historyLoading) return;
+    const scrollEl = getChatScrollElement();
+    preserveScrollRef.current = {
+      top: scrollEl.scrollTop,
+      height: scrollEl.scrollHeight,
+    };
+    let shouldRevealEarlierTurns = true;
+    if (eventsPartial) {
+      shouldRevealEarlierTurns = false;
+      setHistoryLoading(true);
+      try {
+        const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}?events=all`, {
+          cache: "no-store",
+        });
+        if (res.ok) {
+          const data = await res.json() as { meta: SessionMeta; events: StreamEvent[]; eventsPartial?: boolean };
+          applySessionSnapshot(data.meta, data.events ?? []);
+          setEventsPartial(Boolean(data.eventsPartial));
+          shouldRevealEarlierTurns = true;
+        }
+      } catch {
+        shouldRevealEarlierTurns = false;
+      } finally {
+        setHistoryLoading(false);
+      }
+    }
+    if (shouldRevealEarlierTurns) {
+      setVisibleTurnCount((current) => current + VISIBLE_TURN_INCREMENT);
+    } else {
+      preserveScrollRef.current = null;
+    }
+  }, [applySessionSnapshot, eventsPartial, getChatScrollElement, historyLoading, sessionId]);
+
+  useLayoutEffect(() => {
+    const snapshot = preserveScrollRef.current;
+    if (!snapshot) return;
+    preserveScrollRef.current = null;
+    const scrollEl = getChatScrollElement();
+    scrollEl.scrollTop = Math.max(0, scrollEl.scrollHeight - snapshot.height + snapshot.top);
+  }, [getChatScrollElement, visibleChunks.length]);
+
+  // Long transcripts continue laying out for a few frames. Keep the first open
+  // pinned to the latest turn until the bottom sentinel has settled.
+  useLayoutEffect(() => {
+    if (didInitialBottomPinRef.current) return;
+    if (chunks.length === 0 && !pendingMessage) return;
+    didInitialBottomPinRef.current = true;
+    setAutoScroll(true);
+    setAtBottom(true);
+    scrollToEnd("auto");
+
+    const rafOne = window.requestAnimationFrame(() => scrollToEnd("auto"));
+    const rafTwo = window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => scrollToEnd("auto"));
+    });
+    const timers = [80, 240, 700].map((delay) => window.setTimeout(() => scrollToEnd("auto"), delay));
+    return () => {
+      window.cancelAnimationFrame(rafOne);
+      window.cancelAnimationFrame(rafTwo);
+      timers.forEach(window.clearTimeout);
+    };
+  }, [chunks.length, pendingMessage, scrollToEnd]);
 
   // Auto-scroll when new events arrive (while streaming AND user hasn't scrolled up)
   useEffect(() => {
@@ -309,7 +392,6 @@ export function ChatView({
   }, [renderedEvents.length, streaming, autoScroll, scrollToEnd]);
 
   // Track whether the user is near the bottom — shows/hides the scroll-to-bottom button
-  const [atBottom, setAtBottom] = useState(true);
   useEffect(() => {
     const scrollEl = getChatScrollElement();
     const onScroll = () => {
@@ -422,10 +504,6 @@ export function ChatView({
     return `${events.length.toLocaleString()} event${events.length === 1 ? "" : "s"}`;
   }, [events.length, runningTools.length]);
 
-  const chunks = useMemo<TurnChunk[]>(() => {
-    return buildTurnChunks(meta, renderedEvents);
-  }, [renderedEvents, meta.turns, meta.status]);
-
   const awaitingPlanApproval = meta.plan_mode?.status === "awaiting_approval";
 
   const doFork = async (message: string, atTurn?: number) => {
@@ -492,6 +570,9 @@ export function ChatView({
   };
 
   const editFromMessage = (message: string, turnIndex: number) => {
+    if (!turnRefs.current.has(turnIndex)) {
+      setVisibleTurnCount((current) => Math.max(current, chunks.length - turnIndex));
+    }
     setEditingTurnIndex(turnIndex);
     composerRef.current?.setDraft(message);
     // Scroll to that turn bubble
@@ -703,8 +784,17 @@ export function ChatView({
                 Send a message to start the conversation.
               </div>
             )}
-            {chunks.map((chunk, idx) => {
-              const prevCli = idx > 0 ? chunks[idx - 1].cli : null;
+            {hiddenTurnCount > 0 && (
+              <div className="chat-history-gate">
+                <Button size="sm" variant="ghost" disabled={historyLoading} onClick={loadEarlierTurns}>
+                  {historyLoading ? "Loading..." : `Load ${Math.min(VISIBLE_TURN_INCREMENT, hiddenTurnCount)} earlier`}
+                </Button>
+                <span>{hiddenTurnCount.toLocaleString()} older turn{hiddenTurnCount === 1 ? "" : "s"} hidden</span>
+              </div>
+            )}
+            {visibleChunks.map((chunk) => {
+              const prevChunk = chunks.find((candidate) => candidate.turnIndex === chunk.turnIndex - 1);
+              const prevCli = prevChunk?.cli ?? null;
               const showCliTransition = chunk.turnIndex > 0 && chunk.cli !== prevCli;
 
               return (
