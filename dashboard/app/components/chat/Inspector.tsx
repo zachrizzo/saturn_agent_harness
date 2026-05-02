@@ -69,6 +69,7 @@ const TERMINAL_DETAIL_MIN_HEIGHT = 220;
 const TERMINAL_LIST_MIN_HEIGHT = 140;
 const INSPECTOR_TOP_OFFSET = 48;
 const INSPECTOR_TAB_BAR_HEIGHT = 40;
+const RUNNING_TOOL_LIST_LIMIT = 160;
 
 function terminalDetailMaxHeight(): number {
   if (typeof window === "undefined") return 520;
@@ -853,6 +854,14 @@ export const Inspector = memo(function Inspector({
   const latestTurn = session.turns.at(-1);
   const latestTurnFinishedAt = latestTurn?.finished_at ?? "";
   const fileRefreshKey = `${tab === "files" ? events.length : 0}:${session.status}:${latestTurnFinishedAt}`;
+  const visibleTools = useMemo(() => {
+    if (session.status !== "running" || tools.length <= RUNNING_TOOL_LIST_LIMIT) return tools;
+    const recent = tools.slice(-RUNNING_TOOL_LIST_LIMIT);
+    if (!selectedId || recent.some((tool) => tool.id === selectedId)) return recent;
+    const selected = tools.find((tool) => tool.id === selectedId);
+    return selected ? [selected, ...recent] : recent;
+  }, [session.status, selectedId, tools]);
+  const hiddenToolCount = Math.max(0, tools.length - visibleTools.length);
 
   const startResize = (ev: ReactPointerEvent<HTMLButtonElement>) => {
     ev.preventDefault();
@@ -997,9 +1006,9 @@ export const Inspector = memo(function Inspector({
   // Auto-select first tool when switching to tool tab
   useEffect(() => {
     if (tab === "tool" && !selectedId && tools.length > 0) {
-      setSelectedId(tools[0].id);
+      setSelectedId((session.status === "running" ? tools[tools.length - 1] : tools[0]).id);
     }
-  }, [tab, tools.length]);
+  }, [session.status, tab, tools, selectedId]);
 
   const selectedTool = useMemo(
     () => tools.find((t) => t.id === selectedId) ?? activeTool ?? null,
@@ -1007,10 +1016,10 @@ export const Inspector = memo(function Inspector({
   );
 
   const toolTerminals = useMemo(
-    () => tools
+    () => visibleTools
       .filter(isBashInspectorTool)
       .map((tool) => buildTerminalRecordFromTool(session, tool)),
-    [session, tools],
+    [session, visibleTools],
   );
   const relatedTerminals = useMemo(
     () => mergeTerminalRecords(sessionTerminals, toolTerminals),
@@ -1415,7 +1424,14 @@ export const Inspector = memo(function Inspector({
             <>
               {/* Tool list */}
               <div className="insp-tool-list">
-                {tools.map((t) => (
+                {hiddenToolCount > 0 && (
+                  <div className="insp-tool-row insp-tool-row-muted">
+                    <span className="insp-tool-name">
+                      {hiddenToolCount.toLocaleString()} older tools hidden while streaming
+                    </span>
+                  </div>
+                )}
+                {visibleTools.map((t) => (
                   <button
                     key={t.id}
                     type="button"

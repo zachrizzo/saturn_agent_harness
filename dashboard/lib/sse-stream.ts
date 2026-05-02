@@ -28,11 +28,37 @@ export type TailSseOptions = {
    * Fire-and-forget — errors are swallowed so they never affect the SSE stream.
    */
   onRawLine?: (line: string) => void;
+  /**
+   * Start tailing from the current end of the stream file. New bytes appended
+   * after the connection opens are still replayed during the running grace
+   * period, but historical transcript bytes are skipped.
+   */
+  startAtEnd?: boolean;
+  /**
+   * Start after this many completed turn result records. This avoids sending
+   * long historical transcripts back to the browser while still replaying any
+   * current-turn bytes that were written before the SSE connection opened.
+   */
+  startAfterResultCount?: number;
+  /** Start replay at the saturn.turn_start marker for this turn id. */
+  startAtTurnId?: string;
+  /** Start replay at the turn immediately after this saturn.turn_start marker. */
+  startAfterTurnId?: string;
 };
 
 /** Creates a Response with SSE headers that tails `streamFile` and watches `metaFile`. */
 export function tailSseResponse(opts: TailSseOptions): Response {
-  const { streamFile, metaFile, liveTail = true, keepOpenStatuses = [], onRawLine } = opts;
+  const {
+    streamFile,
+    metaFile,
+    liveTail = true,
+    keepOpenStatuses = [],
+    onRawLine,
+    startAtEnd = false,
+    startAfterResultCount,
+    startAtTurnId,
+    startAfterTurnId,
+  } = opts;
   const encoder = new TextEncoder();
 
   const body = new ReadableStream({
@@ -74,6 +100,66 @@ export function tailSseResponse(opts: TailSseOptions): Response {
       // reads (and the follow-mode tail) resume without skipping or duplicating.
       let byteOffset = 0;
       let pendingPartial = "";
+
+      function byteOffsetAfterResultCount(resultCount: number): number | null {
+        if (!Number.isFinite(resultCount) || resultCount <= 0) return 0;
+        try {
+          const buf = fs.readFileSync(streamFile);
+          let offset = 0;
+          let seen = 0;
+          while (offset < buf.length) {
+            const newline = buf.indexOf(0x0a, offset);
+            const lineEnd = newline === -1 ? buf.length : newline;
+            const line = buf.subarray(offset, lineEnd).toString("utf8");
+            if (/"type"\s*:\s*"(result|turn\.completed|step_finish)"/.test(line)) {
+              seen += 1;
+              if (seen >= resultCount) return newline === -1 ? lineEnd : newline + 1;
+            }
+            if (newline === -1) break;
+            offset = newline + 1;
+          }
+        } catch {}
+        return null;
+      }
+
+      function lineHasTurnStart(line: string): boolean {
+        return /"type"\s*:\s*"saturn\.turn_start"/.test(line);
+      }
+
+      function lineHasTurnId(line: string, turnId: string): boolean {
+        try {
+          const obj = JSON.parse(line) as { turn_id?: unknown };
+          return obj.turn_id === turnId;
+        } catch {
+          return false;
+        }
+      }
+
+      function byteOffsetForTurnMarker(turnId: string, mode: "at" | "after"): number | null {
+        if (!turnId) return null;
+        try {
+          const buf = fs.readFileSync(streamFile);
+          let offset = 0;
+          let found = false;
+          while (offset < buf.length) {
+            const lineStart = offset;
+            const newline = buf.indexOf(0x0a, offset);
+            const lineEnd = newline === -1 ? buf.length : newline;
+            const line = buf.subarray(lineStart, lineEnd).toString("utf8");
+            if (lineHasTurnStart(line)) {
+              if (found) return lineStart;
+              if (lineHasTurnId(line, turnId)) {
+                if (mode === "at") return lineStart;
+                found = true;
+              }
+            }
+            if (newline === -1) break;
+            offset = newline + 1;
+          }
+          if (found && mode === "after") return buf.length;
+        } catch {}
+        return null;
+      }
 
       function emitBytes(buf: Buffer) {
         const text = pendingPartial + buf.toString("utf8");
@@ -140,6 +226,26 @@ export function tailSseResponse(opts: TailSseOptions): Response {
       }
 
       function startTail() {
+        const turnOffset = startAtTurnId
+          ? byteOffsetForTurnMarker(startAtTurnId, "at")
+          : startAfterTurnId
+            ? byteOffsetForTurnMarker(startAfterTurnId, "after")
+            : null;
+        const afterResults = turnOffset === null && typeof startAfterResultCount === "number"
+          ? byteOffsetAfterResultCount(startAfterResultCount)
+          : null;
+        if (turnOffset !== null) {
+          byteOffset = turnOffset;
+        } else if (afterResults !== null) {
+          byteOffset = afterResults;
+        } else if (startAtEnd) {
+          try {
+            byteOffset = fs.statSync(streamFile).size;
+          } catch {
+            byteOffset = 0;
+          }
+        }
+
         // Replay whatever is already on disk.
         replayUpToEnd();
 

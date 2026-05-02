@@ -26,16 +26,100 @@ type Props = {
   pendingMessage?: string;
   hiddenMcpImageServers?: string[];
 };
+type SseStartOverride =
+  | { mode: "afterTurnId"; turnId: string }
+  | { mode: "afterTurns"; count: number };
 
 const STREAM_EVENT_FLUSH_MS = 250;
 const INITIAL_VISIBLE_TURNS = 4;
 const VISIBLE_TURN_INCREMENT = 8;
 
-function streamEventKey(raw: unknown): string {
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function stableValueKey(value: unknown): string {
+  let text: string;
   try {
-    return JSON.stringify(raw) ?? String(raw);
+    text = JSON.stringify(value) ?? String(value);
   } catch {
-    return String(raw);
+    text = String(value);
+  }
+
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${text.length}:${(hash >>> 0).toString(36)}`;
+}
+
+function stringField(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function rawItem(event: StreamEvent): Record<string, unknown> {
+  return asRecord(asRecord(event.raw).item);
+}
+
+function rawMessage(event: StreamEvent): Record<string, unknown> {
+  return asRecord(asRecord(event.raw).message);
+}
+
+function rawType(event: StreamEvent): string {
+  const raw = asRecord(event.raw);
+  return stringField(raw, "type") ?? event.kind;
+}
+
+function rawSubtype(event: StreamEvent): string {
+  return stringField(asRecord(event.raw), "subtype") ?? "";
+}
+
+function rawItemIdentity(event: StreamEvent): string | undefined {
+  const item = rawItem(event);
+  const id = stringField(item, "id");
+  if (!id) return undefined;
+  return `item:${id}:${rawType(event)}:${stringField(item, "status") ?? ""}`;
+}
+
+function turnIdFromMetaTurn(turn: SessionMeta["turns"][number] | undefined): string | undefined {
+  const value = (turn as Record<string, unknown> | undefined)?.turn_id;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function streamEventKey(event: StreamEvent): string {
+  const itemIdentity = rawItemIdentity(event);
+  const raw = asRecord(event.raw);
+  const parent = "parentToolUseId" in event ? event.parentToolUseId ?? "" : "";
+
+  switch (event.kind) {
+    case "tool_use":
+      return event.id
+        ? `tool_use:${parent}:${event.id}:${event.name}`
+        : `tool_use:${parent}:${itemIdentity ?? stableValueKey(event.input)}:${event.name}`;
+    case "tool_result":
+      return itemIdentity
+        ? `tool_result:${parent}:${event.toolUseId}:${itemIdentity}:${event.isError ? "err" : "ok"}`
+        : `tool_result:${parent}:${event.toolUseId}:${rawType(event)}:${event.isError ? "err" : "ok"}:${stableValueKey(event.content)}`;
+    case "assistant_text":
+    case "plan_text":
+    case "thinking":
+      return itemIdentity
+        ? `${event.kind}:${itemIdentity}`
+        : `${event.kind}:${stringField(rawMessage(event), "id") ?? ""}:${rawType(event)}:${stableValueKey(event.text)}`;
+    case "todo_list":
+      return `${event.kind}:${itemIdentity ?? ""}:${stableValueKey(event.items)}`;
+    case "result": {
+      const resultId = stringField(raw, "uuid") ?? stringField(raw, "turn_id") ?? stableValueKey(event.raw);
+      return `result:${resultId}:${rawType(event)}:${rawSubtype(event)}:${event.success ? "ok" : "err"}:${event.totalTokens}:${event.numTurns}`;
+    }
+    case "system":
+      return `system:${rawType(event)}:${rawSubtype(event)}:${stringField(raw, "session_id") ?? stringField(raw, "thread_id") ?? ""}`;
+    case "user":
+      return `user:${stringField(rawMessage(event), "id") ?? itemIdentity ?? stableValueKey(event.raw)}`;
+    case "other":
+      return `other:${event.type}:${itemIdentity ?? stableValueKey(event.raw)}`;
   }
 }
 
@@ -82,10 +166,11 @@ export function ChatView({
   const [events, setEvents] = useState<StreamEvent[]>(initialEvents);
   const [eventsPartial, setEventsPartial] = useState(Boolean(initialEventsPartial));
   const renderedEvents = useDeferredValue(events);
-  const seenRef = useRef(new Set(initialEvents.map((e) => streamEventKey(e.raw))));
+  const seenRef = useRef(new Set(initialEvents.map(streamEventKey)));
   const pendingEventsRef = useRef<StreamEvent[]>([]);
   const eventFlushRef = useRef<number | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const sseStartOverrideRef = useRef<SseStartOverride | null>(null);
   const sseActiveRef = useRef(false);
   const [streaming, setStreaming] = useState(initialMeta.status === "running");
   const [autoScroll, setAutoScroll] = useState(true);
@@ -187,7 +272,7 @@ export function ChatView({
     cancelPendingEventFlush();
     startTransition(() => {
       setEvents((prev) => {
-        const incomingKeys = incomingEvents.map((event) => streamEventKey(event.raw));
+        const incomingKeys = incomingEvents.map(streamEventKey);
         const hasUnseenIncomingEvent = incomingKeys.some((key) => !seenRef.current.has(key));
         if (incomingEvents.length < prev.length && !hasUnseenIncomingEvent) return prev;
         seenRef.current = new Set(incomingKeys);
@@ -238,8 +323,23 @@ export function ChatView({
   // Connect SSE whenever status transitions to running
   useEffect(() => {
     if (meta.status !== "running") return;
+    const params = new URLSearchParams();
+    const override = sseStartOverrideRef.current;
+    sseStartOverrideRef.current = null;
+    if (override?.mode === "afterTurnId") {
+      params.set("after_turn_id", override.turnId);
+    } else if (override?.mode === "afterTurns") {
+      params.set("after_turns", String(override.count));
+    } else {
+      const currentTurnId = turnIdFromMetaTurn(meta.turns.at(-1));
+      if (currentTurnId) {
+        params.set("from_turn_id", currentTurnId);
+      } else {
+        params.set("after_turns", String(Math.max(0, meta.turns.length - 1)));
+      }
+    }
     const es = new EventSource(
-      `/api/sessions/${encodeURIComponent(sessionId)}/stream`
+      `/api/sessions/${encodeURIComponent(sessionId)}/stream?${params.toString()}`
     );
     eventSourceRef.current = es;
     let closedByTerminalMeta = false;
@@ -272,12 +372,16 @@ export function ChatView({
         if (eventSourceRef.current === es) eventSourceRef.current = null;
         return;
       }
-      const key = e.data;
-      if (seenRef.current.has(key)) return;
-      seenRef.current.add(key);
       const parsed = toEvents(obj);
       if (parsed.length === 0) return;
-      pendingEventsRef.current.push(...parsed);
+      const fresh = parsed.filter((event) => {
+        const key = streamEventKey(event);
+        if (seenRef.current.has(key)) return false;
+        seenRef.current.add(key);
+        return true;
+      });
+      if (fresh.length === 0) return;
+      pendingEventsRef.current.push(...fresh);
       scheduleEventFlush();
     };
     es.onerror = () => {
@@ -297,7 +401,7 @@ export function ChatView({
       if (eventSourceRef.current === es) eventSourceRef.current = null;
       cancelPendingEventFlush();
     };
-  }, [cancelPendingEventFlush, flushPendingEvents, refreshSessionSnapshot, router, scheduleEventFlush, sessionId, meta.status]);
+  }, [cancelPendingEventFlush, flushPendingEvents, refreshSessionSnapshot, router, scheduleEventFlush, sessionId, meta.status, meta.turns.length]);
 
   const getChatScrollElement = useCallback(() => (
     chatBottomRef.current?.closest<HTMLElement>('[data-shell="chat-scroll"]')
@@ -550,6 +654,10 @@ export function ChatView({
   };
 
   const doEdit = async (message: string, atTurn: number) => {
+    const previousTurnId = turnIdFromMetaTurn(metaRef.current.turns[atTurn - 1]);
+    sseStartOverrideRef.current = previousTurnId
+      ? { mode: "afterTurnId", turnId: previousTurnId }
+      : { mode: "afterTurns", count: Math.max(0, atTurn) };
     const res = await fetch(
       `/api/sessions/${encodeURIComponent(sessionId)}/edit`,
       {
@@ -558,7 +666,11 @@ export function ChatView({
         body: JSON.stringify({ message, at_turn: atTurn }),
       },
     );
-    if (!res.ok) { alert(`Edit failed: ${res.status}`); return; }
+    if (!res.ok) {
+      sseStartOverrideRef.current = null;
+      alert(`Edit failed: ${res.status}`);
+      return;
+    }
 
     // Truncate events to only those belonging to turns 0..atTurn-1.
     // Each completed turn ends with a "result" event; keep everything up to
@@ -577,7 +689,7 @@ export function ChatView({
         }
       }
       const kept = prev.slice(0, cutIdx);
-      seenRef.current = new Set(kept.map((e) => streamEventKey(e.raw)));
+      seenRef.current = new Set(kept.map(streamEventKey));
       return kept;
     });
 
@@ -651,6 +763,10 @@ export function ChatView({
     reasoningEffort?: ModelReasoningEffort,
     planAction?: PlanAction,
   ) => {
+    const previousTurnId = turnIdFromMetaTurn(metaRef.current.turns.at(-1));
+    sseStartOverrideRef.current = previousTurnId
+      ? { mode: "afterTurnId", turnId: previousTurnId }
+      : { mode: "afterTurns", count: metaRef.current.turns.length };
     const effectivePlanAction =
       planAction ?? (metaRef.current.plan_mode?.status === "awaiting_approval" ? "revise" : undefined);
     setMeta((m) => ({
@@ -684,6 +800,7 @@ export function ChatView({
         throw new Error(err.error ?? "failed");
       }
     } catch (e) {
+      sseStartOverrideRef.current = null;
       setMeta((m) => ({
         ...m,
         status: "failed",

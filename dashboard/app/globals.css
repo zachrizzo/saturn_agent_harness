@@ -4711,6 +4711,12 @@ h1, h2, h3, h4, h5, h6 {
 .insp-tool-row:last-child { border-bottom: 0; }
 .insp-tool-row:hover { background: var(--bg-hover); }
 .insp-tool-row.active { background: var(--accent-soft); color: var(--text); }
+.insp-tool-row-muted {
+  cursor: default;
+  color: var(--text-subtle);
+  background: var(--bg-soft);
+}
+.insp-tool-row-muted:hover { background: var(--bg-soft); }
 .insp-tool-name {
   flex: 1;
   font-family: var(--font-mono, ui-monospace, monospace);

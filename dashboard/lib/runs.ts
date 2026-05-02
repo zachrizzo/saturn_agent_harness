@@ -402,6 +402,7 @@ function compactRawForEvent(raw: unknown): Record<string, unknown> {
     "session_id",
     "thread_id",
     "turn_id",
+    "uuid",
     "started_at",
     "cli",
     "model",
@@ -411,8 +412,11 @@ function compactRawForEvent(raw: unknown): Record<string, unknown> {
   }
 
   const item = src.item && typeof src.item === "object" ? src.item as Record<string, unknown> : null;
-  if (item?.server || item?.name) {
+  if (item?.id || item?.type || item?.status || item?.server || item?.name) {
     out.item = {
+      ...(typeof item.id === "string" ? { id: item.id } : {}),
+      ...(typeof item.type === "string" ? { type: item.type } : {}),
+      ...(typeof item.status === "string" ? { status: item.status } : {}),
       ...(typeof item.server === "string" ? { server: item.server } : {}),
       ...(typeof item.name === "string" ? { name: item.name } : {}),
     };

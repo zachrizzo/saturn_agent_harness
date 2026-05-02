@@ -14,6 +14,7 @@ import { ToolInvocation } from "./ToolInvocation";
 import { SubAgentCard } from "./SubAgentCard";
 
 const MARKDOWN_PLUGINS = [remarkGfm];
+const STREAMING_EVENT_RENDER_LIMIT = 96;
 
 type UserProps = {
   kind: "user";
@@ -949,16 +950,23 @@ function AssistantBlock({
   onOpenFile,
 }: AssistantProps) {
   const [hovered, setHovered] = useState(false);
+  const displayEvents = useMemo(
+    () => streaming && events.length > STREAMING_EVENT_RENDER_LIMIT
+      ? events.slice(-STREAMING_EVENT_RENDER_LIMIT)
+      : events,
+    [events, streaming],
+  );
+  const hiddenStreamingEventCount = events.length - displayEvents.length;
 
   // Collect all text for copy
-  const allText = events
+  const allText = displayEvents
     .filter((ev) => ev.kind === "assistant_text" || ev.kind === "plan_text")
     .map((ev) => (ev as Extract<StreamEvent, { kind: "assistant_text" | "plan_text" }>).text)
     .join("\n\n");
 
   // Group sub-agent child events by their parentToolUseId
   const subEventsByParent = new Map<string, StreamEvent[]>();
-  for (const ev of events) {
+  for (const ev of displayEvents) {
     const pid = (ev as { parentToolUseId?: string }).parentToolUseId;
     if (!pid) continue;
     if (!subEventsByParent.has(pid)) subEventsByParent.set(pid, []);
@@ -967,13 +975,20 @@ function AssistantBlock({
 
   // Pair top-level (non-sub-agent) tool_use with tool_result
   const toolResults = new Map<string, Extract<StreamEvent, { kind: "tool_result" }>>();
-  for (const ev of events) {
+  for (const ev of displayEvents) {
     if (ev.kind === "tool_result" && !(ev as { parentToolUseId?: string }).parentToolUseId) {
       toolResults.set(ev.toolUseId, ev);
     }
   }
 
   const rendered: React.ReactNode[] = [];
+  if (hiddenStreamingEventCount > 0) {
+    rendered.push(
+      <div key="stream-hidden-events" className="text-[11px] text-subtle italic">
+        {hiddenStreamingEventCount.toLocaleString()} earlier live events hidden while streaming
+      </div>,
+    );
+  }
   let toolBuffer: React.ReactNode[] = [];
   const flushToolRow = () => {
     if (toolBuffer.length === 0) return;
@@ -985,7 +1000,8 @@ function AssistantBlock({
     toolBuffer = [];
   };
 
-  events.forEach((ev, i) => {
+  displayEvents.forEach((ev, i) => {
+    const eventKey = hiddenStreamingEventCount + i;
     // Skip sub-agent events — they're rendered inside SubAgentCard
     if ((ev as { parentToolUseId?: string }).parentToolUseId) return;
     const rawType = (ev.raw as { type?: string } | undefined)?.type;
@@ -993,7 +1009,7 @@ function AssistantBlock({
     if (rawType === "saturn.turn_aborted") {
       flushToolRow();
       rendered.push(
-        <div key={i} className="text-[12px] text-subtle italic">
+        <div key={eventKey} className="text-[12px] text-subtle italic">
           stopped before a reply completed
         </div>
       );
@@ -1002,7 +1018,7 @@ function AssistantBlock({
     if (ev.kind === "tool_result") return;
     if (ev.kind === "todo_list") {
       flushToolRow();
-      rendered.push(<PlanChecklist key={i} items={ev.items} />);
+      rendered.push(<PlanChecklist key={eventKey} items={ev.items} />);
       return;
     }
     if (ev.kind === "tool_use") {
@@ -1017,12 +1033,12 @@ function AssistantBlock({
       const isAgent = ev.name === "Agent";
       if (isAgent) {
         flushToolRow();
-        const remaining = events.slice(i + 1);
+        const remaining = displayEvents.slice(i + 1);
         const isLast = remaining.every((e) => e.kind === "tool_result" || (e as { parentToolUseId?: string }).parentToolUseId);
         const status = !res ? "run" : res.isError ? "err" : "ok";
         rendered.push(
           <SubAgentCard
-            key={i}
+            key={eventKey}
             id={ev.id}
             input={ev.input}
             result={res?.content}
@@ -1032,7 +1048,7 @@ function AssistantBlock({
           />
         );
         if (uniqueMediaRefs.length > 0) {
-          rendered.push(<MediaPreviewGrid key={`media-${i}`} refs={uniqueMediaRefs} sessionId={sessionId} />);
+          rendered.push(<MediaPreviewGrid key={`media-${eventKey}`} refs={uniqueMediaRefs} sessionId={sessionId} />);
         }
         return;
       }
@@ -1041,7 +1057,7 @@ function AssistantBlock({
         // then render chip + image as a standalone full-width block.
         flushToolRow();
         rendered.push(
-          <div key={i} className="tool-media-block">
+          <div key={eventKey} className="tool-media-block">
             <ToolInvocation
               id={ev.id}
               name={ev.name}
@@ -1056,7 +1072,7 @@ function AssistantBlock({
       } else {
         toolBuffer.push(
           <ToolInvocation
-            key={i}
+            key={eventKey}
             id={ev.id}
             name={ev.name}
             input={ev.input}
@@ -1071,14 +1087,14 @@ function AssistantBlock({
     flushToolRow();
     if (ev.kind === "plan_text") {
       rendered.push(
-        <PlanProposal key={i} text={ev.text} sessionId={sessionId} onOpenFile={onOpenFile} />
+        <PlanProposal key={eventKey} text={ev.text} sessionId={sessionId} onOpenFile={onOpenFile} />
       );
       return;
     }
     if (ev.kind === "assistant_text") {
       const segments = splitProposedPlanBlocks(ev.text);
       rendered.push(
-        <div key={i} className="assistant-text-stack">
+        <div key={eventKey} className="assistant-text-stack">
           {segments.map((segment, index) => (
             segment.kind === "plan"
               ? (
@@ -1108,7 +1124,7 @@ function AssistantBlock({
     }
     if (ev.kind === "thinking") {
       rendered.push(
-        <details key={i} className="text-[11px]">
+        <details key={eventKey} className="text-[11px]">
           <summary className="cursor-pointer uppercase tracking-wider text-subtle">thinking</summary>
           <div className="whitespace-pre-wrap mt-1 text-muted italic">
             {ev.text || <span className="text-subtle">[redacted]</span>}
@@ -1119,7 +1135,7 @@ function AssistantBlock({
     }
     if (ev.kind === "result") {
       rendered.push(
-        <div key={i} className="flex items-center gap-3 text-[10px] text-subtle">
+        <div key={eventKey} className="flex items-center gap-3 text-[10px] text-subtle">
           <span className={ev.success ? "text-success" : "text-fail"}>
             {ev.success ? "✓ done" : "✗ failed"}
           </span>
