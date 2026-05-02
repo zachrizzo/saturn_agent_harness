@@ -653,7 +653,15 @@ export function ChatView({
     window.location.href = `/chats/${encodeURIComponent(session_id)}`;
   };
 
-  const doEdit = async (message: string, atTurn: number) => {
+  const doEdit = async (
+    message: string,
+    atTurn: number,
+    cli: CLI,
+    model?: string,
+    mcpTools?: boolean,
+    reasoningEffort?: ModelReasoningEffort,
+  ) => {
+    const normalizedCli = normalizeCli(cli);
     const previousTurnId = turnIdFromMetaTurn(metaRef.current.turns[atTurn - 1]);
     sseStartOverrideRef.current = previousTurnId
       ? { mode: "afterTurnId", turnId: previousTurnId }
@@ -663,7 +671,7 @@ export function ChatView({
       {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message, at_turn: atTurn }),
+        body: JSON.stringify({ message, at_turn: atTurn, cli: normalizedCli, model, mcpTools, reasoningEffort }),
       },
     );
     if (!res.ok) {
@@ -699,9 +707,9 @@ export function ChatView({
       turns: [
         ...m.turns.slice(0, atTurn),
         {
-          cli: normalizeCli(m.turns[atTurn - 1]?.cli ?? m.turns[0]?.cli ?? DEFAULT_CLI),
-          model: m.turns[atTurn - 1]?.model,
-          reasoningEffort: m.turns[atTurn - 1]?.reasoningEffort,
+          cli: normalizedCli,
+          model,
+          reasoningEffort,
           started_at: new Date().toISOString(),
           user_message: message,
         },
@@ -1047,10 +1055,10 @@ export function ChatView({
               agentCliReasoningEfforts={agentCliReasoningEfforts}
               disabled={streaming}
               onSend={editingTurnIndex !== null
-                ? (message) => {
+                ? (message, cli, model, mcpTools, reasoningEffort) => {
                     const atTurn = editingTurnIndex;
                     setEditingTurnIndex(null);
-                    doEdit(message, atTurn);
+                    doEdit(message, atTurn, cli, model, mcpTools, reasoningEffort);
                   }
                 : sendMessage
               }

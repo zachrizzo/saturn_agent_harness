@@ -8,8 +8,10 @@ import { promises as fs } from "node:fs";
 import { sessionsRoot } from "@/lib/paths";
 import { spawnTurn } from "@/lib/turn";
 import { acquireSessionTurnLock } from "@/lib/session-turn-lock";
-import type { SessionMeta } from "@/lib/runs";
-import { DEFAULT_CLI, normalizeCli } from "@/lib/clis";
+import type { CLI, SessionMeta } from "@/lib/runs";
+import { DEFAULT_CLI, isBedrockCli, normalizeCli } from "@/lib/clis";
+import type { ModelReasoningEffort } from "@/lib/models";
+import { assertBedrockReady, isBedrockNotReadyError } from "@/lib/bedrock-auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -19,10 +21,15 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const { at_turn, message } = (await req.json().catch(() => ({}))) as {
+  const body = (await req.json().catch(() => ({}))) as {
     at_turn?: number;
     message?: string;
+    cli?: CLI;
+    model?: string;
+    mcpTools?: boolean;
+    reasoningEffort?: ModelReasoningEffort;
   };
+  const { at_turn, message } = body;
 
   if (!message?.trim()) {
     return NextResponse.json({ error: "message required" }, { status: 400 });
@@ -50,8 +57,31 @@ export async function POST(
       ? at_turn
       : meta.turns.length;
 
+  const nextTurns = meta.turns.slice(0, cutoff);
+  const last = nextTurns[nextTurns.length - 1];
+  const snap = meta.agent_snapshot;
+  const cli = normalizeCli(body.cli ?? last?.cli ?? snap?.defaultCli ?? snap?.cli ?? DEFAULT_CLI);
+  const model = body.model ?? last?.model ?? snap?.models?.[cli] ?? snap?.model;
+  const reasoningEffort =
+    body.reasoningEffort ??
+    last?.reasoningEffort ??
+    snap?.reasoningEfforts?.[cli] ??
+    snap?.reasoningEffort;
+
+  if (isBedrockCli(cli)) {
+    try {
+      await assertBedrockReady();
+    } catch (err) {
+      await lock.release();
+      if (isBedrockNotReadyError(err)) {
+        return NextResponse.json({ error: err.message }, { status: 409 });
+      }
+      throw err;
+    }
+  }
+
   // Truncate turns in meta
-  meta.turns = meta.turns.slice(0, cutoff);
+  meta.turns = nextTurns;
   meta.status = "running";
   await fs.writeFile(metaFile, JSON.stringify(meta, null, 2), "utf8");
 
@@ -79,17 +109,8 @@ export async function POST(
     // stream missing — nothing to truncate
   }
 
-  const last = meta.turns[meta.turns.length - 1];
-  const snap = meta.agent_snapshot;
-  const cli = normalizeCli(last?.cli ?? snap?.defaultCli ?? snap?.cli ?? DEFAULT_CLI);
-  const model = last?.model ?? snap?.models?.[cli] ?? snap?.model;
-  const reasoningEffort =
-    last?.reasoningEffort ??
-    snap?.reasoningEfforts?.[cli] ??
-    snap?.reasoningEffort;
-
   try {
-    await spawnTurn(id, cli, model, message, snap, undefined, reasoningEffort);
+    await spawnTurn(id, cli, model, message, snap, body.mcpTools, reasoningEffort);
   } catch (err) {
     await lock.release();
     throw err;
