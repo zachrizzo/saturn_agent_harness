@@ -28,6 +28,10 @@ function pidsPath(sessionId: string): string {
   return path.join(sessionPath(sessionId), "pids.json");
 }
 
+function turnLockPath(sessionId: string): string {
+  return path.join(sessionPath(sessionId), "turn.lock");
+}
+
 function processIsLive(pid: number | undefined): boolean {
   if (!pid || !Number.isFinite(pid)) return false;
   try {
@@ -117,6 +121,7 @@ export async function markSessionRunnerFailed(
     at: now,
   });
   await fs.rm(pidsPath(sessionId), { force: true }).catch(() => {});
+  await fs.rm(turnLockPath(sessionId), { force: true }).catch(() => {});
   return meta;
 }
 

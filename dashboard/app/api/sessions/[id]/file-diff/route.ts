@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { NextRequest, NextResponse } from "next/server";
-import { getSession } from "@/lib/runs";
+import { getSessionMeta } from "@/lib/runs";
 import { resolveSessionFile } from "@/lib/session-files";
 
 export const dynamic = "force-dynamic";
@@ -75,13 +75,13 @@ async function trackedDiff(relativePath: string, gitRoot: string): Promise<strin
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const session = await getSession(id);
+  const session = await getSessionMeta(id);
   if (!session) return NextResponse.json({ error: "not found" }, { status: 404 });
 
   const rawPath = req.nextUrl.searchParams.get("path");
   if (!rawPath) return NextResponse.json({ error: "missing path" }, { status: 400 });
 
-  const filePath = await resolveSessionFile(id, session.meta.agent_snapshot?.cwd, rawPath);
+  const filePath = await resolveSessionFile(id, session.agent_snapshot?.cwd, rawPath);
   if (!filePath) return NextResponse.json({ error: "file not found" }, { status: 404 });
 
   const gitRoot = await gitRootFor(filePath);

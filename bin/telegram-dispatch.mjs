@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const root = process.env.AUTOMATIONS_ROOT || path.resolve(process.cwd());
 const token = mustEnv("TELEGRAM_BOT_TOKEN");
@@ -13,6 +15,29 @@ const defaultDispatchCwd = normalizeDir(
 const pollTimeout = Number(process.env.TELEGRAM_POLL_TIMEOUT_SECONDS || 25);
 const waitSeconds = Number(process.env.TELEGRAM_WAIT_SECONDS || 1800);
 const waitIntervalMs = Number(process.env.TELEGRAM_WAIT_INTERVAL_MS || 5000);
+const modelSelectionTtlMs = 30 * 60 * 1000;
+const requestedMaxQueueMessages = Number(process.env.TELEGRAM_MAX_QUEUE_MESSAGES || 25);
+const maxQueueMessages =
+  Number.isFinite(requestedMaxQueueMessages) && requestedMaxQueueMessages > 0
+    ? Math.floor(requestedMaxQueueMessages)
+    : 25;
+const requestedMaxSentMediaSessions = Number(process.env.TELEGRAM_MAX_SENT_MEDIA_SESSIONS || 25);
+const maxSentMediaSessions =
+  Number.isFinite(requestedMaxSentMediaSessions) && requestedMaxSentMediaSessions > 0
+    ? Math.floor(requestedMaxSentMediaSessions)
+    : 25;
+const requestedMaxTelegramMedia = Number(process.env.TELEGRAM_MAX_MEDIA_PER_TURN || 6);
+const maxTelegramMediaPerTurn =
+  Number.isFinite(requestedMaxTelegramMedia) && requestedMaxTelegramMedia >= 0
+    ? Math.floor(requestedMaxTelegramMedia)
+    : 6;
+const maxTelegramPhotoBytes = 10 * 1024 * 1024;
+const maxTelegramDocumentBytes = 45 * 1024 * 1024;
+const requestedMaxTelegramInboundImageBytes = Number(process.env.TELEGRAM_MAX_INBOUND_IMAGE_BYTES || 20 * 1024 * 1024);
+const maxTelegramInboundImageBytes =
+  Number.isFinite(requestedMaxTelegramInboundImageBytes) && requestedMaxTelegramInboundImageBytes > 0
+    ? Math.floor(requestedMaxTelegramInboundImageBytes)
+    : 20 * 1024 * 1024;
 const allowAll = process.env.TELEGRAM_ALLOW_ALL === "1";
 const allowedChatIds = new Set(
   (process.env.TELEGRAM_ALLOWED_CHAT_IDS || "")
@@ -20,10 +45,45 @@ const allowedChatIds = new Set(
     .map((s) => s.trim())
     .filter(Boolean),
 );
-const cliValues = new Set(["claude-bedrock", "claude-personal", "claude-local", "codex", "claude"]);
+const cliOptions = [
+  { id: "claude-bedrock", label: "Claude (Bedrock)" },
+  { id: "claude-personal", label: "Claude (Personal)" },
+  { id: "claude-local", label: "Claude (Local)" },
+  { id: "codex", label: "Codex" },
+];
+const cliValues = new Set([...cliOptions.map((cli) => cli.id), "claude"]);
 const reasoningValues = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
 const defaultPrompt = "You are Saturn Dispatch. Help the user from Telegram.";
 const noToolsSentinel = "__SATURN_NO_TOOLS__";
+const imageExts = new Set([
+  ".avif",
+  ".bmp",
+  ".gif",
+  ".heic",
+  ".heif",
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".svg",
+  ".tif",
+  ".tiff",
+  ".webp",
+]);
+const telegramPhotoExts = new Set([".jpg", ".jpeg", ".png", ".webp"]);
+const imageMimeTypes = {
+  ".avif": "image/avif",
+  ".bmp": "image/bmp",
+  ".gif": "image/gif",
+  ".heic": "image/heic",
+  ".heif": "image/heif",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
+  ".tif": "image/tiff",
+  ".tiff": "image/tiff",
+  ".webp": "image/webp",
+};
 const toolPresets = {
   none: [noToolsSentinel],
   read: ["Read", "Grep"],
@@ -48,6 +108,7 @@ const botCommands = [
   { command: "agents", description: "List saved agents" },
   { command: "cli", description: "Set Codex or Claude backend" },
   { command: "model", description: "Set or clear the model" },
+  { command: "models", description: "List available CLIs and models" },
   { command: "think", description: "Set or clear reasoning effort" },
   { command: "tools", description: "Set Claude tool allowlist" },
   { command: "mcp", description: "Toggle MCP tools for new sessions" },
@@ -100,8 +161,9 @@ while (true) {
 async function handleUpdate(update) {
   const message = update.message;
   const chatId = String(message?.chat?.id || "");
-  const text = message?.text?.trim();
-  if (!chatId || !text) return;
+  const text = String(message?.text || message?.caption || "").trim();
+  const imageSpecs = telegramImageSpecs(message);
+  if (!chatId || (!text && imageSpecs.length === 0)) return;
 
   if (!isAllowed(chatId)) {
     await sendMessage(chatId, "This chat is not authorized for Saturn Dispatch.");
@@ -111,17 +173,45 @@ async function handleUpdate(update) {
   await saveState();
 
   if (text.startsWith("/")) {
-    const handled = await handleCommand(chatId, text);
+    const { command } = parseCommandLine(text);
+    if (command !== "/new") {
+      const handled = await handleCommand(chatId, text);
+      if (handled) {
+        if (imageSpecs.length > 0) {
+          await sendMessage(chatId, "Attached image was not sent because that message was handled as a command. Send the image as a normal message, or attach it to /new <caption>.");
+        }
+        return;
+      }
+    }
+  }
+
+  let attachments = [];
+  if (imageSpecs.length > 0) {
+    try {
+      attachments = await downloadTelegramImageAttachments(chatId, message, imageSpecs);
+    } catch (err) {
+      await sendMessage(chatId, `Could not download the attached image: ${friendlyError(err)}`);
+      return;
+    }
+  }
+
+  if (text.startsWith("/")) {
+    const handled = await handleCommand(chatId, text, attachments);
     if (handled) return;
   }
 
-  await dispatchMessage(chatId, text);
+  if (attachments.length === 0 && (await handleModelSelectionReply(chatId, text))) return;
+
+  if (state.chats[chatId].model_choices) {
+    delete state.chats[chatId].model_choices;
+    await saveState();
+  }
+
+  await dispatchMessage(chatId, telegramPromptText(text, attachments), attachments);
 }
 
-async function handleCommand(chatId, text) {
-  const [rawCommand] = text.split(/\s+/);
-  const command = rawCommand.split("@")[0].toLowerCase();
-  const arg = text.slice(rawCommand.length).trim();
+async function handleCommand(chatId, text, attachments = []) {
+  const { command, arg } = parseCommandLine(text);
 
   if (command === "/start" || command === "/help") {
     await sendMessage(chatId, helpText());
@@ -147,8 +237,8 @@ async function handleCommand(chatId, text) {
   if (command === "/new") {
     clearSessionMapping(chatId);
     await saveState();
-    if (arg) {
-      await dispatchMessage(chatId, arg);
+    if (arg || attachments.length > 0) {
+      await dispatchMessage(chatId, telegramPromptText(arg, attachments), attachments);
     } else {
       await sendMessage(chatId, "New session ready. Send the next task, or use /new <task>.");
     }
@@ -175,6 +265,11 @@ async function handleCommand(chatId, text) {
 
   if (command === "/model") {
     await setModel(chatId, arg);
+    return true;
+  }
+
+  if (command === "/models") {
+    await sendModels(chatId, arg);
     return true;
   }
 
@@ -231,11 +326,22 @@ async function handleCommand(chatId, text) {
   return false;
 }
 
+function parseCommandLine(text) {
+  const [rawCommand = ""] = String(text || "").split(/\s+/);
+  return {
+    rawCommand,
+    command: rawCommand.split("@")[0].toLowerCase(),
+    arg: String(text || "").slice(rawCommand.length).trim(),
+  };
+}
+
 function helpText() {
   return [
     "Saturn Dispatch is connected.",
     "",
     "Send messages normally. If a turn is running, follow-ups are queued and sent next.",
+    "Send or take a photo with an optional caption to attach it to the next turn.",
+    "Use /new <caption> with a photo to start a fresh session with that image.",
     "",
     "Session",
     "/new <task> starts a fresh Saturn chat.",
@@ -253,6 +359,7 @@ function helpText() {
     "Runtime",
     "/cli <codex|claude-personal|claude-bedrock|claude-local> sets backend.",
     "/model <id|off> sets or clears the model.",
+    "/models lists the available CLIs and models.",
     "/think <minimal|low|medium|high|xhigh|max|off> sets reasoning.",
     "/tools <preset|csv|off> sets Claude allowed tools. Presets: none, read, code, full.",
     "/mcp <on|off> toggles MCP tools for the session.",
@@ -292,11 +399,13 @@ async function setModel(chatId, arg) {
   }
   if (["off", "default", "none"].includes(model.toLowerCase())) {
     delete state.chats[chatId].model;
+    delete state.chats[chatId].model_choices;
     await saveState();
     await sendMessage(chatId, "Model override cleared.");
     return;
   }
   state.chats[chatId].model = model;
+  delete state.chats[chatId].model_choices;
   await saveState();
   await sendMessage(chatId, `Model set to ${model}.`);
 }
@@ -304,13 +413,186 @@ async function setModel(chatId, arg) {
 async function setCli(chatId, arg) {
   const cli = normalizeCliValue(arg.trim());
   if (!cli) {
-    await sendMessage(chatId, "Use /cli codex, /cli claude-personal, /cli claude-bedrock, or /cli claude-local.");
+    await sendMessage(chatId, `Use /cli ${cliOptions.map((option) => option.id).join(", /cli ")}.\nUse /models to list model ids.`);
     return;
   }
   state.chats[chatId].cli = cli;
+  delete state.chats[chatId].model_choices;
   clearSessionMapping(chatId);
   await saveState();
   await sendMessage(chatId, `CLI set to ${cli}. New session ready; send a task or use /new <task>.`);
+}
+
+async function sendModels(chatId, arg = "") {
+  ensureChat(chatId);
+  const requestedCli = arg.trim();
+  let options = cliOptions;
+  if (requestedCli) {
+    const cli = normalizeCliValue(requestedCli);
+    if (!cli) {
+      await sendMessage(
+        chatId,
+        [
+          `Unknown CLI: ${requestedCli}`,
+          `Use /models or /models <${cliOptions.map((option) => option.id).join("|")}>.`,
+        ].join("\n"),
+      );
+      return;
+    }
+    options = cliOptions.filter((option) => option.id === cli);
+  }
+
+  const chat = state.chats[chatId];
+  const currentCli = normalizeCliValue(chat.cli || process.env.SATURN_ADHOC_CLI || process.env.SATURN_CLI) || "claude-bedrock";
+  const currentModel = chat.model || process.env.SATURN_ADHOC_MODEL || process.env.SATURN_MODEL || "default";
+  const choices = [];
+  const sections = [
+    "Available Dispatch CLIs and models",
+    `Current: /cli ${currentCli}, /model ${currentModel}`,
+    "",
+    "Reply with a number to select that model.",
+    "Use /model <id> to type a model manually, or /model off for the backend default.",
+    requestedCli ? "" : "Use /models <cli> to show one backend.",
+  ].filter(Boolean);
+
+  for (const option of options) {
+    const result = await formatModelsForCli(option, choices.length + 1);
+    sections.push("", result.text);
+    choices.push(...result.choices);
+  }
+
+  if (choices.length) {
+    chat.model_choices = {
+      created_at: new Date().toISOString(),
+      choices,
+    };
+  } else {
+    delete chat.model_choices;
+  }
+  await saveState();
+
+  await sendLongMessage(chatId, sections.join("\n"));
+}
+
+async function formatModelsForCli(option, startIndex) {
+  const header = `${option.label}\nCLI: /cli ${option.id}`;
+  try {
+    const data = await saturn(`/api/models?cli=${encodeURIComponent(option.id)}`, { method: "GET" });
+    const models = Array.isArray(data.models) ? data.models : [];
+    if (!models.length) return { text: `${header}\nModels: none returned`, choices: [] };
+    const choices = models
+      .map((model, offset) => modelChoiceFromModel(option, model, startIndex + offset))
+      .filter(Boolean);
+    return {
+      choices,
+      text: [
+        header,
+        "Models:",
+        ...choices.map((choice) => `${choice.index}. ${formatModelChoiceLine(choice)}`),
+      ].join("\n"),
+    };
+  } catch (err) {
+    return {
+      text: [
+        header,
+        `Models: could not load from Saturn (${friendlyError(err)})`,
+      ].join("\n"),
+      choices: [],
+    };
+  }
+}
+
+function modelChoiceFromModel(option, model, index) {
+  const id = String(model?.id || "").trim();
+  if (!id) return null;
+  return {
+    index,
+    cli: option.id,
+    cliLabel: option.label,
+    modelId: id,
+    name: String(model?.name || "").trim(),
+    contextWindow: model?.loadedContextWindow || model?.contextWindow,
+  };
+}
+
+function formatModelChoiceLine(choice) {
+  const id = String(choice?.modelId || "").trim();
+  if (!id) return "(missing id)";
+  const name = String(choice?.name || "").trim();
+  const context = formatTokenCount(choice?.contextWindow);
+  const details = [
+    name && name !== id ? name : "",
+    context ? `${context} ctx` : "",
+    choice?.cli ? `/cli ${choice.cli}` : "",
+  ].filter(Boolean);
+  return details.length ? `${id} - ${details.join(", ")}` : id;
+}
+
+async function handleModelSelectionReply(chatId, text) {
+  ensureChat(chatId);
+  const choiceNumber = parseModelSelectionNumber(text);
+  if (!choiceNumber) return false;
+
+  const selection = state.chats[chatId].model_choices;
+  const choices = Array.isArray(selection?.choices) ? selection.choices : [];
+  if (!choices.length) return false;
+
+  if (isModelSelectionExpired(selection.created_at)) {
+    delete state.chats[chatId].model_choices;
+    await saveState();
+    await sendMessage(chatId, "That model list expired. Send /models again, then reply with a number.");
+    return true;
+  }
+
+  const choice = choices.find((item) => item.index === choiceNumber);
+  if (!choice) {
+    await sendMessage(chatId, `Choose a number from 1-${choices.length}, or send /models again.`);
+    return true;
+  }
+
+  const chat = state.chats[chatId];
+  const previousCli = normalizeCliValue(chat.cli || process.env.SATURN_ADHOC_CLI || process.env.SATURN_CLI) || "claude-bedrock";
+  chat.cli = choice.cli;
+  chat.model = choice.modelId;
+  delete chat.model_choices;
+
+  if (choice.cli !== previousCli) {
+    clearSessionMapping(chatId);
+  }
+
+  await saveState();
+  await sendMessage(
+    chatId,
+    [
+      `Model set to ${choice.modelId}.`,
+      `CLI set to ${choice.cli}.`,
+      choice.cli !== previousCli ? "New session ready; send a task or use /new <task>." : "Use /new <task> to start fresh if needed.",
+    ].join("\n"),
+  );
+  return true;
+}
+
+function parseModelSelectionNumber(text) {
+  const match = String(text || "").trim().match(/^(\d+)(?:[\s.)\]:,-].*)?$/);
+  if (!match) return 0;
+  const value = Number(match[1]);
+  return Number.isInteger(value) && value > 0 ? value : 0;
+}
+
+function isModelSelectionExpired(createdAt) {
+  const createdMs = Date.parse(createdAt || "");
+  return !Number.isFinite(createdMs) || Date.now() - createdMs > modelSelectionTtlMs;
+}
+
+function formatTokenCount(tokens) {
+  const value = Number(tokens);
+  if (!Number.isFinite(value) || value <= 0) return "";
+  if (value >= 1_000_000) {
+    const millions = value / 1_000_000;
+    return `${Number.isInteger(millions) ? millions.toFixed(0) : millions.toFixed(1)}M`;
+  }
+  if (value >= 1_000) return `${Math.round(value / 1_000)}K`;
+  return String(value);
 }
 
 async function setAgent(chatId, arg) {
@@ -524,38 +806,36 @@ async function sendSettings(chatId) {
   );
 }
 
-async function dispatchMessage(chatId, text) {
+async function dispatchMessage(chatId, text, attachments = []) {
   ensureChat(chatId);
   const chat = state.chats[chatId];
 
   if (chat.pending_session_id && (await isSessionRunning(chat.pending_session_id))) {
-    chat.queue ||= [];
-    chat.queue.push({ text, queued_at: new Date().toISOString() });
+    const queued = enqueueChatMessage(chatId, text, attachments);
     await saveState();
-    await sendMessage(chatId, `Queued. ${chat.queue.length} message${chat.queue.length === 1 ? "" : "s"} waiting.`);
+    await sendMessage(
+      chatId,
+      `Queued. ${queued.length} message${queued.length === 1 ? "" : "s"} waiting${queued.dropped ? `; dropped ${queued.dropped} oldest` : ""}.${attachmentSummary(attachments)}`,
+    );
     return;
   }
 
   let sessionId = chat.session_id;
   if (!sessionId) {
-    const created = await saturn("/api/sessions", {
-      method: "POST",
-      body: JSON.stringify(buildCreateSessionBody(chat, text)),
-    });
+    const created = await postSaturnPayload("/api/sessions", buildCreateSessionBody(chat, text), attachments);
     sessionId = created.session_id;
     chat.session_id = sessionId;
   } else {
     try {
-      await saturn(`/api/sessions/${sessionId}/messages`, {
-        method: "POST",
-        body: JSON.stringify(buildMessageBody(chat, text)),
-      });
+      await postSaturnPayload(`/api/sessions/${sessionId}/messages`, buildMessageBody(chat, text), attachments);
     } catch (err) {
       if (String(err.message || err).includes("409")) {
-        chat.queue ||= [];
-        chat.queue.push({ text, queued_at: new Date().toISOString() });
+        const queued = enqueueChatMessage(chatId, text, attachments);
         await saveState();
-        await sendMessage(chatId, `Queued. ${chat.queue.length} message${chat.queue.length === 1 ? "" : "s"} waiting.`);
+        await sendMessage(
+          chatId,
+          `Queued. ${queued.length} message${queued.length === 1 ? "" : "s"} waiting${queued.dropped ? `; dropped ${queued.dropped} oldest` : ""}.${attachmentSummary(attachments)}`,
+        );
         return;
       }
       throw err;
@@ -617,7 +897,7 @@ function buildMessageBody(chat, message) {
   };
 }
 
-async function monitorSession(chatId, sessionId) {
+async function monitorSession(chatId, sessionId, notifyTimeout = true) {
   const monitorKey = `${chatId}:${sessionId}`;
   if (pendingMonitors.has(monitorKey)) return;
   pendingMonitors.add(monitorKey);
@@ -625,11 +905,17 @@ async function monitorSession(chatId, sessionId) {
   const deadline = Date.now() + waitSeconds * 1000;
   try {
     while (Date.now() < deadline) {
-      const session = await getSession(sessionId);
+      const session = await getSession(sessionId, { events: "recent", compact: true, metaFull: true });
       if (session?.meta?.status && session.meta.status !== "running") {
         const lastTurn = session.meta.turns?.[session.meta.turns.length - 1];
         const finalText = lastTurn?.final_text?.trim() || `(session finished with status ${session.meta.status})`;
         await sendLongMessage(chatId, finalText);
+        await sendSessionMedia(chatId, session, lastTurn).catch(async (err) => {
+          console.error("[telegram-dispatch] media send failed", chatId, sessionId, err);
+          if (state.chats?.[chatId]?.verbose) {
+            await sendMessage(chatId, `Could not send session media: ${friendlyError(err)}`).catch(() => {});
+          }
+        });
 
         if (state.chats?.[chatId]?.pending_session_id === sessionId) {
           delete state.chats[chatId].pending_session_id;
@@ -643,7 +929,15 @@ async function monitorSession(chatId, sessionId) {
       await sleep(waitIntervalMs);
     }
 
-    await sendMessage(chatId, `Session is still running: ${sessionId}`);
+    if (notifyTimeout) {
+      await sendMessage(chatId, `Session is still running: ${sessionId}`);
+    }
+    const retry = setTimeout(() => {
+      monitorSession(chatId, sessionId, false).catch((err) => {
+        console.error("[telegram-dispatch] monitor retry failed", chatId, sessionId, err);
+      });
+    }, Math.max(1000, waitIntervalMs));
+    retry.unref?.();
   } finally {
     pendingMonitors.delete(monitorKey);
   }
@@ -658,7 +952,125 @@ async function drainQueuedMessages(chatId) {
     return;
   }
   await saveState();
-  await dispatchMessage(chatId, next.text);
+  await dispatchMessage(chatId, next.text, next.attachments || []);
+}
+
+function telegramImageSpecs(message) {
+  const specs = [];
+  const photos = Array.isArray(message?.photo) ? message.photo : [];
+  if (photos.length > 0) {
+    const photo = photos.reduce((best, candidate) => {
+      const bestScore = Number(best?.file_size || 0) || Number(best?.width || 0) * Number(best?.height || 0);
+      const candidateScore =
+        Number(candidate?.file_size || 0) || Number(candidate?.width || 0) * Number(candidate?.height || 0);
+      return candidateScore >= bestScore ? candidate : best;
+    }, photos[0]);
+    if (photo?.file_id) {
+      specs.push({
+        kind: "photo",
+        fileId: photo.file_id,
+        fileUniqueId: photo.file_unique_id,
+        fileName: `telegram-photo-${message.message_id || Date.now()}.jpg`,
+        mimeType: "image/jpeg",
+        fileSize: photo.file_size,
+      });
+    }
+  }
+
+  const document = message?.document;
+  if (isTelegramImageDocument(document)) {
+    specs.push({
+      kind: "document",
+      fileId: document.file_id,
+      fileUniqueId: document.file_unique_id,
+      fileName: document.file_name || `telegram-image-${message.message_id || Date.now()}`,
+      mimeType: document.mime_type || mimeTypeForPath(document.file_name),
+      fileSize: document.file_size,
+    });
+  }
+
+  return specs;
+}
+
+function isTelegramImageDocument(document) {
+  if (!document?.file_id) return false;
+  const mimeType = String(document.mime_type || "").toLowerCase();
+  const ext = path.extname(document.file_name || "").toLowerCase();
+  return mimeType.startsWith("image/") || imageExts.has(ext);
+}
+
+async function downloadTelegramImageAttachments(chatId, message, specs) {
+  const attachments = [];
+  for (const spec of specs) {
+    attachments.push(await downloadTelegramImageAttachment(chatId, message, spec));
+  }
+  return attachments;
+}
+
+async function downloadTelegramImageAttachment(chatId, message, spec) {
+  if (Number(spec.fileSize || 0) > maxTelegramInboundImageBytes) {
+    throw new Error(`image is too large (${formatBytes(Number(spec.fileSize))}); limit is ${formatBytes(maxTelegramInboundImageBytes)}`);
+  }
+
+  const file = await telegram("getFile", { file_id: spec.fileId });
+  const telegramFilePath = file.result?.file_path;
+  if (!telegramFilePath) throw new Error("Telegram did not return a file path");
+
+  const telegramFileSize = Number(file.result?.file_size || spec.fileSize || 0);
+  if (telegramFileSize > maxTelegramInboundImageBytes) {
+    throw new Error(`image is too large (${formatBytes(telegramFileSize)}); limit is ${formatBytes(maxTelegramInboundImageBytes)}`);
+  }
+
+  const res = await fetch(`https://api.telegram.org/file/bot${token}/${telegramFilePath}`);
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`download failed: ${detail || res.statusText}`);
+  }
+
+  const buffer = Buffer.from(await res.arrayBuffer());
+  if (buffer.byteLength > maxTelegramInboundImageBytes) {
+    throw new Error(`image is too large (${formatBytes(buffer.byteLength)}); limit is ${formatBytes(maxTelegramInboundImageBytes)}`);
+  }
+
+  const name = telegramAttachmentName(message, spec, telegramFilePath);
+  const type = spec.mimeType || mimeTypeForPath(name) || "application/octet-stream";
+  const dir = path.join(root, "telegram", "uploads", safeFileName(chatId));
+  await fs.mkdir(dir, { recursive: true });
+  const filePath = path.join(dir, name);
+  await fs.writeFile(filePath, buffer);
+
+  return {
+    name,
+    path: filePath,
+    size: buffer.byteLength,
+    type,
+  };
+}
+
+function telegramAttachmentName(message, spec, telegramFilePath) {
+  const sourceName = spec.fileName || path.basename(telegramFilePath || "") || `telegram-${spec.kind}`;
+  const sourceExt = path.extname(sourceName).toLowerCase();
+  const telegramExt = path.extname(telegramFilePath || "").toLowerCase();
+  const ext = imageExts.has(sourceExt)
+    ? sourceExt
+    : imageExts.has(telegramExt)
+      ? telegramExt
+      : mimeExt(spec.mimeType) || ".jpg";
+  const stem = safeFileName(path.basename(sourceName, sourceExt)).slice(0, 80) || "telegram-image";
+  const unique = safeFileName(spec.fileUniqueId || spec.fileId || spec.kind).slice(0, 48) || "image";
+  return `${Date.now()}-${message?.message_id || "message"}-${unique}-${stem}${ext}`;
+}
+
+function telegramPromptText(text, attachments) {
+  const trimmed = String(text || "").trim();
+  if (trimmed) return trimmed;
+  if (attachments.length === 1) return "Please inspect the attached image and respond.";
+  return `Please inspect the attached ${attachments.length} images and respond.`;
+}
+
+function attachmentSummary(attachments) {
+  if (!attachments?.length) return "";
+  return ` Includes ${attachments.length} image${attachments.length === 1 ? "" : "s"}.`;
 }
 
 async function sendStatus(chatId) {
@@ -667,7 +1079,7 @@ async function sendStatus(chatId) {
     await sendMessage(chatId, "No session yet.");
     return;
   }
-  const session = await getSession(chat.session_id);
+  const session = await getSession(chat.session_id, { events: "recent", compact: true });
   if (!session) {
     await sendMessage(chatId, `Session not found: ${chat.session_id}`);
     return;
@@ -802,21 +1214,54 @@ async function recordProject(dir) {
 }
 
 async function isSessionRunning(sessionId) {
-  const session = await getSession(sessionId).catch(() => null);
+  const session = await getSession(sessionId, { events: "recent", compact: true }).catch(() => null);
   return session?.meta?.status === "running";
 }
 
-async function getSession(sessionId) {
-  return saturn(`/api/sessions/${sessionId}`, { method: "GET" });
+async function getSession(sessionId, options = {}) {
+  const params = new URLSearchParams();
+  if (options.events) params.set("events", options.events);
+  if (options.compact) params.set("compact", "1");
+  if (options.metaFull) params.set("meta", "full");
+  const query = params.size ? `?${params.toString()}` : "";
+  return saturn(`/api/sessions/${sessionId}${query}`, { method: "GET" });
+}
+
+async function postSaturnPayload(route, payload, attachments = []) {
+  if (!attachments.length) {
+    return saturn(route, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  const form = new FormData();
+  form.append("payload", JSON.stringify(payload));
+  for (const attachment of attachments) {
+    const buffer = await fs.readFile(attachment.path);
+    form.append(
+      "files",
+      new Blob([buffer], { type: attachment.type || mimeTypeForPath(attachment.name) || "application/octet-stream" }),
+      attachment.name || path.basename(attachment.path),
+    );
+  }
+
+  return saturn(route, {
+    method: "POST",
+    body: form,
+  });
 }
 
 async function saturn(route, init = {}) {
+  const isFormData = typeof FormData !== "undefined" && init.body instanceof FormData;
   const res = await fetch(`${baseUrl}${route}`, {
     ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init.headers || {}),
-    },
+    headers: isFormData
+      ? { ...(init.headers || {}) }
+      : {
+          "Content-Type": "application/json",
+          ...(init.headers || {}),
+        },
   });
   const text = await res.text();
   const json = text ? JSON.parse(text) : {};
@@ -831,6 +1276,19 @@ async function telegram(method, body) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body || {}),
+  });
+  const text = await res.text();
+  const json = text ? JSON.parse(text) : {};
+  if (!res.ok || json.ok === false) {
+    throw new Error(`Telegram ${method} failed: ${json.description || text || res.statusText}`);
+  }
+  return json;
+}
+
+async function telegramMultipart(method, form) {
+  const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+    method: "POST",
+    body: form,
   });
   const text = await res.text();
   const json = text ? JSON.parse(text) : {};
@@ -886,6 +1344,309 @@ async function sendLongMessage(chatId, text) {
   }
 }
 
+async function sendSessionMedia(chatId, session, lastTurn) {
+  const sessionId =
+    session?.meta?.session_id ||
+    state.chats?.[chatId]?.pending_session_id ||
+    state.chats?.[chatId]?.session_id ||
+    "";
+  const assets = await collectSessionImageAssets(chatId, session, lastTurn, sessionId);
+  if (assets.length === 0) return;
+
+  let sent = 0;
+  for (const asset of assets) {
+    if (sent >= maxTelegramMediaPerTurn) break;
+    const delivered = await sendImageAsset(chatId, asset, sessionId);
+    if (delivered) sent++;
+  }
+  await saveState();
+
+  const remaining = assets.length - sent;
+  if (remaining > 0 && state.chats?.[chatId]?.verbose) {
+    await sendMessage(chatId, `${remaining} additional image${remaining === 1 ? "" : "s"} not sent to keep the Telegram update short.`);
+  }
+}
+
+async function collectSessionImageAssets(chatId, session, lastTurn, sessionId) {
+  const chat = state.chats?.[chatId] || {};
+  const sentKeys = mediaSentKeys(chat, sessionId);
+  const refs = extractImageRefs(sessionMediaSearchText(session, lastTurn));
+  const assets = [];
+  const seen = new Set();
+
+  for (const ref of refs) {
+    if (assets.length >= maxTelegramMediaPerTurn * 2) break;
+    const asset = await resolveImageAsset(ref, session, chat);
+    if (!asset) continue;
+    const key = asset.key;
+    if (seen.has(key) || sentKeys.has(key)) continue;
+    seen.add(key);
+    assets.push(asset);
+  }
+
+  return assets;
+}
+
+function sessionMediaSearchText(session, lastTurn) {
+  const chunks = [];
+  if (lastTurn?.final_text) chunks.push(lastTurn.final_text);
+  for (const event of session?.events || []) {
+    if (event?.kind === "assistant_text" || event?.kind === "plan_text") {
+      chunks.push(String(event.text || ""));
+    } else if (event?.kind === "tool_result") {
+      chunks.push(searchableValue(event.content));
+    } else if (event?.kind === "tool_use") {
+      chunks.push(searchableValue(event.input));
+    } else if (event?.raw) {
+      chunks.push(searchableValue(event.raw, 4000));
+    }
+  }
+  return chunks.filter(Boolean).join("\n");
+}
+
+function searchableValue(value, maxLength = 30000) {
+  if (typeof value === "string") return value.slice(0, maxLength);
+  try {
+    return JSON.stringify(value).slice(0, maxLength);
+  } catch {
+    return "";
+  }
+}
+
+function extractImageRefs(text) {
+  const refs = [];
+  const add = (value) => {
+    const cleaned = cleanImageRef(value);
+    if (cleaned && isImageRef(cleaned)) refs.push(cleaned);
+  };
+
+  for (const match of String(text || "").matchAll(/!\[[^\]]*]\((<[^>]+>|[^)\n]+)\)/g)) add(match[1]);
+  for (const match of String(text || "").matchAll(/\[[^\]]+]\((<[^>]+>|[^)\n]+)\)/g)) add(match[1]);
+  for (const match of String(text || "").matchAll(/\bhttps?:\/\/[^\s<>"')]+?\.(?:avif|bmp|gif|jpe?g|png|svg|webp)(?:\?[^\s<>"')]+)?/gi)) add(match[0]);
+  for (const match of String(text || "").matchAll(/\bfile:\/\/[^\s<>"')]+?\.(?:avif|bmp|gif|jpe?g|png|svg|webp)\b/gi)) add(match[0]);
+  for (const match of String(text || "").matchAll(/(?:^|[\s"'(<])((?:~|\/|\.)[^\n"'<>)]*?\.(?:avif|bmp|gif|jpe?g|png|svg|webp))(?=$|[\s"')>.,])/gim)) add(match[1]);
+
+  return [...new Set(refs)].slice(0, 40);
+}
+
+function cleanImageRef(raw) {
+  let value = String(raw || "").trim();
+  if (!value) return "";
+  if (value.startsWith("<") && value.endsWith(">")) value = value.slice(1, -1).trim();
+  const titleMatch = value.match(/^(.+?)\s+["'][^"']+["']$/);
+  if (titleMatch) value = titleMatch[1].trim();
+  try {
+    if (!value.startsWith("http://") && !value.startsWith("https://")) value = decodeURIComponent(value);
+  } catch {}
+  return value;
+}
+
+function isImageRef(ref) {
+  if (/^https?:\/\//i.test(ref)) {
+    try {
+      return imageExts.has(path.extname(new URL(ref).pathname).toLowerCase());
+    } catch {
+      return false;
+    }
+  }
+  return imageExts.has(path.extname(stripFileUrl(ref)).toLowerCase());
+}
+
+async function resolveImageAsset(ref, session, chat) {
+  if (/^https?:\/\//i.test(ref)) {
+    const ext = path.extname(new URL(ref).pathname).toLowerCase();
+    return {
+      kind: "remote",
+      url: ref,
+      ext,
+      key: `url:${ref}`,
+      caption: imageCaption(ref),
+    };
+  }
+
+  const filePath = await resolveLocalImagePath(ref, session, chat);
+  if (!filePath) return null;
+  const stats = await fs.stat(filePath).catch(() => null);
+  if (!stats?.isFile()) return null;
+
+  const ext = path.extname(filePath).toLowerCase();
+  const key = `file:${filePath}:${stats.size}:${Math.trunc(stats.mtimeMs)}`;
+  return {
+    kind: "local",
+    path: filePath,
+    ext,
+    mimeType: imageMimeTypes[ext] || "application/octet-stream",
+    size: stats.size,
+    key,
+    caption: imageCaption(filePath),
+  };
+}
+
+async function resolveLocalImagePath(ref, session, chat) {
+  const requested = expandHomePath(stripFileUrl(ref).trim());
+  if (!requested) return null;
+  const roots = await mediaRoots(session, chat);
+  const candidates = [];
+
+  if (path.isAbsolute(requested)) {
+    candidates.push(path.resolve(requested));
+  } else {
+    for (const rootDir of roots) candidates.push(path.resolve(rootDir, requested));
+  }
+
+  for (const candidate of candidates) {
+    const realCandidate = await existingImageRealpath(candidate);
+    if (realCandidate && roots.some((rootDir) => isWithinRoot(realCandidate, rootDir))) return realCandidate;
+  }
+  return null;
+}
+
+async function mediaRoots(session, chat) {
+  const roots = [
+    root,
+    path.join(root, "public"),
+    path.join(root, "output"),
+    path.join(root, "tmp"),
+    session?.meta?.session_id ? path.join(root, "sessions", session.meta.session_id) : "",
+    session?.meta?.agent_snapshot?.cwd,
+    effectiveProjectCwd(chat),
+    os.tmpdir(),
+    path.join(process.env.HOME || "", ".codex", "generated_images"),
+    ...(csv(process.env.TELEGRAM_MEDIA_EXTRA_ROOTS) || []),
+  ].filter(Boolean);
+  const realRoots = await Promise.all(roots.map((candidate) => fs.realpath(candidate).catch(() => null)));
+  return [...new Set(realRoots.filter(Boolean))];
+}
+
+async function existingImageRealpath(candidate) {
+  try {
+    const stats = await fs.stat(candidate);
+    if (!stats.isFile() || !imageExts.has(path.extname(candidate).toLowerCase())) return null;
+    return await fs.realpath(candidate);
+  } catch {
+    return null;
+  }
+}
+
+function isWithinRoot(filePath, rootDir) {
+  const relative = path.relative(rootDir, filePath);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function mediaSentKeys(chat, sessionId) {
+  chat.sent_media ||= {};
+  const keys = Array.isArray(chat.sent_media[sessionId]) ? chat.sent_media[sessionId] : [];
+  return new Set(keys);
+}
+
+function markMediaSent(chatId, sessionId, key) {
+  ensureChat(chatId);
+  const chat = state.chats[chatId];
+  chat.sent_media ||= {};
+  const keys = Array.isArray(chat.sent_media[sessionId]) ? chat.sent_media[sessionId] : [];
+  if (!keys.includes(key)) keys.push(key);
+  chat.sent_media[sessionId] = keys.slice(-100);
+  const sessionIds = Object.keys(chat.sent_media);
+  if (sessionIds.length > maxSentMediaSessions) {
+    for (const staleId of sessionIds.slice(0, sessionIds.length - maxSentMediaSessions)) {
+      delete chat.sent_media[staleId];
+    }
+  }
+}
+
+async function sendImageAsset(chatId, asset, sessionId) {
+  if (asset.kind === "remote") {
+    const method = telegramPhotoExts.has(asset.ext) ? "sendPhoto" : "sendDocument";
+    const field = method === "sendPhoto" ? "photo" : "document";
+    await telegram(method, {
+      chat_id: chatId,
+      [field]: asset.url,
+      caption: truncateCaption(asset.caption),
+    });
+    markMediaSent(chatId, sessionId, asset.key);
+    return true;
+  }
+
+  if (asset.size > maxTelegramDocumentBytes) {
+    await sendMessage(chatId, `Image is too large for Telegram (${formatBytes(asset.size)}):\n${asset.path}`);
+    markMediaSent(chatId, sessionId, asset.key);
+    return false;
+  }
+
+  const method = telegramPhotoExts.has(asset.ext) && asset.size <= maxTelegramPhotoBytes ? "sendPhoto" : "sendDocument";
+  const field = method === "sendPhoto" ? "photo" : "document";
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append("caption", truncateCaption(asset.caption));
+  const buffer = await fs.readFile(asset.path);
+  form.append(field, new Blob([buffer], { type: asset.mimeType }), path.basename(asset.path));
+  await telegramMultipart(method, form);
+  markMediaSent(chatId, sessionId, asset.key);
+  return true;
+}
+
+function imageCaption(value) {
+  let label = "image";
+  if (/^https?:\/\//i.test(value)) {
+    try {
+      label = new URL(value).pathname.split("/").filter(Boolean).pop() || label;
+    } catch {}
+  } else {
+    label = path.basename(value);
+  }
+  return `Image: ${label}`;
+}
+
+function stripFileUrl(ref) {
+  const value = String(ref || "").trim();
+  if (!/^file:\/\//i.test(value)) return value;
+  try {
+    return fileURLToPath(value);
+  } catch {
+    try {
+      return decodeURIComponent(value.replace(/^file:\/\//i, ""));
+    } catch {
+      return value.replace(/^file:\/\//i, "");
+    }
+  }
+}
+
+function expandHomePath(value) {
+  if (value === "~") return process.env.HOME || value;
+  if (value.startsWith("~/")) return path.join(process.env.HOME || "", value.slice(2));
+  return value;
+}
+
+function safeFileName(value) {
+  return String(value || "")
+    .replace(/[^a-zA-Z0-9._-]+/g, "_")
+    .replace(/^_+/, "")
+    .slice(0, 140);
+}
+
+function mimeTypeForPath(filePath) {
+  return imageMimeTypes[path.extname(filePath || "").toLowerCase()] || "";
+}
+
+function mimeExt(mimeType) {
+  const normalized = String(mimeType || "").toLowerCase();
+  if (normalized === "image/jpeg") return ".jpg";
+  for (const [ext, type] of Object.entries(imageMimeTypes)) {
+    if (type === normalized) return ext;
+  }
+  return "";
+}
+
+function truncateCaption(value) {
+  return String(value || "Image").slice(0, 1024);
+}
+
+function formatBytes(bytes) {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
+}
+
 async function sendChatAction(chatId, action) {
   return telegram("sendChatAction", { chat_id: chatId, action });
 }
@@ -910,6 +1671,16 @@ function ensureChat(chatId) {
   if (Array.isArray(state.chats[chatId].allowedTools) && state.chats[chatId].allowedTools.length === 0) {
     state.chats[chatId].allowedTools = [noToolsSentinel];
   }
+}
+
+function enqueueChatMessage(chatId, text, attachments = []) {
+  ensureChat(chatId);
+  const chat = state.chats[chatId];
+  chat.queue ||= [];
+  const overflow = Math.max(0, chat.queue.length - maxQueueMessages + 1);
+  if (overflow > 0) chat.queue.splice(0, overflow);
+  chat.queue.push({ text, attachments, queued_at: new Date().toISOString() });
+  return { length: chat.queue.length, dropped: overflow };
 }
 
 function clearSessionMapping(chatId) {
@@ -965,6 +1736,11 @@ function numberOrUndefined(value) {
   if (!value) return undefined;
   const n = Number(value);
   return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
+function friendlyError(err) {
+  const message = err instanceof Error ? err.message : String(err || "unknown error");
+  return message.replace(/\s+/g, " ").slice(0, 180);
 }
 
 function sleep(ms) {

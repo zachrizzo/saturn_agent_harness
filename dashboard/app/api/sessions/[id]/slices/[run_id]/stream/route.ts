@@ -27,5 +27,6 @@ export async function GET(
     streamFile,
     metaFile,
     liveTail: true,
+    terminalStatusMode: "not-running",
   });
 }

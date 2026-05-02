@@ -30,12 +30,102 @@ type SseStartOverride =
   | { mode: "afterTurnId"; turnId: string }
   | { mode: "afterTurns"; count: number };
 
+type ApiFailure = {
+  message: string;
+  detail?: string;
+  statusLabel: string;
+};
+
+type BedrockAuthPrompt = {
+  detail: string;
+  status?: string;
+  launching: boolean;
+  checking: boolean;
+};
+
 const STREAM_EVENT_FLUSH_MS = 250;
 const INITIAL_VISIBLE_TURNS = 4;
 const VISIBLE_TURN_INCREMENT = 8;
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function errorMessageFromPayload(payload: unknown): string | undefined {
+  const record = asRecord(payload);
+  if (typeof record.error === "string" && record.error.trim()) return record.error;
+  if (typeof record.message === "string" && record.message.trim()) return record.message;
+  const error = asRecord(record.error);
+  if (typeof error.message === "string" && error.message.trim()) return error.message;
+  return undefined;
+}
+
+async function apiFailure(res: Response, label: string): Promise<ApiFailure> {
+  const status = res.statusText ? `${res.status} ${res.statusText}` : String(res.status);
+  const text = await res.text().catch(() => "");
+  if (!text.trim()) return { message: `${label}: ${status}`, statusLabel: status };
+
+  try {
+    const detail = errorMessageFromPayload(JSON.parse(text));
+    return {
+      detail,
+      message: detail ? `${label} (${status}): ${detail}` : `${label}: ${status}`,
+      statusLabel: status,
+    };
+  } catch {
+    const detail = text.trim();
+    return { detail, message: `${label} (${status}): ${detail}`, statusLabel: status };
+  }
+}
+
+function isBedrockAuthFailure(text: string): boolean {
+  const lower = text.toLowerCase();
+  return (
+    lower.includes("bedrock is not authenticated") ||
+    lower.includes("aws sso login") ||
+    lower.includes("sso session associated with this profile")
+  );
+}
+
+function bedrockAuthDetail(failure: ApiFailure): string {
+  const text = failure.detail ?? failure.message;
+  const profile = text.match(/AWS profile '([^']+)'/)?.[1]
+    ?? text.match(/AWS_PROFILE=([^\s]+)/)?.[1];
+  const region = text.match(/\bin ([a-z]{2}-[a-z]+-\d)\b/)?.[1]
+    ?? text.match(/AWS_REGION=([^\s]+)/)?.[1];
+
+  const target = [
+    profile ? `profile ${profile}` : "the configured AWS profile",
+    region ? `in ${region}` : "",
+  ].filter(Boolean).join(" ");
+  return `Bedrock needs an AWS SSO session for ${target}. Sign in from Saturn, then retry your message.`;
+}
+
+function mergeStreamSnapshots(
+  currentEvents: StreamEvent[],
+  incomingEvents: StreamEvent[],
+): { events: StreamEvent[]; keys: Set<string> } {
+  const keys = new Set<string>();
+  const merged: StreamEvent[] = [];
+
+  for (const event of incomingEvents) {
+    const key = streamEventKey(event);
+    if (keys.has(key)) continue;
+    keys.add(key);
+    merged.push(event);
+  }
+
+  // While a turn is streaming, the no-store snapshot can lag behind the SSE
+  // connection. Preserve events the browser already received so loading full
+  // history never blanks the active assistant reply.
+  for (const event of currentEvents) {
+    const key = streamEventKey(event);
+    if (keys.has(key)) continue;
+    keys.add(key);
+    merged.push(event);
+  }
+
+  return { events: merged, keys };
 }
 
 function stableValueKey(value: unknown): string {
@@ -121,6 +211,10 @@ function streamEventKey(event: StreamEvent): string {
     case "other":
       return `other:${event.type}:${itemIdentity ?? stableValueKey(event.raw)}`;
   }
+}
+
+function streamEventRevisionKey(event: StreamEvent): string {
+  return `${streamEventKey(event)}:${stableValueKey(event.raw ?? event)}`;
 }
 
 function buildInspectorTools(events: StreamEvent[]): InspectorTool[] {
@@ -238,6 +332,8 @@ export function ChatView({
   const [historyLoading, setHistoryLoading] = useState(false);
   const composerRef = useRef<ComposerHandle>(null);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
+  const scrollFrameRef = useRef<number | null>(null);
+  const scrollTimerRef = useRef<number | null>(null);
   const didInitialBottomPinRef = useRef(false);
   const preserveScrollRef = useRef<{ top: number; height: number } | null>(null);
   const initialFreshenSessionRef = useRef<string | null>(null);
@@ -248,6 +344,7 @@ export function ChatView({
   const [referencedFiles, setReferencedFiles] = useState<string[]>([]);
   const [fileOpenRequest, setFileOpenRequest] = useState<{ path: string; requestId: number } | null>(null);
   const fileOpenRequestId = useRef(0);
+  const [bedrockAuthPrompt, setBedrockAuthPrompt] = useState<BedrockAuthPrompt | null>(null);
   const [visibleTurnCount, setVisibleTurnCount] = useState(INITIAL_VISIBLE_TURNS);
 
   // Tool selection — drives Inspector content.
@@ -296,6 +393,9 @@ export function ChatView({
       window.clearTimeout(eventFlushRef.current);
       eventFlushRef.current = null;
     }
+    for (const event of pendingEventsRef.current) {
+      seenRef.current.delete(streamEventKey(event));
+    }
     pendingEventsRef.current = [];
   }, []);
 
@@ -328,22 +428,36 @@ export function ChatView({
       setMeta(incoming);
       setStreaming(incoming.status === "running");
     }
-    cancelPendingEventFlush();
+    flushPendingEvents();
     startTransition(() => {
       setEvents((prev) => {
-        const incomingKeys = new Set<string>();
-        let hasUnseenIncomingEvent = false;
-        for (const event of incomingEvents) {
-          const key = streamEventKey(event);
-          incomingKeys.add(key);
-          if (!seenRef.current.has(key)) hasUnseenIncomingEvent = true;
+        const preserveClientOnlyEvents =
+          incoming.status === "running" ||
+          metaRef.current.status === "running" ||
+          sseActiveRef.current;
+        const next = preserveClientOnlyEvents
+          ? mergeStreamSnapshots(prev, incomingEvents)
+          : mergeStreamSnapshots([], incomingEvents);
+
+        if (next.events.length === prev.length) {
+          let sameOrder = true;
+          for (let i = 0; i < prev.length; i += 1) {
+            if (streamEventRevisionKey(prev[i]) !== streamEventRevisionKey(next.events[i])) {
+              sameOrder = false;
+              break;
+            }
+          }
+          if (sameOrder) {
+            seenRef.current = next.keys;
+            return prev;
+          }
         }
-        if (incomingEvents.length < prev.length && !hasUnseenIncomingEvent) return prev;
-        seenRef.current = incomingKeys;
-        return incomingEvents;
+
+        seenRef.current = next.keys;
+        return next.events;
       });
     });
-  }, [cancelPendingEventFlush]);
+  }, [flushPendingEvents]);
 
   const refreshSessionSnapshot = useCallback(async () => {
     if (sseActiveRef.current && metaRef.current.status === "running") return;
@@ -523,7 +637,12 @@ export function ChatView({
       shouldRevealEarlierTurns = false;
       setHistoryLoading(true);
       try {
-        const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}?events=all`, {
+        const params = new URLSearchParams({
+          events: "all",
+          compact: "1",
+          meta: "full",
+        });
+        const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}?${params.toString()}`, {
           cache: "no-store",
         });
         if (res.ok) {
@@ -552,6 +671,13 @@ export function ChatView({
     const scrollEl = getChatScrollElement();
     scrollEl.scrollTop = Math.max(0, scrollEl.scrollHeight - snapshot.height + snapshot.top);
   }, [getChatScrollElement, visibleChunks.length]);
+
+  useEffect(() => {
+    const visible = new Set(visibleChunks.map((chunk) => chunk.turnIndex).filter((index) => index >= 0));
+    for (const index of turnRefs.current.keys()) {
+      if (!visible.has(index)) turnRefs.current.delete(index);
+    }
+  }, [visibleChunks]);
 
   // Long transcripts continue laying out for a few frames. Keep the first open
   // pinned to the latest turn until the bottom sentinel has settled.
@@ -602,9 +728,24 @@ export function ChatView({
     setAutoScroll(true);
     setAtBottom(true);
     scrollToEnd("smooth");
-    window.requestAnimationFrame(() => scrollToEnd("smooth"));
-    window.setTimeout(() => scrollToEnd("auto"), 220);
+    if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
+    if (scrollTimerRef.current !== null) window.clearTimeout(scrollTimerRef.current);
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      scrollToEnd("smooth");
+    });
+    scrollTimerRef.current = window.setTimeout(() => {
+      scrollTimerRef.current = null;
+      scrollToEnd("auto");
+    }, 220);
   };
+
+  useEffect(() => {
+    return () => {
+      if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
+      if (scrollTimerRef.current !== null) window.clearTimeout(scrollTimerRef.current);
+    };
+  }, []);
 
   // `/` to focus composer (unless already in an input/textarea)
   useEffect(() => {
@@ -678,6 +819,81 @@ export function ChatView({
 
   const awaitingPlanApproval = meta.plan_mode?.status === "awaiting_approval";
 
+  const showApiFailure = useCallback((failure: ApiFailure, restoreDraft?: string, restoreEditTurn?: number) => {
+    if (isBedrockAuthFailure(failure.message)) {
+      if (restoreDraft) composerRef.current?.setDraft(restoreDraft);
+      if (typeof restoreEditTurn === "number") setEditingTurnIndex(restoreEditTurn);
+      setBedrockAuthPrompt({
+        detail: bedrockAuthDetail(failure),
+        launching: false,
+        checking: false,
+      });
+      return;
+    }
+    alert(failure.message);
+  }, []);
+
+  const launchBedrockAuth = useCallback(async () => {
+    setBedrockAuthPrompt((current) => current ? { ...current, launching: true, status: undefined } : current);
+    try {
+      const res = await fetch("/api/bedrock/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json().catch(() => null) as unknown;
+      if (!res.ok) {
+        const detail = errorMessageFromPayload(data) ?? "failed to open AWS SSO login";
+        throw new Error(detail);
+      }
+      const status = asRecord(asRecord(data).status);
+      const ready = status.ready === true;
+      setBedrockAuthPrompt((current) => current ? {
+        ...current,
+        launching: false,
+        status: ready
+          ? "Bedrock is authenticated. Retry your message."
+          : "AWS SSO login opened. Complete it, then retry your message.",
+      } : current);
+    } catch (err) {
+      setBedrockAuthPrompt((current) => current ? {
+        ...current,
+        launching: false,
+        status: err instanceof Error ? err.message : "failed to open AWS SSO login",
+      } : current);
+    }
+  }, []);
+
+  const refreshBedrockAuth = useCallback(async () => {
+    setBedrockAuthPrompt((current) => current ? { ...current, checking: true, status: undefined } : current);
+    try {
+      const res = await fetch("/api/bedrock/auth");
+      const data = await res.json().catch(() => null) as unknown;
+      if (!res.ok) {
+        const detail = errorMessageFromPayload(data) ?? "failed to check Bedrock auth";
+        throw new Error(detail);
+      }
+      const status = asRecord(asRecord(data).status);
+      const ready = status.ready === true;
+      const profile = typeof status.profile === "string" ? status.profile : "the configured AWS profile";
+      const region = typeof status.region === "string" ? status.region : "";
+      setBedrockAuthPrompt((current) => current ? {
+        ...current,
+        checking: false,
+        detail: ready
+          ? `Bedrock is authenticated for ${profile}${region ? ` in ${region}` : ""}. Retry your message.`
+          : `Bedrock still needs an AWS SSO session for ${profile}${region ? ` in ${region}` : ""}.`,
+        status: ready ? "Ready" : "Still not authenticated",
+      } : current);
+    } catch (err) {
+      setBedrockAuthPrompt((current) => current ? {
+        ...current,
+        checking: false,
+        status: err instanceof Error ? err.message : "failed to check Bedrock auth",
+      } : current);
+    }
+  }, []);
+
   const doFork = async (message: string, atTurn?: number) => {
     const res = await fetch(
       `/api/sessions/${encodeURIComponent(sessionId)}/fork`,
@@ -687,7 +903,7 @@ export function ChatView({
         body: JSON.stringify({ message, at_turn: atTurn }),
       },
     );
-    if (!res.ok) { alert(`Fork failed: ${res.status}`); return; }
+    if (!res.ok) { showApiFailure(await apiFailure(res, "Fork failed")); return; }
     const { session_id } = (await res.json()) as { session_id: string };
     window.location.href = `/chats/${encodeURIComponent(session_id)}`;
   };
@@ -715,9 +931,10 @@ export function ChatView({
     );
     if (!res.ok) {
       sseStartOverrideRef.current = null;
-      alert(`Edit failed: ${res.status}`);
+      showApiFailure(await apiFailure(res, "Edit failed"), message, atTurn);
       return;
     }
+    setBedrockAuthPrompt(null);
 
     // Truncate events to only those belonging to turns 0..atTurn-1.
     // Each completed turn ends with a "result" event; keep everything up to
@@ -843,9 +1060,18 @@ export function ChatView({
         }
       );
       if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "failed" }));
-        throw new Error(err.error ?? "failed");
+        const failure = await apiFailure(res, "Send failed");
+        setMeta((m) => ({
+          ...m,
+          status: "failed",
+          turns: m.turns.slice(0, -1),
+        }));
+        setStreaming(false);
+        sseStartOverrideRef.current = null;
+        showApiFailure(failure, message);
+        return;
       }
+      setBedrockAuthPrompt(null);
     } catch (e) {
       sseStartOverrideRef.current = null;
       setMeta((m) => ({
@@ -856,7 +1082,7 @@ export function ChatView({
       setStreaming(false);
       alert(e instanceof Error ? e.message : "Failed to send");
     }
-  }, [sessionId]);
+  }, [sessionId, showApiFailure]);
 
   const approvePlan = () => {
     void sendMessage(
@@ -987,7 +1213,9 @@ export function ChatView({
                   key={chunk.turnIndex}
                   className={`chat-turn space-y-2 ${chunk.streaming ? "chat-turn-live" : ""}`.trim()}
                   ref={(el) => {
-                    if (el && chunk.turnIndex >= 0) turnRefs.current.set(chunk.turnIndex, el);
+                    if (chunk.turnIndex < 0) return;
+                    if (el) turnRefs.current.set(chunk.turnIndex, el);
+                    else turnRefs.current.delete(chunk.turnIndex);
                   }}
                 >
                   {showCliTransition && (
@@ -1043,6 +1271,60 @@ export function ChatView({
           )}
 
           <div className="chat-composer-area">
+            {bedrockAuthPrompt && (
+              <div
+                className="mx-4 mb-2 rounded-xl border px-3 py-3 text-[12px]"
+                style={{
+                  borderColor: "color-mix(in srgb, var(--warning, #f59e0b) 35%, var(--border))",
+                  background: "color-mix(in srgb, var(--warning, #f59e0b) 9%, var(--bg-elev))",
+                }}
+              >
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-bg-subtle text-accent">
+                    <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4" />
+                    </svg>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-semibold text-fg">Bedrock auth required</div>
+                    <div className="mt-0.5 text-muted leading-snug">{bedrockAuthPrompt.detail}</div>
+                    {bedrockAuthPrompt.status && (
+                      <div className="mt-1 text-subtle" aria-live="polite">{bedrockAuthPrompt.status}</div>
+                    )}
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="primary"
+                        onClick={launchBedrockAuth}
+                        disabled={bedrockAuthPrompt.launching}
+                      >
+                        {bedrockAuthPrompt.launching ? "Opening..." : "Sign in to AWS"}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={refreshBedrockAuth}
+                        disabled={bedrockAuthPrompt.checking}
+                      >
+                        {bedrockAuthPrompt.checking ? "Checking..." : "Check again"}
+                      </Button>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setBedrockAuthPrompt(null)}
+                    className="rounded-md p-1 text-subtle hover:bg-bg-hover hover:text-fg transition-colors"
+                    aria-label="Dismiss Bedrock auth message"
+                  >
+                    <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            )}
             {awaitingPlanApproval && !streaming && editingTurnIndex === null && (
               <div className="plan-approval-banner">
                 <div className="plan-approval-copy">

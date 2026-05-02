@@ -17,7 +17,7 @@ import { assertBedrockReady, isBedrockNotReadyError } from "@/lib/bedrock-auth";
 import { isBedrockCli } from "@/lib/clis";
 import { agentSupportedClis } from "@/lib/session-utils";
 import { markSessionRunnerFailed } from "@/lib/session-lifecycle";
-import { appendUploadReferences, saveSessionUploads } from "@/lib/session-uploads";
+import { appendUploadReferences, isSessionUploadLimitError, saveSessionUploads } from "@/lib/session-uploads";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -114,8 +114,42 @@ async function readCreateSessionRequest(req: NextRequest): Promise<CreateSession
 export async function GET(req: NextRequest) {
   const full = req.nextUrl.searchParams.get("full") === "1"
     || req.nextUrl.searchParams.get("compact") === "0";
-  const sessions = await listSessions({ compactMeta: !full });
+  const q = req.nextUrl.searchParams.get("q")?.trim().toLowerCase();
+  const status = req.nextUrl.searchParams.get("status")?.trim().toLowerCase();
+  const limitRaw = req.nextUrl.searchParams.get("limit");
+  const limit = limitRaw ? Number(limitRaw) : undefined;
+  let sessions = await listSessions({ compactMeta: !full });
+
+  if (status) {
+    sessions = sessions.filter((session) => session.status.toLowerCase() === status);
+  }
+  if (q) {
+    sessions = sessions.filter((session) => sessionSearchText(session).includes(q));
+  }
+  if (typeof limit === "number" && Number.isInteger(limit) && limit > 0) {
+    sessions = sessions.slice(0, limit);
+  }
+
   return NextResponse.json({ sessions });
+}
+
+function sessionSearchText(session: SessionMeta): string {
+  return [
+    session.session_id,
+    session.agent_id,
+    session.agent_snapshot?.name,
+    session.agent_snapshot?.description,
+    session.agent_snapshot?.cwd,
+    session.status,
+    ...(session.tags ?? []),
+    ...session.turns.flatMap((turn) => [
+      turn.user_message,
+      turn.final_text,
+      turn.cli,
+      turn.model,
+      turn.status,
+    ]),
+  ].filter(Boolean).join("\n").toLowerCase();
 }
 
 export async function POST(req: NextRequest) {
@@ -192,6 +226,6 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     await markSessionRunnerFailed(session_id, `failed to start runner: ${detail}`);
-    return NextResponse.json({ error: detail }, { status: 500 });
+    return NextResponse.json({ error: detail }, { status: isSessionUploadLimitError(err) ? 413 : 500 });
   }
 }

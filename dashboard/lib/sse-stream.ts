@@ -6,7 +6,7 @@
 import { spawn } from "child_process";
 import fs from "node:fs";
 
-type TerminalStatus = "success" | "failed";
+const SSE_REPLAY_CHUNK_BYTES = 256 * 1024;
 
 export type TailSseOptions = {
   /** Absolute path to the JSONL file to tail. */
@@ -23,6 +23,12 @@ export type TailSseOptions = {
    * alive. Pass "idle" here to keep tailing; omit to treat idle as terminal.
    */
   keepOpenStatuses?: string[];
+  /**
+   * Defaults to "success" and "failed". Slice streams use not-running because
+   * validation errors, timeouts, and budget exits are terminal too.
+   */
+  terminalStatuses?: string[];
+  terminalStatusMode?: "listed" | "not-running";
   /**
    * Optional callback invoked for each raw JSONL line before it is forwarded to the client.
    * Fire-and-forget — errors are swallowed so they never affect the SSE stream.
@@ -53,6 +59,8 @@ export function tailSseResponse(opts: TailSseOptions): Response {
     metaFile,
     liveTail = true,
     keepOpenStatuses = [],
+    terminalStatuses = ["success", "failed"],
+    terminalStatusMode = "listed",
     onRawLine,
     startAtEnd = false,
     startAfterResultCount,
@@ -60,10 +68,36 @@ export function tailSseResponse(opts: TailSseOptions): Response {
     startAfterTurnId,
   } = opts;
   const encoder = new TextEncoder();
+  let cleanupStream: (() => void) | undefined;
 
   const body = new ReadableStream({
     start(controller) {
       let closed = false;
+      let waitForFile: ReturnType<typeof setInterval> | null = null;
+      let waitForRunning: ReturnType<typeof setInterval> | null = null;
+      let pollMeta: ReturnType<typeof setInterval> | null = null;
+      let tailProcess: ReturnType<typeof spawn> | null = null;
+
+      const clearTimer = (timer: ReturnType<typeof setInterval> | null) => {
+        if (timer !== null) clearInterval(timer);
+      };
+      const cleanup = () => {
+        clearTimer(waitForFile);
+        clearTimer(waitForRunning);
+        clearTimer(pollMeta);
+        waitForFile = null;
+        waitForRunning = null;
+        pollMeta = null;
+        if (tailProcess) {
+          try { tailProcess.kill(); } catch {}
+          tailProcess = null;
+        }
+      };
+      cleanupStream = () => {
+        closed = true;
+        cleanup();
+      };
+
       const send = (data: string) => {
         if (closed) return;
         try { controller.enqueue(encoder.encode(`data: ${data}\n\n`)); } catch {}
@@ -71,17 +105,21 @@ export function tailSseResponse(opts: TailSseOptions): Response {
       const close = () => {
         if (closed) return;
         closed = true;
+        cleanup();
+        cleanupStream = undefined;
         try { controller.close(); } catch {}
       };
 
       // Wait up to 5s for the stream file to exist (may have just been created)
       let waited = 0;
-      const waitForFile = setInterval(() => {
+      waitForFile = setInterval(() => {
         if (fs.existsSync(streamFile)) {
-          clearInterval(waitForFile);
+          clearTimer(waitForFile);
+          waitForFile = null;
           startTail();
         } else if (waited++ > 50) {
-          clearInterval(waitForFile);
+          clearTimer(waitForFile);
+          waitForFile = null;
           send(JSON.stringify({ type: "error", message: "stream file never appeared" }));
           close();
         }
@@ -91,8 +129,12 @@ export function tailSseResponse(opts: TailSseOptions): Response {
         try { return JSON.parse(fs.readFileSync(metaFile, "utf8")); } catch { return {}; }
       }
 
-      function isTerminal(status: unknown): status is TerminalStatus {
-        if (status !== "success" && status !== "failed") return false;
+      function isTerminal(status: unknown): boolean {
+        if (typeof status !== "string" || !status) return false;
+        if (terminalStatusMode === "not-running" && status !== "running") {
+          return !keepOpenStatuses.includes(status);
+        }
+        if (!terminalStatuses.includes(status)) return false;
         return !keepOpenStatuses.includes(status as string);
       }
 
@@ -181,11 +223,15 @@ export function tailSseResponse(opts: TailSseOptions): Response {
           if (stat.size <= byteOffset) return;
           const fd = fs.openSync(streamFile, "r");
           try {
-            const len = stat.size - byteOffset;
-            const buf = Buffer.alloc(len);
-            fs.readSync(fd, buf, 0, len, byteOffset);
-            byteOffset = stat.size;
-            emitBytes(buf);
+            const targetEnd = stat.size;
+            while (byteOffset < targetEnd && !closed) {
+              const len = Math.min(SSE_REPLAY_CHUNK_BYTES, targetEnd - byteOffset);
+              const buf = Buffer.allocUnsafe(len);
+              const read = fs.readSync(fd, buf, 0, len, byteOffset);
+              if (read <= 0) break;
+              byteOffset += read;
+              emitBytes(read === len ? buf : buf.subarray(0, read));
+            }
           } finally {
             fs.closeSync(fd);
           }
@@ -198,17 +244,19 @@ export function tailSseResponse(opts: TailSseOptions): Response {
         replayUpToEnd();
 
         // Continue from exactly byteOffset+1 (tail -c is 1-indexed).
-        const tail = spawn("tail", ["-c", `+${byteOffset + 1}`, "-f", streamFile]);
+        tailProcess = spawn("tail", ["-c", `+${byteOffset + 1}`, "-f", streamFile]);
+        const tail = tailProcess;
 
-        tail.stdout.on("data", (chunk: Buffer) => {
+        tail.stdout?.on("data", (chunk: Buffer) => {
           byteOffset += chunk.length;
           emitBytes(chunk);
         });
 
-        const pollMeta = setInterval(() => {
+        pollMeta = setInterval(() => {
           const m = readMeta();
           if (isTerminal(m.status)) {
-            clearInterval(pollMeta);
+            clearTimer(pollMeta);
+            pollMeta = null;
             // Flush anything tail hasn't surfaced yet before closing.
             replayUpToEnd();
             if (pendingPartial.trim()) send(pendingPartial.trim());
@@ -220,7 +268,8 @@ export function tailSseResponse(opts: TailSseOptions): Response {
         }, 500);
 
         tail.on("close", () => {
-          clearInterval(pollMeta);
+          clearTimer(pollMeta);
+          pollMeta = null;
           close();
         });
       }
@@ -261,14 +310,16 @@ export function tailSseResponse(opts: TailSseOptions): Response {
           // "running" to meta.json yet. Poll briefly, also replaying any bytes
           // appended during the wait so they aren't dropped.
           let ticks = 0;
-          const waitForRunning = setInterval(() => {
+          waitForRunning = setInterval(() => {
             replayUpToEnd();
             const m = readMeta();
             if (!isTerminal(m.status)) {
-              clearInterval(waitForRunning);
+              clearTimer(waitForRunning);
+              waitForRunning = null;
               startLiveTail();
             } else if (ticks++ >= 66) { // 66 x 150ms ~= 10s max wait
-              clearInterval(waitForRunning);
+              clearTimer(waitForRunning);
+              waitForRunning = null;
               send(JSON.stringify({ type: "_meta", meta: m }));
               close();
             }
@@ -278,6 +329,10 @@ export function tailSseResponse(opts: TailSseOptions): Response {
 
         startLiveTail();
       }
+    },
+    cancel() {
+      cleanupStream?.();
+      cleanupStream = undefined;
     }
   });
 

@@ -2,8 +2,8 @@
 
 const fs = require("node:fs/promises");
 
-const RESOURCES = new Set(["tasks", "agents", "slices", "jobs", "memory"]);
-const CONTROL_FLAGS = new Set(["json", "file", "dry-run", "base-url", "compact", "help"]);
+const RESOURCES = new Set(["tasks", "agents", "slices", "jobs", "memory", "sessions", "chats"]);
+const CONTROL_FLAGS = new Set(["json", "file", "dry-run", "base-url", "compact", "full", "help"]);
 const QUERY_FLAG_MAP = new Map([
   ["q", "q"],
   ["status", "status"],
@@ -29,6 +29,7 @@ Resources:
   slices  list|get|create|update
   jobs    list|get|create|update
   memory  list|get|create|update|delete|graph|recall|capture|embeddings-status|embeddings-rebuild|curate
+  sessions/chats list|get
 
 Payloads:
   --json '<json>'       JSON payload for create/update/claim/release
@@ -39,6 +40,7 @@ Options:
   --base-url <url>      Defaults to SATURN_BASE_URL or http://127.0.0.1:\${PORT:-3737}
   --dry-run             Print method, URL, and body without sending
   --compact             Print compact JSON
+  --full                Include full session metadata/events for sessions/chats
 
 Examples:
   saturn tasks list --status open --linked-session-id "$SATURN_SESSION_ID"
@@ -51,6 +53,9 @@ Examples:
   saturn memory create --json '{"title":"Retry policy","type":"Decisions","scope":"project","cwd":"/path/to/project","content":"Use [[Backoff]] for transient failures."}'
   saturn memory graph --scope global
   saturn memory recall --json '{"message":"What did we decide about retries?","cwd":"/path/to/project"}'
+  saturn sessions list --q "deployment" --limit 5
+  saturn chats get "$SATURN_SESSION_ID"
+  saturn chats get "$SATURN_SESSION_ID" --full
   saturn memory embeddings-status
   saturn memory embeddings-rebuild --json '{"force":true}'
   saturn memory curate <session-id> --dry-run
@@ -78,7 +83,7 @@ function parseArgs(argv) {
     const rawName = arg.slice(2, eq === -1 ? undefined : eq);
     if (!rawName) fail("empty flag is not valid");
 
-    if (rawName === "dry-run" || rawName === "compact" || rawName === "help") {
+    if (rawName === "dry-run" || rawName === "compact" || rawName === "full" || rawName === "help") {
       flags[rawName] = true;
       continue;
     }
@@ -104,7 +109,8 @@ function encodeSegment(value) {
 }
 
 function resourcePath(resource, id, suffix) {
-  let path = `/api/${resource}`;
+  const apiResource = resource === "chats" ? "sessions" : resource;
+  let path = `/api/${apiResource}`;
   if (id) path += `/${encodeSegment(id)}`;
   if (suffix) path += `/${suffix}`;
   return path;
@@ -144,11 +150,15 @@ async function payloadFrom(flags, required) {
 }
 
 function queryFromFlags(flags) {
+  return queryParamsFromFlags(flags).toString();
+}
+
+function queryParamsFromFlags(flags) {
   const query = new URLSearchParams();
   for (const [flag, key] of QUERY_FLAG_MAP) {
     if (flags[flag] !== undefined) query.set(key, String(flags[flag]));
   }
-  return query.toString();
+  return query;
 }
 
 function printJson(value, compact) {
@@ -221,12 +231,26 @@ async function main() {
 
   if (action === "list") {
     method = "GET";
-    const query = resource === "tasks" || resource === "memory" ? queryFromFlags(flags) : "";
+    const supportsQuery = resource === "tasks" || resource === "memory" || resource === "sessions" || resource === "chats";
+    const params = supportsQuery ? queryParamsFromFlags(flags) : new URLSearchParams();
+    if ((resource === "sessions" || resource === "chats") && flags.full) params.set("full", "1");
+    const query = params.toString();
     path = resourcePath(resource) + (query ? `?${query}` : "");
   } else if (action === "get") {
     if (!target) fail(`${resource} get requires an id or name`);
     method = "GET";
     path = resourcePath(resource, target);
+    if (resource === "sessions" || resource === "chats") {
+      const params = new URLSearchParams();
+      if (!flags.full) {
+        params.set("events", "recent");
+        params.set("compact", "1");
+      } else {
+        params.set("meta", "full");
+      }
+      const query = params.toString();
+      if (query) path += `?${query}`;
+    }
   } else if (action === "create") {
     method = "POST";
     path = resourcePath(resource);

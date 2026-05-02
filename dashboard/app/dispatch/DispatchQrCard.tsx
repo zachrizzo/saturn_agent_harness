@@ -116,7 +116,7 @@ export function DispatchQrCard({ initialBotUsername, startParameter }: Props): J
             href={webDeepLink}
             target="_blank"
             rel="noreferrer"
-            className="block rounded-lg border border-border bg-white p-4 w-fit"
+            className="dispatch-qr-link"
             aria-label="Open Saturn Dispatch bot in Telegram"
           >
             <img
@@ -124,7 +124,7 @@ export function DispatchQrCard({ initialBotUsername, startParameter }: Props): J
               alt={`QR code for ${qrDeepLink}`}
               width={264}
               height={264}
-              className="block"
+              className="dispatch-qr-image"
             />
           </a>
           <div className="space-y-2">

@@ -111,6 +111,7 @@ const TERMINAL_LIST_MIN_HEIGHT = 140;
 const INSPECTOR_TOP_OFFSET = 48;
 const INSPECTOR_TAB_BAR_HEIGHT = 40;
 const RUNNING_TOOL_LIST_LIMIT = 160;
+const TERMINAL_TRANSCRIPT_MAX_CHARS = 250_000;
 
 function terminalDetailMaxHeight(): number {
   if (typeof window === "undefined") return 520;
@@ -1067,6 +1068,7 @@ export const Inspector = memo(function Inspector({
   const xtermDataListenerRef = useRef<IDisposable | null>(null);
   const xtermResizeListenerRef = useRef<IDisposable | null>(null);
   const pendingPtyDataRef = useRef("");
+  const resizeCleanupRef = useRef<(() => void) | null>(null);
   const latestTurn = session.turns.at(-1);
   const latestTurnStartedAt = latestTurn?.started_at ?? "";
   const latestTurnFinishedAt = latestTurn?.finished_at ?? "";
@@ -1096,6 +1098,7 @@ export const Inspector = memo(function Inspector({
 
   const startResize = (ev: ReactPointerEvent<HTMLButtonElement>) => {
     ev.preventDefault();
+    resizeCleanupRef.current?.();
     const startX = ev.clientX;
     const startWidth = width;
     const maxWidth = Math.max(360, Math.min(1100, window.innerWidth - 520));
@@ -1111,10 +1114,12 @@ export const Inspector = memo(function Inspector({
       document.body.style.userSelect = "";
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      resizeCleanupRef.current = null;
     };
 
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
+    resizeCleanupRef.current = onUp;
   };
 
   const setClampedTerminalDetailHeight = (height: number) => {
@@ -1123,6 +1128,7 @@ export const Inspector = memo(function Inspector({
 
   const startTerminalDetailResize = (ev: ReactPointerEvent<HTMLButtonElement>) => {
     ev.preventDefault();
+    resizeCleanupRef.current?.();
     const startY = ev.clientY;
     const detailEl = ev.currentTarget.closest(".insp-terminal-detail") as HTMLElement | null;
     const startHeight = detailEl?.getBoundingClientRect().height
@@ -1139,15 +1145,24 @@ export const Inspector = memo(function Inspector({
       document.body.style.userSelect = "";
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      resizeCleanupRef.current = null;
     };
 
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
+    resizeCleanupRef.current = onUp;
   };
 
   const nudgeTerminalDetailHeight = (delta: number) => {
     setTerminalDetailHeight((current) => clampTerminalDetailHeight((current ?? terminalDetailDefaultHeight()) + delta));
   };
+
+  useEffect(() => {
+    return () => {
+      resizeCleanupRef.current?.();
+      resizeCleanupRef.current = null;
+    };
+  }, []);
 
   const openWebUrl = (ev?: FormEvent<HTMLFormElement>) => {
     ev?.preventDefault();
@@ -1513,7 +1528,12 @@ export const Inspector = memo(function Inspector({
           if (xtermRef.current) xtermRef.current.write(payload.data);
           else pendingPtyDataRef.current += payload.data;
         } else {
-          setTerminalTranscript((current) => current + payload.data);
+          setTerminalTranscript((current) => {
+            const next = current + payload.data;
+            return next.length > TERMINAL_TRANSCRIPT_MAX_CHARS
+              ? next.slice(next.length - TERMINAL_TRANSCRIPT_MAX_CHARS)
+              : next;
+          });
         }
       } else if (payload.type === "meta" || payload.type === "end") {
         setSessionTerminals((current) => upsertTerminalRecord(current, payload.terminal));

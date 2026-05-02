@@ -864,6 +864,18 @@ export function sessionDir(sessionId: string): string {
   return path.join(sessionsRoot(), sessionId);
 }
 
+export async function getSessionMeta(sessionId: string): Promise<SessionMeta | null> {
+  const raw = await fs.readFile(path.join(sessionDir(sessionId), "meta.json"), "utf8").catch(() => null);
+  if (raw === null || !raw.trim()) return null;
+  try {
+    const meta = JSON.parse(raw) as SessionMeta;
+    normalizeSessionMeta(meta);
+    return await reconcileStaleRunningSession(meta);
+  } catch {
+    return null;
+  }
+}
+
 export async function listSessions(options: SessionListOptions = {}): Promise<SessionMeta[]> {
   let entries: import("node:fs").Dirent[];
   try {
@@ -946,15 +958,8 @@ export async function getSession(
   options: SessionReadOptions = {},
 ): Promise<{ meta: SessionMeta; events: StreamEvent[]; stderr: string; eventsPartial: boolean } | null> {
   const dir = sessionDir(sessionId);
-  const metaRaw = await fs.readFile(path.join(dir, "meta.json"), "utf8").catch(() => null);
-  if (metaRaw === null || !metaRaw.trim()) return null;
-  let meta: SessionMeta;
-  try {
-    meta = JSON.parse(metaRaw) as SessionMeta;
-  } catch {
-    return null;
-  }
-  normalizeSessionMeta(meta);
+  const meta = await getSessionMeta(sessionId);
+  if (!meta) return null;
 
   const [stream, stderr] = await Promise.all([
     readSessionStream(path.join(dir, "stream.jsonl"), options, meta.status === "running"),

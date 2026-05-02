@@ -3,7 +3,7 @@ import type { Stats } from "node:fs";
 import path from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import readXlsxFile from "read-excel-file/universal";
-import { getSession } from "@/lib/runs";
+import { getSessionMeta } from "@/lib/runs";
 import { fileKindForPath, mimeTypeFor, resolveSessionFile } from "@/lib/session-files";
 
 export const dynamic = "force-dynamic";
@@ -11,6 +11,7 @@ export const runtime = "nodejs";
 
 const MAX_TEXT_BYTES = 8 * 1024 * 1024;
 const MAX_TABLE_ROWS = 20_000;
+const MAX_SPREADSHEET_BYTES = 20 * 1024 * 1024;
 
 type TableSheet = {
   name: string;
@@ -123,13 +124,13 @@ async function workbookSheets(filePath: string): Promise<TableSheet[]> {
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const session = await getSession(id);
+  const session = await getSessionMeta(id);
   if (!session) return NextResponse.json({ error: "not found" }, { status: 404 });
 
   const rawPath = req.nextUrl.searchParams.get("path");
   if (!rawPath) return NextResponse.json({ error: "missing path" }, { status: 400 });
 
-  const filePath = await resolveSessionFile(id, session.meta.agent_snapshot?.cwd, rawPath);
+  const filePath = await resolveSessionFile(id, session.agent_snapshot?.cwd, rawPath);
   if (!filePath) return NextResponse.json({ error: "file not found" }, { status: 404 });
 
   const stats = await fs.stat(filePath);
@@ -167,6 +168,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   }
 
   if (kind === "spreadsheet") {
+    if (stats.size > MAX_SPREADSHEET_BYTES) {
+      return NextResponse.json({
+        ...base,
+        error: `spreadsheet preview is limited to ${Math.floor(MAX_SPREADSHEET_BYTES / 1024 / 1024)} MB`,
+      }, { status: 413 });
+    }
     return NextResponse.json({
       ...base,
       sheets: await workbookSheets(filePath),

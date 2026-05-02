@@ -45,8 +45,10 @@ type Props = UserProps | AssistantProps;
 function sameEventArray(a: StreamEvent[], b: StreamEvent[]): boolean {
   if (a === b) return true;
   if (a.length !== b.length) return false;
-  if (a.length === 0) return true;
-  return a[0] === b[0] && a[a.length - 1] === b[b.length - 1];
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 function sameStringArray(a?: string[], b?: string[]): boolean {

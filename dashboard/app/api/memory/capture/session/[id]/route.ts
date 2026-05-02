@@ -44,7 +44,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const turnId = cleanString(body?.turn_id);
   if (body && "turn_id" in body && !turnId) return badRequest("turn_id must be a non-empty string");
 
-  const session = await getSession(id);
+  const session = await getSession(id, {
+    eventMode: "recent",
+    compactEvents: true,
+    compactMeta: false,
+    recentTurns: 1,
+  });
   if (!session) return NextResponse.json({ error: "not found" }, { status: 404 });
 
   const turns = session.meta.turns ?? [];

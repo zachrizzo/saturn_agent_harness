@@ -16,6 +16,10 @@ import { assertBedrockReady, isBedrockNotReadyError } from "@/lib/bedrock-auth";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
+function lineEndsTurn(line: string): boolean {
+  return /"type"\s*:\s*"(result|turn\.completed|step_finish|turn\.failed|saturn\.turn_aborted)"/.test(line);
+}
+
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -98,7 +102,7 @@ export async function POST(
       for (const line of lines) {
         if (!line) continue;
         keep.push(line);
-        if (/"type"\s*:\s*"result"/.test(line)) {
+        if (lineEndsTurn(line)) {
           resultsSeen++;
           if (resultsSeen >= cutoff) break;
         }

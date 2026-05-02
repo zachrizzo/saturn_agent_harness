@@ -157,6 +157,8 @@ const SEARCH_SKIP_DIRS = new Set([
   "cache",
   "node_modules",
 ]);
+const MAX_SUFFIX_SEARCH_ENTRIES = 10_000;
+const MAX_SUFFIX_SEARCH_MS = 750;
 
 function searchableSuffix(rawPath: string): string | null {
   const requested = stripFileUrl(rawPath).trim();
@@ -177,9 +179,12 @@ async function findBySuffix(roots: string[], rawPath: string): Promise<string | 
   if (!suffix) return null;
   const targetSuffix = suffix;
   const matches: string[] = [];
+  const deadline = Date.now() + MAX_SUFFIX_SEARCH_MS;
+  let visited = 0;
 
   async function walk(root: string, dir: string): Promise<void> {
     if (matches.length >= 20) return;
+    if (visited >= MAX_SUFFIX_SEARCH_ENTRIES || Date.now() > deadline) return;
     let entries: Dirent[];
     try {
       entries = await fs.readdir(dir, { withFileTypes: true });
@@ -189,6 +194,7 @@ async function findBySuffix(roots: string[], rawPath: string): Promise<string | 
 
     for (const entry of entries) {
       if (matches.length >= 20) return;
+      if (visited++ >= MAX_SUFFIX_SEARCH_ENTRIES || Date.now() > deadline) return;
       if (entry.isDirectory()) {
         if (SEARCH_SKIP_DIRS.has(entry.name)) continue;
         await walk(root, path.join(dir, entry.name));

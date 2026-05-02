@@ -2,13 +2,14 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { DispatchConnectionActions } from "./DispatchConnectionActions";
 import { DispatchQrCard } from "./DispatchQrCard";
+import { DispatchSetupInstallPanel } from "./DispatchSetupInstallPanel";
 import { getDispatchOverview, type DispatchOverview } from "@/lib/dispatch";
 import { listAgents, type Agent, type SessionMeta } from "@/lib/runs";
 
 export const revalidate = 0;
 export const dynamic = "force-dynamic";
 
-type SetupKey = "bot" | "token" | "chat" | "service";
+type SetupKey = "bot" | "bridge" | "test";
 type WizardStepState = "complete" | "active" | "locked";
 
 type WizardStep = {
@@ -18,13 +19,6 @@ type WizardStep = {
   summary: string;
   detail: string;
   state: WizardStepState;
-};
-
-type CommandSet = {
-  discovery: string;
-  installDiscovery: string;
-  install: string;
-  restart: string;
 };
 
 const TELEGRAM_COMMANDS = [
@@ -39,6 +33,7 @@ const TELEGRAM_COMMANDS = [
   ["/agents", "List saved dashboard agents."],
   ["/cli <id>", "Set the backend for new sessions."],
   ["/model <id|off>", "Override or clear the model for this Telegram chat."],
+  ["/models", "List available CLIs and model ids."],
   ["/think <effort|off>", "Set or clear reasoning effort for future turns."],
   ["/tools <preset|csv|off>", "Set Claude tool allowlists for new ad-hoc sessions."],
   ["/mcp <on|off>", "Toggle MCP tools for new sessions."],
@@ -93,14 +88,6 @@ function setupStep(step: WizardStep): JSX.Element {
         <div className="dispatch-step-detail">{step.summary}</div>
       </div>
     </div>
-  );
-}
-
-function commandBlock(command: string): JSX.Element {
-  return (
-    <pre className="dispatch-command mono">
-      <code>{command}</code>
-    </pre>
   );
 }
 
@@ -164,12 +151,27 @@ function DashboardStat({
   );
 }
 
-function setupActions(activeKey: SetupKey, overview: DispatchOverview, commands: CommandSet): JSX.Element {
+function setupInstallPanel(variant: "open" | "service", overview: DispatchOverview): JSX.Element {
+  return (
+    <DispatchSetupInstallPanel
+      variant={variant}
+      botUsername={overview.telegram.botUsername}
+      initialBotToken={overview.setup.botToken}
+      initialBaseUrl={overview.setup.baseUrl}
+      initialAllowedChatIds={overview.setup.allowedChatIds}
+      discoveredChatIds={overview.state.chats.map((chat) => chat.chatId)}
+      serviceLabel={overview.service.label}
+      tokenAvailable={overview.setup.tokenAvailable}
+    />
+  );
+}
+
+function setupActions(activeKey: SetupKey, overview: DispatchOverview): JSX.Element {
   if (activeKey === "bot") {
     return (
       <WizardAction
         title="Create the Telegram bot"
-        body="Open BotFather, send /newbot, choose a username ending in bot, and keep the token for the install step."
+        body="Open BotFather, send /newbot, choose a username ending in bot, then paste the bot username into the panel on the right."
       >
         <a href="https://t.me/BotFather" target="_blank" rel="noreferrer" className="btn btn-primary text-[12px] py-1.5 px-3">
           Open BotFather
@@ -178,57 +180,27 @@ function setupActions(activeKey: SetupKey, overview: DispatchOverview, commands:
     );
   }
 
-  if (activeKey === "token") {
+  if (activeKey === "bridge") {
     return (
       <WizardAction
         title="Install the Dispatch bridge"
-        body="Run this from the repo root with the token BotFather gave you. It starts in discovery mode so Saturn can learn your private chat id."
+        body="Paste the BotFather token once. Saturn installs a local LaunchAgent that accepts messages from every Telegram chat that can reach this bot."
       >
-        {commandBlock(commands.installDiscovery)}
-      </WizardAction>
-    );
-  }
-
-  if (activeKey === "chat") {
-    return (
-      <>
-        <WizardAction
-          title="Discover your chat id"
-          body="Run the bridge once in discovery mode, send /start to the bot, then read telegram/state.json for the chat id."
-        >
-          {commandBlock(commands.discovery)}
-        </WizardAction>
-        <WizardAction
-          title="Lock Dispatch to your chat"
-          body="Reinstall the LaunchAgent with TELEGRAM_ALLOWED_CHAT_IDS so only the expected Telegram chats can create sessions."
-        >
-          {commandBlock(commands.install)}
-        </WizardAction>
-      </>
-    );
-  }
-
-  if (overview.plist.allowAll && overview.state.chats.length > 0 && overview.plist.allowedChatCount === 0) {
-    return (
-      <WizardAction
-        title="Lock Dispatch to the discovered chat"
-        body="Discovery worked. Reinstall the LaunchAgent with an explicit allowlist, then send a normal Telegram message to test the bridge."
-      >
-        {commandBlock(commands.install)}
+        {setupInstallPanel("open", overview)}
       </WizardAction>
     );
   }
 
   return (
     <WizardAction
-      title={overview.service.running ? "Send a test message" : overview.service.loaded ? "Start the LaunchAgent" : "Install and start the LaunchAgent"}
+      title={overview.service.running ? "Try it in Telegram" : overview.service.loaded ? "Start the LaunchAgent" : "Install and start the LaunchAgent"}
       body={overview.service.running
-        ? "Send a normal message to the Telegram bot. It should create or continue a Saturn chat."
+        ? "Open the bot and send /start or a normal task. Any Telegram chat can connect because open access is enabled."
         : overview.service.loaded
           ? "The service is loaded but not running. Restart it, then refresh this page."
-          : "The service is not loaded yet. Run the installer command first."}
+          : "The service is not loaded yet. Install the bridge first."}
     >
-      {overview.service.loaded ? commandBlock(commands.restart) : commandBlock(commands.install)}
+      {setupInstallPanel("service", overview)}
     </WizardAction>
   );
 }
@@ -238,13 +210,11 @@ function SetupWizard({
   steps,
   activeStep,
   progress,
-  commands,
 }: {
   overview: DispatchOverview;
   steps: WizardStep[];
   activeStep: WizardStep;
   progress: number;
-  commands: CommandSet;
 }): JSX.Element {
   return (
     <div className="dispatch-page space-y-6">
@@ -288,7 +258,7 @@ function SetupWizard({
           <h2>{activeStep.title}</h2>
           <p>{activeStep.detail}</p>
           <div className="dispatch-wizard-actions">
-            {setupActions(activeStep.key, overview, commands)}
+            {setupActions(activeStep.key, overview)}
           </div>
         </main>
 
@@ -311,26 +281,28 @@ function SetupWizard({
               <SetupCheck
                 done={overview.plist.tokenConfigured}
                 label="Bot token"
-                detail={overview.plist.tokenConfigured ? "Saved in LaunchAgent" : "Token has not been installed"}
+                detail={overview.plist.tokenConfigured
+                  ? "Saved in LaunchAgent"
+                  : overview.setup.botToken
+                    ? "Ready in setup values"
+                    : "Add token in install values"}
               />
               <SetupCheck
-                done={overview.plist.allowedChatCount > 0 || overview.state.chats.length > 0}
+                done={overview.plist.allowAll}
                 label="Chat access"
-                detail={overview.plist.allowedChatCount > 0
-                  ? `${overview.plist.allowedChatCount} allowed chat${overview.plist.allowedChatCount === 1 ? "" : "s"}`
-                  : overview.state.chats.length > 0
-                    ? `${overview.state.chats.length} discovered; lock the allowlist`
-                    : overview.plist.allowAll
-                      ? "Discovery mode enabled; send /start"
-                      : "No chat allowed yet"}
+                detail={overview.plist.allowAll
+                  ? "All Telegram chats can connect"
+                  : overview.plist.allowedChatCount > 0
+                    ? `${overview.plist.allowedChatCount} chats are allowed; reinstall for all chats`
+                    : "Install the bridge to allow all chats"}
               />
               <SetupCheck
-                done={overview.service.running && overview.plist.allowedChatCount > 0}
+                done={overview.service.running && overview.plist.allowAll}
                 label="Bridge service"
-                detail={overview.service.running && overview.plist.allowedChatCount > 0
+                detail={overview.service.running && overview.plist.allowAll
                   ? `Running${overview.service.pid ? ` as pid ${overview.service.pid}` : ""}`
                   : overview.service.running
-                    ? "Running in discovery mode; lock to a chat"
+                    ? "Running, but not in all-chat mode"
                     : overview.service.error ?? "Not running"}
               />
             </div>
@@ -359,14 +331,14 @@ function ActiveConnections({ overview }: { overview: DispatchOverview }): JSX.El
             const href = chat.sessionId ? `/chats/${encodeURIComponent(chat.sessionId)}` : "/chats";
             return (
               <div key={chat.chatId} className="dispatch-session-row">
-                <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="dispatch-session-row-main flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="text-[13px] font-medium truncate">Telegram chat {chat.chatId}</div>
                     <div className="text-[11px] text-subtle truncate">
                       {chat.sessionId ? `session ${chat.sessionId}` : "no session yet"}
                     </div>
                   </div>
-                  <div className="flex flex-wrap items-center justify-end gap-2">
+                  <div className="dispatch-session-row-actions flex flex-wrap items-center justify-end gap-2">
                     <span className="chip">{chat.session?.status ?? "idle"}</span>
                     {chat.queueLength > 0 && <span className="chip text-[var(--warn)]">{chat.queueLength} queued</span>}
                     {chat.pendingSessionId && <span className="chip text-accent">working</span>}
@@ -376,7 +348,7 @@ function ActiveConnections({ overview }: { overview: DispatchOverview }): JSX.El
                     <DispatchConnectionActions chatId={chat.chatId} />
                   </div>
                 </div>
-                <div className="mt-3 grid gap-2 md:grid-cols-[170px_minmax(0,1fr)_150px] text-[12px]">
+                <div className="dispatch-session-row-meta mt-3 grid gap-2 md:grid-cols-[170px_minmax(0,1fr)_150px] text-[12px]">
                   <div className="text-muted">Route: <span className="text-fg">{chat.agentId ?? chat.session?.agent_snapshot?.name ?? "Ad-hoc"}</span></div>
                   <div className="truncate text-muted">Last: <span className="text-fg">{lastTurn(chat.session)}</span></div>
                   <div className="text-muted md:text-right">{formatDate(chat.session?.started_at)}</div>
@@ -392,13 +364,13 @@ function ActiveConnections({ overview }: { overview: DispatchOverview }): JSX.El
 
 function BridgeHealth({ overview }: { overview: DispatchOverview }): JSX.Element {
   return (
-    <section className="card p-5 space-y-4">
+    <section className="card p-5 space-y-4 dispatch-bridge-health">
       <div className="sect-head">
         <h2>Bridge health</h2>
         <span className="right">{overview.service.label}</span>
       </div>
 
-      <div className="grid gap-3 text-[12px]">
+      <div className="grid gap-3 text-[12px] dispatch-bridge-health-list">
         <div>
           <div className="text-muted mb-1">Service</div>
           <div className="text-fg">
@@ -412,6 +384,16 @@ function BridgeHealth({ overview }: { overview: DispatchOverview }): JSX.Element
         <div>
           <div className="text-muted mb-1">Base URL</div>
           <div className="mono truncate" title={overview.plist.baseUrl}>{overview.plist.baseUrl ?? "http://127.0.0.1:3737"}</div>
+        </div>
+        <div>
+          <div className="text-muted mb-1">Chat access</div>
+          <div className="text-fg">
+            {overview.plist.allowAll
+              ? "All Telegram chats"
+              : overview.plist.allowedChatCount > 0
+                ? `${overview.plist.allowedChatCount} allowed chat${overview.plist.allowedChatCount === 1 ? "" : "s"}`
+                : "Not configured"}
+          </div>
         </div>
         <div>
           <div className="text-muted mb-1">LaunchAgent plist</div>
@@ -435,9 +417,9 @@ function CommandReference(): JSX.Element {
       </div>
       <div className="space-y-2">
         {TELEGRAM_COMMANDS.map(([command, help]) => (
-          <div key={command} className="grid grid-cols-[170px_minmax(0,1fr)] gap-3 text-[12px]">
-            <code className="mono text-fg">{command}</code>
-            <span className="text-muted">{help}</span>
+          <div key={command} className="dispatch-command-reference-row grid grid-cols-[170px_minmax(0,1fr)] gap-3 text-[12px]">
+            <code className="mono text-fg break-all">{command}</code>
+            <span className="text-muted break-words">{help}</span>
           </div>
         ))}
       </div>
@@ -471,8 +453,8 @@ function AgentRoutes({ agents }: { agents: Agent[] }): JSX.Element {
                 </div>
                 <span className="chip">{agentKind(agent)}</span>
               </div>
-              <div className="mt-3 text-[12px] text-muted">
-                Telegram command: <code className="mono text-fg">/agent {agent.id}</code>
+              <div className="mt-3 text-[12px] text-muted break-words">
+                Telegram command: <code className="mono text-fg break-all">/agent {agent.id}</code>
               </div>
             </Link>
           ))}
@@ -581,44 +563,16 @@ export default async function DispatchPage() {
     listAgents().catch(() => []),
   ]);
 
+  const openAccessConfigured = overview.plist.tokenConfigured && overview.plist.allowAll;
   const setupChecks = [
     Boolean(overview.telegram.botUsername),
-    overview.plist.tokenConfigured,
-    overview.plist.allowedChatCount > 0 || overview.state.chats.length > 0,
-    overview.service.running && overview.plist.allowedChatCount > 0,
+    openAccessConfigured,
+    overview.service.running && openAccessConfigured,
   ];
   const firstIncomplete = setupChecks.findIndex((done) => !done);
   const activeIndex = firstIncomplete === -1 ? setupChecks.length - 1 : firstIncomplete;
   const completeCount = setupChecks.filter(Boolean).length;
   const progress = Math.round((completeCount / setupChecks.length) * 100);
-  const botUsername = overview.telegram.botUsername ?? "your_saturn_bot";
-  const discoveredChatIds = overview.state.chats.map((chat) => chat.chatId);
-  const allowedChatIds = discoveredChatIds.length > 0 ? discoveredChatIds.join(",") : "123456789";
-  const baseUrl = overview.plist.baseUrl ?? "http://127.0.0.1:3737";
-  const commands: CommandSet = {
-    discovery: [
-      `TELEGRAM_BOT_TOKEN="123:abc"`,
-      `TELEGRAM_BOT_USERNAME="${botUsername}"`,
-      `TELEGRAM_ALLOW_ALL=1`,
-      `SATURN_BASE_URL="${baseUrl}"`,
-      `node bin/telegram-dispatch.mjs`,
-    ].join(" \\\n  "),
-    installDiscovery: [
-      `TELEGRAM_BOT_TOKEN="123:abc"`,
-      `TELEGRAM_BOT_USERNAME="${botUsername}"`,
-      `TELEGRAM_ALLOW_ALL=1`,
-      `SATURN_BASE_URL="${baseUrl}"`,
-      `bin/install-telegram-service.sh`,
-    ].join(" \\\n  "),
-    install: [
-      `TELEGRAM_BOT_TOKEN="123:abc"`,
-      `TELEGRAM_BOT_USERNAME="${botUsername}"`,
-      `TELEGRAM_ALLOWED_CHAT_IDS="${allowedChatIds}"`,
-      `SATURN_BASE_URL="${baseUrl}"`,
-      `bin/install-telegram-service.sh`,
-    ].join(" \\\n  "),
-    restart: `launchctl kickstart -k gui/$(id -u)/${overview.service.label}`,
-  };
   const stepState = (index: number): WizardStepState => {
     if (setupChecks[index]) return "complete";
     return index === activeIndex ? "active" : "locked";
@@ -629,38 +583,36 @@ export default async function DispatchPage() {
       number: "1",
       title: "Create bot",
       summary: overview.telegram.botUsername ? `@${overview.telegram.botUsername}` : "BotFather username needed",
-      detail: "Create the Telegram bot and give Saturn the bot username. The token is only used in the local install command.",
+      detail: "Create the Telegram bot and give Saturn the bot username. The token is used locally to run the bridge.",
       state: stepState(0),
     },
     {
-      key: "token",
+      key: "bridge",
       number: "2",
       title: "Install bridge",
-      summary: overview.plist.tokenConfigured ? "Token saved" : "Token not installed",
-      detail: "Install the local LaunchAgent so Dispatch can receive Telegram updates while the dashboard is running.",
+      summary: openAccessConfigured
+        ? "All chats allowed"
+        : overview.plist.allowedChatCount > 0
+          ? "Currently restricted"
+          : overview.plist.tokenConfigured
+            ? "Token saved; enable all chats"
+            : "Token not installed",
+      detail: "Install the local LaunchAgent in open access mode. Any Telegram chat that messages this bot can use Saturn.",
       state: stepState(1),
     },
     {
-      key: "chat",
+      key: "test",
       number: "3",
-      title: "Allow chat",
-      summary: overview.plist.allowedChatCount > 0
-        ? `${overview.plist.allowedChatCount} chat${overview.plist.allowedChatCount === 1 ? "" : "s"} allowed`
+      title: "Test from Telegram",
+      summary: overview.service.running && openAccessConfigured
+        ? "Bridge ready"
         : overview.state.chats.length > 0
-          ? `${overview.state.chats.length} chat${overview.state.chats.length === 1 ? "" : "s"} discovered`
-        : overview.plist.allowAll
-          ? "Discovery mode active"
-          : "No chat allowed yet",
-      detail: "Discover the Telegram chat id, then reinstall the bridge with an explicit allowlist.",
+          ? `${overview.state.chats.length} connected chat${overview.state.chats.length === 1 ? "" : "s"}`
+          : overview.service.running
+            ? "Ready for messages"
+            : "Service not running",
+      detail: "Open the bot in Telegram and send /start or a normal task. Saturn should create or continue a chat.",
       state: stepState(2),
-    },
-    {
-      key: "service",
-      number: "4",
-      title: "Lock and test",
-      summary: overview.service.running && overview.plist.allowedChatCount > 0 ? "Bridge ready" : "Bridge not locked yet",
-      detail: "Lock the bridge to your Telegram chat and send a normal task from Telegram. Once this check passes, Dispatch opens the dashboard.",
-      state: stepState(3),
     },
   ];
   const activeStep = steps[activeIndex] ?? steps[steps.length - 1];
@@ -675,7 +627,6 @@ export default async function DispatchPage() {
       steps={steps}
       activeStep={activeStep}
       progress={progress}
-      commands={commands}
     />
   );
 }

@@ -15,6 +15,10 @@ import { DEFAULT_CLI, normalizeCli } from "@/lib/clis";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
+function lineEndsTurn(line: string): boolean {
+  return /"type"\s*:\s*"(result|turn\.completed|step_finish|turn\.failed|saturn\.turn_aborted)"/.test(line);
+}
+
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -67,7 +71,8 @@ export async function POST(
 
   // Copy parent's stream.jsonl events for the first `cutoff` completed turns,
   // so the transcript (assistant replies, tool calls) is visible in the fork.
-  // Each completed turn ends with a single `"type":"result"` event.
+  // Different CLIs use different terminal event names; keep through the
+  // terminal marker for the requested turn.
   let carriedStream = "";
   try {
     const parentStream = await fs.readFile(
@@ -81,8 +86,7 @@ export async function POST(
       for (const line of lines) {
         if (!line) continue;
         keep.push(line);
-        // cheap detection — matches `"type":"result"` in the compact JSONL
-        if (/"type"\s*:\s*"result"/.test(line)) {
+        if (lineEndsTurn(line)) {
           resultsSeen++;
           if (resultsSeen >= cutoff) break;
         }

@@ -6,6 +6,25 @@ import { sessionsRoot } from "@/lib/paths";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
+const MAX_EXPORT_SLICES = 500;
+const MAX_RAW_OUTPUT_BYTES = 1024 * 1024;
+
+async function readTextWithLimit(filePath: string, maxBytes: number): Promise<{ text: string; truncated: boolean }> {
+  const handle = await fs.open(filePath, "r");
+  try {
+    const stat = await handle.stat();
+    const length = Math.min(stat.size, maxBytes);
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, 0);
+    return {
+      text: buffer.toString("utf8"),
+      truncated: stat.size > maxBytes,
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
 // GET /api/sessions/[id]/export
 // Bundles session meta + all slice metas + outputs into a single JSON response.
 // Shape: { session: SessionMeta, slices: Array<{ run_id, meta, output, raw_output }> }
@@ -47,7 +66,7 @@ export async function GET(
 
   // For each slice run, read meta.json + output.json
   const slices: unknown[] = [];
-  for (const entry of indexEntries) {
+  for (const entry of indexEntries.slice(0, MAX_EXPORT_SLICES)) {
     const runId = entry.slice_run_id as string | undefined;
     if (!runId) continue;
 
@@ -70,14 +89,21 @@ export async function GET(
     }
 
     let raw_output = "";
+    let raw_output_truncated = false;
     try {
-      raw_output = await fs.readFile(path.join(runDir, "output.raw.txt"), "utf8");
+      const raw = await readTextWithLimit(path.join(runDir, "output.raw.txt"), MAX_RAW_OUTPUT_BYTES);
+      raw_output = raw.text;
+      raw_output_truncated = raw.truncated;
     } catch {
       // no raw output
     }
 
-    slices.push({ run_id: runId, meta, output, raw_output });
+    slices.push({ run_id: runId, meta, output, raw_output, raw_output_truncated });
   }
 
-  return NextResponse.json({ session, slices });
+  return NextResponse.json({
+    session,
+    slices,
+    truncated: indexEntries.length > MAX_EXPORT_SLICES,
+  });
 }

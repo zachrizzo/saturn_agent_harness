@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { NextResponse } from "next/server";
-import { getSession } from "@/lib/runs";
+import { getSessionMeta } from "@/lib/runs";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -64,10 +64,10 @@ function parseStatus(stdout: string, gitRoot: string): Array<Omit<GitChange, "ex
 
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const session = await getSession(id);
+  const session = await getSessionMeta(id);
   if (!session) return NextResponse.json({ error: "not found" }, { status: 404 });
 
-  const cwd = session.meta.agent_snapshot?.cwd;
+  const cwd = session.agent_snapshot?.cwd;
   if (!cwd) {
     return NextResponse.json({
       isGitRepo: false,

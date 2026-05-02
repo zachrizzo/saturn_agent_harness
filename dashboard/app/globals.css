@@ -2155,6 +2155,29 @@ h1, h2, h3, h4, h5, h6 {
   gap: 14px;
 }
 
+[data-shell="main-scroll"]:has(.dispatch-page) {
+  overflow-x: hidden;
+}
+
+[data-shell="main-scroll"]:has(.dispatch-page) > div {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.dispatch-page,
+.dispatch-page > *,
+.dispatch-setup-wizard,
+.dispatch-dashboard-layout,
+.dispatch-dashboard-primary,
+.dispatch-dashboard-secondary,
+.dispatch-setup-rail,
+.dispatch-setup-stage,
+.dispatch-setup-sidecar,
+.dispatch-setup-checks {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .dispatch-dashboard-hero {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -2197,6 +2220,7 @@ h1, h2, h3, h4, h5, h6 {
 .dispatch-setup-checks {
   position: relative;
   overflow: hidden;
+  min-width: 0;
   padding: 18px;
   border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
   border-radius: 8px;
@@ -2405,6 +2429,121 @@ h1, h2, h3, h4, h5, h6 {
   white-space: pre-wrap;
 }
 
+.dispatch-install-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.dispatch-install-intro {
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--success) 22%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--success) 7%, transparent);
+}
+
+.dispatch-install-intro-title {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.dispatch-install-intro-copy {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.dispatch-install-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.dispatch-install-allowed {
+  grid-column: 1 / -1;
+}
+
+.dispatch-install-save-row,
+.dispatch-install-command-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dispatch-install-primary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dispatch-install-command {
+  display: grid;
+  gap: 8px;
+}
+
+.dispatch-install-command-title {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 740;
+}
+
+.dispatch-install-command-detail {
+  margin-top: 2px;
+  color: var(--text-subtle);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.dispatch-install-command-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.dispatch-install-manual,
+.dispatch-install-advanced {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-subtle) 64%, transparent);
+}
+
+.dispatch-install-manual > summary,
+.dispatch-install-advanced > summary {
+  cursor: pointer;
+  padding: 10px 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.dispatch-install-manual-body,
+.dispatch-install-advanced-body {
+  display: grid;
+  gap: 10px;
+  padding: 0 12px 12px;
+}
+
+.dispatch-install-status {
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--success) 26%, var(--border));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--success) 8%, transparent);
+  color: var(--success);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.dispatch-install-status.warn {
+  border-color: color-mix(in srgb, var(--fail) 28%, var(--border));
+  background: color-mix(in srgb, var(--fail) 8%, transparent);
+  color: var(--fail);
+}
+
 .dispatch-check-row {
   display: grid;
   grid-template-columns: 12px minmax(0, 1fr);
@@ -2512,14 +2651,39 @@ h1, h2, h3, h4, h5, h6 {
 .dispatch-dashboard-primary,
 .dispatch-dashboard-secondary {
   display: grid;
+  min-width: 0;
   gap: 14px;
 }
 
+.dispatch-dashboard-primary > *,
+.dispatch-dashboard-secondary > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.dispatch-bridge-health,
+.dispatch-bridge-health-list,
+.dispatch-bridge-health-list > *,
+.dispatch-command-reference-row,
+.dispatch-command-reference-row > * {
+  min-width: 0;
+}
+
 .dispatch-session-row {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   padding: 14px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-subtle);
+}
+
+.dispatch-session-row-main,
+.dispatch-session-row-actions,
+.dispatch-session-row-meta,
+.dispatch-session-row-meta > * {
+  min-width: 0;
 }
 
 .dispatch-empty-state {
@@ -2533,6 +2697,46 @@ h1, h2, h3, h4, h5, h6 {
 
 .dispatch-qr-card {
   height: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.dispatch-qr-card .sect-head {
+  min-width: 0;
+  gap: 8px;
+}
+
+.dispatch-qr-card .sect-head h2,
+.dispatch-qr-card .sect-head .right {
+  min-width: 0;
+}
+
+.dispatch-qr-card .sect-head .right {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dispatch-qr-link {
+  display: block;
+  width: min(100%, 298px);
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.dispatch-qr-image {
+  display: block;
+  width: min(100%, 264px);
+  height: auto;
+  margin: 0 auto;
+}
+
+.dispatch-chat-id-input-row {
+  display: flex;
+  gap: 8px;
 }
 
 .dispatch-qr-empty {
@@ -2602,8 +2806,84 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 @media (max-width: 680px) {
+  [data-shell="main-scroll"]:has(.dispatch-page) > div {
+    padding: 16px;
+  }
+
+  .dispatch-header,
+  .dispatch-dashboard-hero {
+    align-items: stretch;
+  }
+
+  .dispatch-dashboard-hero,
+  .dispatch-setup-rail,
+  .dispatch-setup-stage,
+  .dispatch-setup-checks {
+    padding: 14px;
+  }
+
+  .dispatch-dashboard-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .dispatch-dashboard-actions .btn,
+  .dispatch-dashboard-actions .chip {
+    width: 100%;
+  }
+
   .dispatch-dashboard-stats {
     grid-template-columns: 1fr;
+  }
+
+  .dispatch-session-row-main,
+  .dispatch-session-row-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .dispatch-session-row-actions {
+    justify-content: flex-start;
+  }
+
+  .dispatch-session-row-actions .btn {
+    width: 100%;
+  }
+
+  .dispatch-install-form,
+  .dispatch-install-save-row,
+  .dispatch-install-command-head,
+  .dispatch-install-primary {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .dispatch-install-command-buttons {
+    justify-content: flex-start;
+  }
+
+  .dispatch-chat-id-input-row {
+    flex-direction: column;
+  }
+
+  .dispatch-chat-id-input-row .btn {
+    width: 100%;
+  }
+
+  .dispatch-command-reference-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+
+  .dispatch-qr-card .sect-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .dispatch-qr-link {
+    width: 100%;
+    padding: 12px;
   }
 
   .dispatch-setup-stage h2 {

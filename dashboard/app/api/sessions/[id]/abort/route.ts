@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { NextRequest, NextResponse } from "next/server";
-import { getSession, sessionDir, type SessionMeta } from "@/lib/runs";
+import { getSessionMeta, sessionDir, type SessionMeta } from "@/lib/runs";
 import { parseStreamJsonl, type StreamEvent } from "@/lib/events";
 
 export const dynamic = "force-dynamic";
@@ -70,8 +70,8 @@ async function waitForExit(pid: number | undefined, timeoutMs = 1000): Promise<v
 
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const session = await getSession(id);
-  if (!session) return NextResponse.json({ error: "not found" }, { status: 404 });
+  const meta = await getSessionMeta(id);
+  if (!meta) return NextResponse.json({ error: "not found" }, { status: 404 });
 
   const dir = sessionDir(id);
   const pids = JSON.parse(await fs.readFile(path.join(dir, "pids.json"), "utf8").catch(() => "{}")) as {
@@ -86,7 +86,6 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   await waitForExit(pids.script_pid);
 
   const metaPath = path.join(dir, "meta.json");
-  const meta = session.meta;
   const now = new Date().toISOString();
   const lastTurn = meta.turns.at(-1);
   const streamPath = path.join(dir, "stream.jsonl");

@@ -37,6 +37,7 @@ _cleanup_on_exit() {
     fi
   fi
   rm -f "${LOCK_FILE:-}" 2>/dev/null || true
+  rm -f "${_settings_tmp:-}" 2>/dev/null || true
 }
 trap _cleanup_on_exit EXIT
 
@@ -177,7 +178,7 @@ if [[ -n "${SATURN_BASE_URL:-}" ]]; then
 
 ## Saturn App CLI
 
-You have access to the Saturn app CLI for creating and updating app objects. Use it to manage shared tasks, agents, slices, scheduled jobs, and Saturn memory. All commands print JSON to stdout.
+You have access to the Saturn app CLI for creating, updating, and inspecting Saturn app objects. Use it to manage shared tasks, agents, slices, scheduled jobs, Saturn memory, and prior Saturn chats. All commands print JSON to stdout.
 
 Command: ${SATURN_CLI_BIN}
 Base URL: ${SATURN_BASE_URL}
@@ -201,6 +202,11 @@ saturn slices update repo-scan --json '{\"description\":\"...\"}'
 saturn jobs create --json '{\"name\":\"daily-summary\",\"cron\":\"0 9 * * *\",\"prompt\":\"Summarize the repo.\"}'
 saturn jobs update daily-summary --json '{\"cron\":\"30 9 * * *\"}'
 
+# Prior chats
+saturn sessions list --q \"deployment\" --limit 5
+saturn sessions get \"${SATURN_SESSION_ID:-session-id}\"
+saturn chats list --status success --limit 10
+
 # Memory
 saturn memory list --q \"architecture decision\" --scope project --cwd \"${AGENT_CWD:-$PWD}\"
 saturn memory create --json '{\"title\":\"Retry policy\",\"type\":\"Decisions\",\"scope\":\"project\",\"cwd\":\"/path/to/project\",\"content\":\"Use [[Backoff]] for transient failures.\"}'
@@ -215,6 +221,28 @@ saturn slices create --dry-run --json '{\"id\":\"draft\",\"name\":\"Draft\",\"pr
 \`\`\`
 
 Claim tasks before working on them. Release when done. If a claim fails with a conflict, another agent is already working on it.
+
+---"
+fi
+
+SATURN_CONTEXT_REMINDER=""
+if [[ -n "${SATURN_BASE_URL:-}" ]]; then
+  SATURN_CLI_BIN="${SATURN_CLI_BIN:-saturn}"
+  SATURN_CONTEXT_REMINDER="
+---
+
+## Saturn Context Access
+
+You can inspect Saturn memory and prior Saturn chats through the \`${SATURN_CLI_BIN}\` CLI. If the user asks whether you can see memories, prior chats, or other Saturn context, do not answer from assumption. Use the CLI, then answer based on what you found.
+
+Useful read commands:
+
+\`\`\`
+${SATURN_CLI_BIN} memory recall --json '{\"message\":\"...\",\"cwd\":\"${AGENT_CWD:-$PWD}\"}'
+${SATURN_CLI_BIN} memory list --q \"search terms\" --scope project --cwd \"${AGENT_CWD:-$PWD}\"
+${SATURN_CLI_BIN} sessions list --q \"search terms\" --limit 10
+${SATURN_CLI_BIN} sessions get \"${SATURN_SESSION_ID:-session-id}\"
+\`\`\`
 
 ---"
 fi
@@ -254,7 +282,7 @@ $PROMPT_USER_MESSAGE"
 fi
 
 if [[ "$IS_RESUME" == "yes" && "$BUILD_TRANSCRIPT" == "no" ]]; then
-  PROMPT_TO_SEND="$PROMPT_USER_MESSAGE"
+  PROMPT_TO_SEND="${SATURN_CONTEXT_REMINDER:+${SATURN_CONTEXT_REMINDER}$'\n\n'}$PROMPT_USER_MESSAGE"
 fi
 
 # Build the prompt text
@@ -269,16 +297,26 @@ User: $PROMPT_USER_MESSAGE"
     PROMPT_TO_SEND="${SATURN_CLI_INSTRUCTIONS:+${SATURN_CLI_INSTRUCTIONS}$'\n\n'}${SATURN_ORCHESTRATOR_INSTRUCTIONS:+${SATURN_ORCHESTRATOR_INSTRUCTIONS}$'\n\n'}$PROMPT_USER_MESSAGE"
   fi
 elif [[ "$BUILD_TRANSCRIPT" == "yes" ]]; then
-  TRANSCRIPT="$(jq -r '
-    .turns
+  TRANSCRIPT_MAX_TURNS="${SATURN_TRANSCRIPT_MAX_TURNS:-12}"
+  TRANSCRIPT_FIELD_MAX_CHARS="${SATURN_TRANSCRIPT_FIELD_MAX_CHARS:-16000}"
+  TRANSCRIPT="$(jq -r --argjson max_turns "$TRANSCRIPT_MAX_TURNS" --argjson max_chars "$TRANSCRIPT_FIELD_MAX_CHARS" '
+    def trunc($n):
+      if type == "string" and length > $n
+      then .[0:$n] + "\n\n[truncated " + ((length - $n) | tostring) + " chars]"
+      else .
+      end;
+    (.turns | length) as $total
+    | (.turns | if length > $max_turns then .[(length - $max_turns):] else . end) as $turns
+    | ($total - ($turns | length)) as $offset
+    | $turns
     | to_entries[]
     | .key as $idx
     | .value as $turn
-    | "Turn \($idx + 1) [cli=\($turn.cli // "unknown"), status=\($turn.status // "unknown")]"
-      + "\nUser: " + ($turn.user_message // "")
+    | "Turn \($offset + $idx + 1) [cli=\($turn.cli // "unknown"), status=\($turn.status // "unknown")]"
+      + "\nUser: " + (($turn.user_message // "") | trunc(($max_chars / 2) | floor))
       + "\n\nAssistant: "
       + (if (($turn.final_text // "") | length) > 0
-         then $turn.final_text
+         then (($turn.final_text // "") | trunc($max_chars))
               + (if ($turn.status // "") == "aborted"
                  then "\n\n[assistant response was interrupted before completion]"
                  else ""
@@ -286,9 +324,9 @@ elif [[ "$BUILD_TRANSCRIPT" == "yes" ]]; then
          else "[no final assistant response recorded; turn status was \($turn.status // "unknown")]"
          end)
   ' "$META_FILE")"
+  AGENT_BLOCK="$AGENT_PROMPT$SATURN_CLI_INSTRUCTIONS$SATURN_ORCHESTRATOR_INSTRUCTIONS"
   AGENT_LINE=""
-  [[ -n "$AGENT_PROMPT" ]] && AGENT_LINE="$AGENT_PROMPT
-$SATURN_ORCHESTRATOR_INSTRUCTIONS
+  [[ -n "$AGENT_BLOCK" ]] && AGENT_LINE="$AGENT_BLOCK
 
 ---
 
@@ -573,6 +611,7 @@ fi
 
 # For claude-local sessions, write settings to a temp file to avoid shell quoting issues
 if [[ -n "${CLAUDE_LOCAL_SETTINGS:-}" ]]; then
+  _settings_tmp=""
   _settings_tmp="$(mktemp -t claude-local-settings).json"
   printf '%s' "$CLAUDE_LOCAL_SETTINGS" > "$_settings_tmp"
   RUN_ARGS+=(--settings "$_settings_tmp")

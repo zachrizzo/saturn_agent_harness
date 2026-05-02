@@ -16,6 +16,7 @@ import {
 const execFileAsync = promisify(execFile);
 
 export const DISPATCH_SERVICE_LABEL = "com.zachrizzo.saturn-telegram-dispatch";
+export const DEFAULT_DISPATCH_BASE_URL = "http://127.0.0.1:3737";
 
 export type DispatchChat = {
   chatId: string;
@@ -42,6 +43,7 @@ export type DispatchOverview = {
     path?: string;
     installed: boolean;
     tokenConfigured: boolean;
+    allowedChatIds?: string;
     allowedChatCount: number;
     allowAll: boolean;
     baseUrl?: string;
@@ -55,6 +57,9 @@ export type DispatchOverview = {
     botUsername?: string;
     deepLink?: string;
     qrDataUri?: string;
+  };
+  setup: DispatchSetupSettings & {
+    tokenAvailable: boolean;
   };
   state: {
     path: string;
@@ -72,11 +77,25 @@ export type DispatchOverview = {
   };
 };
 
+export type DispatchSetupSettings = {
+  botToken?: string;
+  baseUrl: string;
+  allowedChatIds?: string;
+};
+
+export type DispatchInstallMode = "open" | "locked";
+
 type TelegramState = {
   offset?: number;
   bot?: {
     username?: string;
     first_name?: string;
+    updated_at?: string;
+  };
+  setup?: {
+    bot_token?: string;
+    base_url?: string;
+    allowed_chat_ids?: string;
     updated_at?: string;
   };
   chats?: Record<string, {
@@ -115,6 +134,63 @@ function configuredValue(value: string | undefined): string | undefined {
   if (!value) return undefined;
   if (value.includes("replace-") || value.includes("your_") || value.includes("123456789")) return undefined;
   return value;
+}
+
+function cleanSetupToken(value: unknown, strict: boolean): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const token = value.trim();
+  if (!token) return undefined;
+  if (/\s/.test(token)) {
+    if (strict) throw new Error("Telegram bot token cannot contain spaces or newlines.");
+    return undefined;
+  }
+  if (!token.includes(":")) {
+    if (strict) throw new Error("Telegram bot token should look like the BotFather token, for example 123456789:abc.");
+    return undefined;
+  }
+  return token;
+}
+
+function cleanSetupBaseUrl(value: unknown, strict: boolean): string {
+  if (typeof value !== "string" || !value.trim()) return DEFAULT_DISPATCH_BASE_URL;
+  const raw = value.trim();
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("SATURN_BASE_URL must start with http:// or https://.");
+    }
+    return parsed.toString().replace(/\/+$/, "");
+  } catch (err) {
+    if (strict) {
+      throw err instanceof Error ? err : new Error("SATURN_BASE_URL must be a valid URL.");
+    }
+    return DEFAULT_DISPATCH_BASE_URL;
+  }
+}
+
+function cleanSetupAllowedChatIds(value: unknown, strict: boolean): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const parts = value
+    .split(/[,\s]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const invalid = parts.find((part) => !/^-?\d+$/.test(part));
+  if (invalid) {
+    if (strict) throw new Error(`Telegram chat id "${invalid}" must be numeric.`);
+    return undefined;
+  }
+  return parts.length > 0 ? [...new Set(parts)].join(",") : undefined;
+}
+
+function normalizeDispatchSetupSettings(input: unknown, strict: boolean): DispatchSetupSettings {
+  const rec = input && typeof input === "object" && !Array.isArray(input)
+    ? input as Record<string, unknown>
+    : {};
+  return {
+    botToken: cleanSetupToken(rec.botToken ?? rec.bot_token, strict),
+    baseUrl: cleanSetupBaseUrl(rec.baseUrl ?? rec.base_url, strict),
+    allowedChatIds: cleanSetupAllowedChatIds(rec.allowedChatIds ?? rec.allowed_chat_ids, strict),
+  };
 }
 
 async function readFirstExisting(paths: string[]): Promise<{ path: string; raw: string } | null> {
@@ -173,6 +249,7 @@ async function readPlist(): Promise<DispatchOverview["plist"]> {
     path: found.path,
     installed: found.path === installed,
     tokenConfigured: Boolean(token),
+    allowedChatIds: allowed || undefined,
     allowedChatCount: allowed.split(",").map((s) => s.trim()).filter(Boolean).length,
     allowAll: values.TELEGRAM_ALLOW_ALL === "1",
     baseUrl: values.SATURN_BASE_URL,
@@ -181,6 +258,13 @@ async function readPlist(): Promise<DispatchOverview["plist"]> {
     adhocCli: values.SATURN_ADHOC_CLI,
     adhocModel: configuredValue(values.SATURN_ADHOC_MODEL),
   };
+}
+
+async function readInstalledBotToken(): Promise<string | undefined> {
+  const installed = path.join(os.homedir(), "Library", "LaunchAgents", `${DISPATCH_SERVICE_LABEL}.plist`);
+  const found = await readFirstExisting([installed]);
+  if (!found) return undefined;
+  return configuredValue(keyStringMap(found.raw).TELEGRAM_BOT_TOKEN);
 }
 
 async function tailFile(filePath: string, maxBytes = 6000): Promise<{ exists: boolean; text: string }> {
@@ -201,7 +285,7 @@ async function tailFile(filePath: string, maxBytes = 6000): Promise<{ exists: bo
   }
 }
 
-async function readState(): Promise<DispatchOverview["state"] & { botUsername?: string }> {
+async function readState(): Promise<DispatchOverview["state"] & { botUsername?: string; setup?: TelegramState["setup"] }> {
   const statePath = dispatchStatePath();
   const { state: parsed, exists } = await readDispatchState();
 
@@ -233,6 +317,7 @@ async function readState(): Promise<DispatchOverview["state"] & { botUsername?: 
     exists,
     offset: parsed.offset ?? 0,
     botUsername: parsed.bot?.username,
+    setup: parsed.setup,
     chats,
   };
 }
@@ -253,6 +338,11 @@ export async function getDispatchOverview(): Promise<DispatchOverview> {
   const validBotUsername = botUsername && !telegramBotUsernameIssue(botUsername) ? botUsername : undefined;
   const deepLink = validBotUsername ? telegramWebBotLink(validBotUsername, startParameter) : undefined;
   const qrLink = validBotUsername ? telegramAppBotLink(validBotUsername, startParameter) : undefined;
+  const setup = normalizeDispatchSetupSettings({
+    bot_token: state.setup?.bot_token,
+    base_url: state.setup?.base_url ?? plist.baseUrl ?? DEFAULT_DISPATCH_BASE_URL,
+    allowed_chat_ids: state.setup?.allowed_chat_ids ?? plist.allowedChatIds,
+  }, false);
 
   return {
     service,
@@ -262,6 +352,10 @@ export async function getDispatchOverview(): Promise<DispatchOverview> {
       botUsername: botUsername || undefined,
       deepLink,
       qrDataUri: qrLink ? qrSvgDataUri(qrLink) : undefined,
+    },
+    setup: {
+      ...setup,
+      tokenAvailable: Boolean(setup.botToken || plist.tokenConfigured),
     },
     state,
     logs: {
@@ -351,4 +445,68 @@ export async function saveDispatchBotUsername(username: string): Promise<{ botUs
   await writeDispatchState(state);
 
   return { botUsername };
+}
+
+export async function saveDispatchSetupSettings(input: unknown): Promise<DispatchSetupSettings> {
+  const settings = normalizeDispatchSetupSettings(input, true);
+  const { state } = await readDispatchState();
+  const botToken = settings.botToken ?? state.setup?.bot_token;
+  state.setup = {
+    ...(botToken ? { bot_token: botToken } : {}),
+    base_url: settings.baseUrl,
+    ...(settings.allowedChatIds ? { allowed_chat_ids: settings.allowedChatIds } : {}),
+    updated_at: new Date().toISOString(),
+  };
+  await writeDispatchState(state);
+  return {
+    ...settings,
+    botToken,
+  };
+}
+
+export async function installDispatchBridge(input: unknown): Promise<{
+  mode: DispatchInstallMode;
+  stdout: string;
+  stderr: string;
+} & DispatchSetupSettings> {
+  const rec = input && typeof input === "object" && !Array.isArray(input)
+    ? input as Record<string, unknown>
+    : {};
+  const mode: DispatchInstallMode = rec.mode === "locked" ? "locked" : "open";
+  const botUsername = cleanTelegramBotUsername(typeof rec.botUsername === "string" ? rec.botUsername : "");
+  const usernameIssue = telegramBotUsernameIssue(botUsername);
+  if (usernameIssue) throw new Error(usernameIssue);
+
+  let settings = await saveDispatchSetupSettings(rec);
+  if (!settings.botToken) {
+    const installedToken = await readInstalledBotToken();
+    if (installedToken) settings = { ...settings, botToken: installedToken };
+  }
+  if (!settings.botToken) throw new Error("Add the BotFather token before installing the bridge.");
+  if (mode === "locked" && !settings.allowedChatIds) {
+    throw new Error("Add at least one allowed Telegram chat id before installing the locked bridge.");
+  }
+
+  const root = automationsRoot();
+  const installer = path.join(root, "bin", "install-telegram-service.sh");
+  const { stdout, stderr } = await execFileAsync(installer, [], {
+    cwd: root,
+    env: {
+      ...process.env,
+      TELEGRAM_BOT_TOKEN: settings.botToken,
+      TELEGRAM_BOT_USERNAME: botUsername,
+      TELEGRAM_ALLOWED_CHAT_IDS: mode === "locked" ? settings.allowedChatIds ?? "" : "",
+      TELEGRAM_ALLOW_ALL: mode === "open" ? "1" : "0",
+      SATURN_BASE_URL: settings.baseUrl,
+    },
+    timeout: 15_000,
+    maxBuffer: 1024 * 1024,
+  });
+
+  return {
+    mode,
+    stdout: stdout.trim(),
+    stderr: stderr.trim(),
+    ...settings,
+  };
 }
