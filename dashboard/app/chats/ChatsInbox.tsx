@@ -108,7 +108,7 @@ export function ChatsInbox({ initialSessions, counts }: Props) {
   };
 
   const openChat = (id: string) => {
-    router.push(`/chats/${encodeURIComponent(id)}`);
+    window.location.assign(`/chats/${encodeURIComponent(id)}`);
   };
 
   const selectAll = () => {

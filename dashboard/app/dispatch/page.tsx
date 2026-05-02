@@ -208,12 +208,25 @@ function setupActions(activeKey: SetupKey, overview: DispatchOverview, commands:
     );
   }
 
+  if (overview.plist.allowAll && overview.state.chats.length > 0 && overview.plist.allowedChatCount === 0) {
+    return (
+      <WizardAction
+        title="Lock Dispatch to the discovered chat"
+        body="Discovery worked. Reinstall the LaunchAgent with an explicit allowlist, then send a normal Telegram message to test the bridge."
+      >
+        {commandBlock(commands.install)}
+      </WizardAction>
+    );
+  }
+
   return (
     <WizardAction
-      title={overview.service.loaded ? "Start the LaunchAgent" : "Install and start the LaunchAgent"}
-      body={overview.service.loaded
-        ? "The service is loaded but not running. Restart it, then refresh this page."
-        : "The service is not loaded yet. Run the installer command first."}
+      title={overview.service.running ? "Send a test message" : overview.service.loaded ? "Start the LaunchAgent" : "Install and start the LaunchAgent"}
+      body={overview.service.running
+        ? "Send a normal message to the Telegram bot. It should create or continue a Saturn chat."
+        : overview.service.loaded
+          ? "The service is loaded but not running. Restart it, then refresh this page."
+          : "The service is not loaded yet. Run the installer command first."}
     >
       {overview.service.loaded ? commandBlock(commands.restart) : commandBlock(commands.install)}
     </WizardAction>
@@ -301,18 +314,24 @@ function SetupWizard({
                 detail={overview.plist.tokenConfigured ? "Saved in LaunchAgent" : "Token has not been installed"}
               />
               <SetupCheck
-                done={overview.plist.allowedChatCount > 0}
+                done={overview.plist.allowedChatCount > 0 || overview.state.chats.length > 0}
                 label="Chat access"
-                detail={overview.plist.allowAll
-                  ? "Discovery mode enabled; add an allowlist to finish"
-                  : `${overview.plist.allowedChatCount} allowed chat${overview.plist.allowedChatCount === 1 ? "" : "s"}`}
+                detail={overview.plist.allowedChatCount > 0
+                  ? `${overview.plist.allowedChatCount} allowed chat${overview.plist.allowedChatCount === 1 ? "" : "s"}`
+                  : overview.state.chats.length > 0
+                    ? `${overview.state.chats.length} discovered; lock the allowlist`
+                    : overview.plist.allowAll
+                      ? "Discovery mode enabled; send /start"
+                      : "No chat allowed yet"}
               />
               <SetupCheck
-                done={overview.service.running}
+                done={overview.service.running && overview.plist.allowedChatCount > 0}
                 label="Bridge service"
-                detail={overview.service.running
+                detail={overview.service.running && overview.plist.allowedChatCount > 0
                   ? `Running${overview.service.pid ? ` as pid ${overview.service.pid}` : ""}`
-                  : overview.service.error ?? "Not running"}
+                  : overview.service.running
+                    ? "Running in discovery mode; lock to a chat"
+                    : overview.service.error ?? "Not running"}
               />
             </div>
           </div>
@@ -565,14 +584,16 @@ export default async function DispatchPage() {
   const setupChecks = [
     Boolean(overview.telegram.botUsername),
     overview.plist.tokenConfigured,
-    overview.plist.allowedChatCount > 0,
-    overview.service.running,
+    overview.plist.allowedChatCount > 0 || overview.state.chats.length > 0,
+    overview.service.running && overview.plist.allowedChatCount > 0,
   ];
   const firstIncomplete = setupChecks.findIndex((done) => !done);
   const activeIndex = firstIncomplete === -1 ? setupChecks.length - 1 : firstIncomplete;
   const completeCount = setupChecks.filter(Boolean).length;
   const progress = Math.round((completeCount / setupChecks.length) * 100);
   const botUsername = overview.telegram.botUsername ?? "your_saturn_bot";
+  const discoveredChatIds = overview.state.chats.map((chat) => chat.chatId);
+  const allowedChatIds = discoveredChatIds.length > 0 ? discoveredChatIds.join(",") : "123456789";
   const baseUrl = overview.plist.baseUrl ?? "http://127.0.0.1:3737";
   const commands: CommandSet = {
     discovery: [
@@ -592,7 +613,7 @@ export default async function DispatchPage() {
     install: [
       `TELEGRAM_BOT_TOKEN="123:abc"`,
       `TELEGRAM_BOT_USERNAME="${botUsername}"`,
-      `TELEGRAM_ALLOWED_CHAT_IDS="123456789"`,
+      `TELEGRAM_ALLOWED_CHAT_IDS="${allowedChatIds}"`,
       `SATURN_BASE_URL="${baseUrl}"`,
       `bin/install-telegram-service.sh`,
     ].join(" \\\n  "),
@@ -625,6 +646,8 @@ export default async function DispatchPage() {
       title: "Allow chat",
       summary: overview.plist.allowedChatCount > 0
         ? `${overview.plist.allowedChatCount} chat${overview.plist.allowedChatCount === 1 ? "" : "s"} allowed`
+        : overview.state.chats.length > 0
+          ? `${overview.state.chats.length} chat${overview.state.chats.length === 1 ? "" : "s"} discovered`
         : overview.plist.allowAll
           ? "Discovery mode active"
           : "No chat allowed yet",
@@ -634,9 +657,9 @@ export default async function DispatchPage() {
     {
       key: "service",
       number: "4",
-      title: "Send test",
-      summary: overview.service.running ? "Bridge running" : "Bridge stopped",
-      detail: "Start the bridge and send a normal task from Telegram. Once this check passes, Dispatch opens the dashboard.",
+      title: "Lock and test",
+      summary: overview.service.running && overview.plist.allowedChatCount > 0 ? "Bridge ready" : "Bridge not locked yet",
+      detail: "Lock the bridge to your Telegram chat and send a normal task from Telegram. Once this check passes, Dispatch opens the dashboard.",
       state: stepState(3),
     },
   ];

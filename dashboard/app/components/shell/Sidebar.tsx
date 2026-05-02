@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import type { ReactNode } from "react";
+import type { MouseEvent, ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import {
@@ -102,6 +102,26 @@ function linkClass(layout: string, active: boolean): string {
     ? "bg-bg-hover text-fg"
     : "text-muted hover:bg-bg-subtle hover:text-fg";
   return `${layout} px-2.5 py-1.5 rounded-md transition-colors ${state}`;
+}
+
+function documentNavigate(
+  event: MouseEvent<HTMLAnchorElement>,
+  href: string,
+  beforeNavigate?: () => void,
+): void {
+  if (
+    event.defaultPrevented ||
+    event.button !== 0 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.shiftKey ||
+    event.altKey
+  ) {
+    return;
+  }
+  event.preventDefault();
+  beforeNavigate?.();
+  window.location.assign(href);
 }
 
 const SEEN_KEY = "chat-seen-at";
@@ -422,7 +442,13 @@ export function Sidebar({
               <li key={n.href} className={sidebarCollapsed ? "w-9" : undefined}>
                 <Link
                   href={n.href}
-                  onClick={onNavigate}
+                  onClick={(event) => {
+                    if (n.href === "/chats") {
+                      documentNavigate(event, n.href, onNavigate);
+                      return;
+                    }
+                    onNavigate?.();
+                  }}
                   title={sidebarCollapsed ? n.label : undefined}
                   aria-label={sidebarCollapsed ? n.label : undefined}
                   className={linkClass(
@@ -505,15 +531,16 @@ export function Sidebar({
                     const active = pathname === `/chats/${r.id}` || pathname === `/chat/${r.id}`;
                     const unread = !active && hasUnread(r, seenMap);
                     const isArchiving = archiving === r.id;
+                    const href = `/chats/${r.id}`;
                     return (
                       <li key={r.id} className="group" style={{ position: "relative" }}>
                         <Link
-                          href={`/chats/${r.id}`}
+                          href={href}
                           prefetch={false}
-                          onClick={() => {
+                          onClick={(event) => documentNavigate(event, href, () => {
                             recordSeen(r.id);
                             onNavigate?.();
-                          }}
+                          })}
                           className={linkClass("flex flex-col gap-0.5 pr-7", active)}
                         >
                           <div className="flex items-center justify-between gap-2">
@@ -581,7 +608,7 @@ export function Sidebar({
         <div className="px-2.5 pt-1">
           <Link
             href="/chats"
-            onClick={onNavigate}
+            onClick={(event) => documentNavigate(event, "/chats", onNavigate)}
             className="text-[11px] text-muted hover:text-fg transition-colors"
           >
             See all &rarr;
