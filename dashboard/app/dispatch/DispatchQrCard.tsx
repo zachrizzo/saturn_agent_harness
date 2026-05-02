@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { qrSvgDataUri } from "@/lib/qr";
 import {
   cleanTelegramBotUsername,
@@ -14,8 +15,14 @@ type Props = {
   startParameter: string;
 };
 
+const STORAGE_KEY = "saturn.dispatch.botUsername";
+
 export function DispatchQrCard({ initialBotUsername, startParameter }: Props): JSX.Element {
+  const router = useRouter();
   const [botUsername, setBotUsername] = useState(initialBotUsername ?? "");
+  const [savedBotUsername, setSavedBotUsername] = useState(initialBotUsername ?? "");
+  const [saveError, setSaveError] = useState("");
+  const [isPending, startTransition] = useTransition();
   const clean = cleanTelegramBotUsername(botUsername);
   const usernameIssue = telegramBotUsernameIssue(clean);
   const webDeepLink = usernameIssue ? "" : telegramWebBotLink(clean, startParameter);
@@ -29,11 +36,52 @@ export function DispatchQrCard({ initialBotUsername, startParameter }: Props): J
     }
   }, [qrDeepLink]);
 
+  useEffect(() => {
+    if (initialBotUsername || botUsername) return;
+    const stored = window.localStorage.getItem(STORAGE_KEY);
+    if (stored) setBotUsername(stored);
+  }, [botUsername, initialBotUsername]);
+
+  useEffect(() => {
+    if (clean) window.localStorage.setItem(STORAGE_KEY, clean);
+  }, [clean]);
+
+  useEffect(() => {
+    if (usernameIssue || !clean || clean === savedBotUsername) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      fetch("/api/dispatch/setup/bot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: clean }),
+        signal: controller.signal,
+      })
+        .then(async (res) => {
+          const data = await res.json().catch(() => null) as { botUsername?: string; error?: string } | null;
+          if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`);
+          setSavedBotUsername(data?.botUsername ?? clean);
+          setSaveError("");
+          startTransition(() => router.refresh());
+        })
+        .catch((err) => {
+          if (controller.signal.aborted) return;
+          setSaveError(err instanceof Error ? err.message : "Could not save bot username.");
+        });
+    }, 450);
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [clean, router, savedBotUsername, usernameIssue]);
+
   return (
     <div className="card dispatch-qr-card p-5 space-y-4">
       <div className="sect-head">
         <h2>Open bot on phone</h2>
-        <span className="right">{clean ? `@${clean}` : "username needed"}</span>
+        <span className="right">
+          {isPending ? "saving..." : clean ? `@${clean}` : "username needed"}
+        </span>
       </div>
 
       <label className="block space-y-1.5">
@@ -50,6 +98,16 @@ export function DispatchQrCard({ initialBotUsername, startParameter }: Props): J
         <span className="block text-[11px] text-muted">
           Create it with <a href="https://t.me/BotFather" target="_blank" rel="noreferrer" className="text-accent hover:underline">@BotFather</a> using <code className="mono text-fg">/newbot</code>. This field only needs the username, not the token.
         </span>
+        {!usernameIssue && clean && (
+          <span className="block text-[11px] text-muted">
+            {clean === savedBotUsername ? "Saved. The wizard will continue to the install step." : "Saving username..."}
+          </span>
+        )}
+        {saveError && (
+          <span className="block text-[11px] text-fail">
+            {saveError}
+          </span>
+        )}
       </label>
 
       {qrDataUri && webDeepLink && qrDeepLink ? (

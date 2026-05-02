@@ -336,3 +336,19 @@ export async function removeDispatchConnection(chatId: string): Promise<{
     restartError: restart.error,
   };
 }
+
+export async function saveDispatchBotUsername(username: string): Promise<{ botUsername: string }> {
+  const botUsername = cleanTelegramBotUsername(username);
+  const issue = telegramBotUsernameIssue(botUsername);
+  if (issue) throw new Error(issue);
+
+  const { state } = await readDispatchState();
+  state.bot = {
+    ...(state.bot ?? {}),
+    username: botUsername,
+    updated_at: new Date().toISOString(),
+  };
+  await writeDispatchState(state);
+
+  return { botUsername };
+}

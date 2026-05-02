@@ -22,6 +22,7 @@ type WizardStep = {
 
 type CommandSet = {
   discovery: string;
+  installDiscovery: string;
   install: string;
   restart: string;
 };
@@ -181,9 +182,9 @@ function setupActions(activeKey: SetupKey, overview: DispatchOverview, commands:
     return (
       <WizardAction
         title="Install the Dispatch bridge"
-        body="Run this from the repo root with the token BotFather gave you. Use allow-all only long enough to discover your private chat id."
+        body="Run this from the repo root with the token BotFather gave you. It starts in discovery mode so Saturn can learn your private chat id."
       >
-        {commandBlock(commands.install)}
+        {commandBlock(commands.installDiscovery)}
       </WizardAction>
     );
   }
@@ -580,6 +581,13 @@ export default async function DispatchPage() {
       `TELEGRAM_ALLOW_ALL=1`,
       `SATURN_BASE_URL="${baseUrl}"`,
       `node bin/telegram-dispatch.mjs`,
+    ].join(" \\\n  "),
+    installDiscovery: [
+      `TELEGRAM_BOT_TOKEN="123:abc"`,
+      `TELEGRAM_BOT_USERNAME="${botUsername}"`,
+      `TELEGRAM_ALLOW_ALL=1`,
+      `SATURN_BASE_URL="${baseUrl}"`,
+      `bin/install-telegram-service.sh`,
     ].join(" \\\n  "),
     install: [
       `TELEGRAM_BOT_TOKEN="123:abc"`,
