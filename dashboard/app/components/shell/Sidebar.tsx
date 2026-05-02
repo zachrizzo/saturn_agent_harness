@@ -509,6 +509,7 @@ export function Sidebar({
                       <li key={r.id} className="group" style={{ position: "relative" }}>
                         <Link
                           href={`/chats/${r.id}`}
+                          prefetch={false}
                           onClick={() => {
                             recordSeen(r.id);
                             onNavigate?.();

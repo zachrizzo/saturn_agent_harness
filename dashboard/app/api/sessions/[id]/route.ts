@@ -7,7 +7,8 @@ export const runtime = "nodejs";
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const eventMode = req.nextUrl.searchParams.get("events") === "recent" ? "recent" : "all";
-  const session = await getSession(id, { eventMode });
+  const compactEvents = req.nextUrl.searchParams.get("compact") === "1";
+  const session = await getSession(id, { eventMode, compactEvents });
   if (!session) return NextResponse.json({ error: "not found" }, { status: 404 });
   return NextResponse.json(session);
 }

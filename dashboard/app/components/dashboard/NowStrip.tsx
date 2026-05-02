@@ -97,7 +97,7 @@ export function NowStrip({ runningRuns, runningSessions, jobs }: Props) {
       </span>
       <div className="live-runs">
         {all.map((r) => (
-          <Link key={r.id} href={r.href} className="live-pill" title={r.msg}>
+          <Link key={r.id} href={r.href} prefetch={false} className="live-pill" title={r.msg}>
             <span className="meter" />
             <span className="agent">{r.agent}</span>
             <span className="msg">{r.msg}</span>

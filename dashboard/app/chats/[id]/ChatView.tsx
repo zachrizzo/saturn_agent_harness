@@ -95,6 +95,7 @@ export function ChatView({
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
   const didInitialBottomPinRef = useRef(false);
   const preserveScrollRef = useRef<{ top: number; height: number } | null>(null);
+  const initialFreshenSessionRef = useRef<string | null>(null);
   const [editingTurnIndex, setEditingTurnIndex] = useState<number | null>(null);
   const turnRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const [inspectorWidth, setInspectorWidth] = useState(420);
@@ -198,8 +199,13 @@ export function ChatView({
   const refreshSessionSnapshot = useCallback(async () => {
     if (sseActiveRef.current && metaRef.current.status === "running") return;
     try {
-      const eventsMode = eventsPartial ? "?events=recent" : "";
-      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}${eventsMode}`, {
+      const params = new URLSearchParams();
+      if (eventsPartial) {
+        params.set("events", "recent");
+        params.set("compact", "1");
+      }
+      const query = params.size > 0 ? `?${params.toString()}` : "";
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}${query}`, {
         cache: "no-store",
       });
       if (!res.ok) return;
@@ -208,6 +214,16 @@ export function ChatView({
       setEventsPartial(Boolean(data.eventsPartial));
     } catch {}
   }, [applySessionSnapshot, eventsPartial, sessionId]);
+
+  // Client-side navigation can reuse an older App Router payload. Do one cheap
+  // no-store snapshot after mount so the opened chat converges without a manual
+  // browser refresh.
+  useEffect(() => {
+    if (initialFreshenSessionRef.current === sessionId) return;
+    initialFreshenSessionRef.current = sessionId;
+    const timer = window.setTimeout(() => { void refreshSessionSnapshot(); }, 80);
+    return () => window.clearTimeout(timer);
+  }, [refreshSessionSnapshot, sessionId]);
 
   useEffect(() => {
     if (meta.status !== "running" && !streaming) return;
@@ -250,6 +266,7 @@ export function ChatView({
         flushPendingEvents();
         setMeta(incoming);
         setStreaming(false);
+        window.setTimeout(() => { void refreshSessionSnapshot(); }, 120);
         startTransition(() => router.refresh());
         es.close();
         if (eventSourceRef.current === es) eventSourceRef.current = null;

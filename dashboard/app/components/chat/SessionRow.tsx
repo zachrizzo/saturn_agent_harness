@@ -57,6 +57,7 @@ export function SessionRow({ session }: Props) {
   return (
     <Link
       href={`/chats/${session.session_id}`}
+      prefetch={false}
       className="group grid gap-3 rounded-lg border border-border bg-bg-elev px-3.5 py-3 shadow-sm transition-colors hover:border-border-strong hover:bg-bg-subtle md:grid-cols-[1fr_auto] md:items-center"
     >
       <div className="flex min-w-0 items-start gap-3">

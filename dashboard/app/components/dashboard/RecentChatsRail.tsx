@@ -29,6 +29,7 @@ export function RecentChatsRail({ sessions }: Props) {
         <Link
           key={s.id}
           href={`/chats/${s.id}`}
+          prefetch={false}
           className="shrink-0 md:shrink w-[240px] h-[96px] rounded-lg border border-border bg-bg-elev hover:bg-bg-hover hover:border-border-strong transition-colors p-3 flex flex-col justify-between"
         >
           <div className="flex items-center gap-1.5 min-w-0">
