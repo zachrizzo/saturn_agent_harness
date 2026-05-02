@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Sidebar, type RecentChatItem } from "./Sidebar";
+import { Sidebar } from "./Sidebar";
 
 const SIDEBAR_COLLAPSED_KEY = "saturn:sidebar-collapsed";
 
@@ -19,7 +19,7 @@ function setStoredSidebarCollapsed(collapsed: boolean) {
   } catch {}
 }
 
-export function DesktopSidebar({ recents }: { recents: RecentChatItem[] }): JSX.Element {
+export function DesktopSidebar(): JSX.Element {
   const [loaded, setLoaded] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
 
@@ -42,7 +42,6 @@ export function DesktopSidebar({ recents }: { recents: RecentChatItem[] }): JSX.
       data-sidebar-collapsed={collapsed ? "true" : "false"}
     >
       <Sidebar
-        recents={recents}
         sidebarCollapsed={collapsed}
         onSidebarCollapsedChange={setCollapsed}
         showDesktopControls

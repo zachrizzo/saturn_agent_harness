@@ -329,12 +329,12 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
   const handleCliChange = (newCli: CLI) => {
     didUserChoose.current = true;
     setCli(newCli);
-    if (agentCliModels?.[newCli]) {
-      setModel(agentCliModels[newCli]!);
-    }
-    if (agentCliReasoningEfforts?.[newCli]) {
-      setReasoningEffort(agentCliReasoningEfforts[newCli]!);
-    }
+    setModel(agentCliModels?.[newCli] ?? "");
+    setReasoningEffort(
+      agentCliReasoningEfforts?.[newCli]
+        ?? normalizeReasoningEffortForCli(newCli, reasoningEffort || undefined)
+        ?? "",
+    );
   };
 
   // Fetch models when CLI changes; auto-select first if current model isn't in list

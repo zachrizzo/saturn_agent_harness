@@ -21,7 +21,11 @@ function intOrUndefined(value: unknown): number | undefined {
 
 export async function GET(req: NextRequest) {
   const sessionId = req.nextUrl.searchParams.get("sessionId")?.trim();
-  return NextResponse.json(await listAllTerminals({ sessionId }));
+  const projectPath = req.nextUrl.searchParams.get("project")?.trim();
+  const limit = req.nextUrl.searchParams.get("full") === "1"
+    ? null
+    : intOrUndefined(req.nextUrl.searchParams.get("limit"));
+  return NextResponse.json(await listAllTerminals({ sessionId, projectPath, limit }));
 }
 
 export async function POST(req: NextRequest) {

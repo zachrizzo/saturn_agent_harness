@@ -1,11 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ThemeToggle } from "../ThemeToggle";
 import { Kbd } from "../ui";
 import { IconSearch, IconMenu, IconX } from "./icons";
-import { Sidebar, type RecentChatItem } from "./Sidebar";
+import { Sidebar } from "./Sidebar";
 import { CommandPalette } from "./CommandPalette";
 
 /**
@@ -14,10 +14,12 @@ import { CommandPalette } from "./CommandPalette";
  * - Mobile hamburger drawer (visible below `md`)
  * - Theme toggle + logo
  */
-export function Header({ recents }: { recents: RecentChatItem[] }) {
+export function Header() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerRendered, setDrawerRendered] = useState(false);
   const drawerRootRef = useRef<HTMLDivElement>(null);
+  const closeDrawer = useCallback(() => setDrawerOpen(false), []);
 
   // Global ⌘K / Ctrl+K
   useEffect(() => {
@@ -33,21 +35,27 @@ export function Header({ recents }: { recents: RecentChatItem[] }) {
 
   // Close drawer whenever viewport crosses md.
   useEffect(() => {
-    function onResize() {
-      if (window.innerWidth >= 768) setDrawerOpen(false);
+    const media = window.matchMedia("(min-width: 768px)");
+    function closeIfDesktop() {
+      if (media.matches) setDrawerOpen(false);
     }
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    closeIfDesktop();
+    if (typeof media.addEventListener === "function") {
+      media.addEventListener("change", closeIfDesktop);
+      return () => media.removeEventListener("change", closeIfDesktop);
+    }
+    media.addListener(closeIfDesktop);
+    return () => media.removeListener(closeIfDesktop);
   }, []);
 
   useEffect(() => {
     if (!drawerOpen) return;
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") setDrawerOpen(false);
+      if (e.key === "Escape") closeDrawer();
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [drawerOpen]);
+  }, [closeDrawer, drawerOpen]);
 
   useEffect(() => {
     const node = drawerRootRef.current;
@@ -57,6 +65,15 @@ export function Header({ recents }: { recents: RecentChatItem[] }) {
     } else {
       node.setAttribute("inert", "");
     }
+  }, [drawerOpen]);
+
+  useEffect(() => {
+    if (drawerOpen) {
+      setDrawerRendered(true);
+      return;
+    }
+    const timeout = setTimeout(() => setDrawerRendered(false), 220);
+    return () => clearTimeout(timeout);
   }, [drawerOpen]);
 
   return (
@@ -120,7 +137,7 @@ export function Header({ recents }: { recents: RecentChatItem[] }) {
       >
         <div
           className="absolute inset-0 bg-black/40"
-          onClick={() => setDrawerOpen(false)}
+          onClick={closeDrawer}
         />
         <aside
           role="dialog"
@@ -141,12 +158,12 @@ export function Header({ recents }: { recents: RecentChatItem[] }) {
               type="button"
               aria-label="Close menu"
               className="btn btn-ghost btn-icon"
-              onClick={() => setDrawerOpen(false)}
+              onClick={closeDrawer}
             >
               <IconX />
             </button>
           </div>
-          <Sidebar recents={recents} onNavigate={() => setDrawerOpen(false)} recentsScrollable />
+          {drawerRendered && <Sidebar onNavigate={closeDrawer} recentsScrollable />}
         </aside>
       </div>
 

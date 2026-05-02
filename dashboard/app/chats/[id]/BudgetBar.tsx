@@ -19,7 +19,47 @@ function formatElapsed(startedAt: string): string {
   return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
 }
 
+function isDocumentVisible(): boolean {
+  return typeof document === "undefined" || document.visibilityState === "visible";
+}
+
+function useDocumentVisible(): boolean {
+  const [visible, setVisible] = useState(isDocumentVisible);
+
+  useEffect(() => {
+    const update = () => setVisible(isDocumentVisible());
+    update();
+    document.addEventListener("visibilitychange", update);
+    return () => document.removeEventListener("visibilitychange", update);
+  }, []);
+
+  return visible;
+}
+
+function sameBudget(a: Budget | null, b: Budget | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.tokens_used === b.tokens_used &&
+    a.slice_calls === b.slice_calls &&
+    a.wallclock_started_at === b.wallclock_started_at &&
+    a.recursion_depth === b.recursion_depth &&
+    a.stop === b.stop &&
+    a.stop_reason === b.stop_reason
+  );
+}
+
+function sameLimits(a: BudgetLimits, b: BudgetLimits): boolean {
+  return (
+    a.max_total_tokens === b.max_total_tokens &&
+    a.max_slice_calls === b.max_slice_calls &&
+    a.max_wallclock_seconds === b.max_wallclock_seconds &&
+    a.max_recursion_depth === b.max_recursion_depth
+  );
+}
+
 export function BudgetBar({ sessionId, streaming, onAbort }: Props) {
+  const pageVisible = useDocumentVisible();
   const [budget, setBudget] = useState<Budget | null>(null);
   const [limits, setLimits] = useState<BudgetLimits>({});
   const [aborting, setAborting] = useState(false);
@@ -28,39 +68,52 @@ export function BudgetBar({ sessionId, streaming, onAbort }: Props) {
 
   // Poll budget while streaming
   useEffect(() => {
-    if (!streaming) return;
+    if (!streaming || !pageVisible) return;
 
+    const controller = new AbortController();
+    let inFlight = false;
     const poll = async () => {
+      if (inFlight || controller.signal.aborted) return;
+      inFlight = true;
       try {
         const res = await fetch(
           `/api/sessions/${encodeURIComponent(sessionId)}/budget`,
-          { cache: "no-store" }
+          { cache: "no-store", signal: controller.signal }
         );
         if (!res.ok) return;
         const data = await res.json();
-        setBudget(data.budget ?? null);
-        setLimits(data.limits ?? {});
+        const nextBudget = (data.budget ?? null) as Budget | null;
+        const nextLimits = (data.limits ?? {}) as BudgetLimits;
+        setBudget((current) => sameBudget(current, nextBudget) ? current : nextBudget);
+        setLimits((current) => sameLimits(current, nextLimits) ? current : nextLimits);
       } catch {
         /* ignore */
+      } finally {
+        inFlight = false;
       }
     };
 
     poll();
     intervalRef.current = setInterval(poll, 2000);
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      controller.abort();
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
     };
-  }, [sessionId, streaming]);
+  }, [pageVisible, sessionId, streaming]);
 
   // Tick elapsed timer
   useEffect(() => {
-    if (!budget?.wallclock_started_at) return;
+    if (!budget?.wallclock_started_at || !pageVisible) return;
     setElapsed(formatElapsed(budget.wallclock_started_at));
+    if (!streaming) return;
     const t = setInterval(() => {
       setElapsed(formatElapsed(budget.wallclock_started_at));
     }, 1000);
     return () => clearInterval(t);
-  }, [budget?.wallclock_started_at]);
+  }, [budget?.wallclock_started_at, pageVisible, streaming]);
 
   const handleAbort = async () => {
     setAborting(true);

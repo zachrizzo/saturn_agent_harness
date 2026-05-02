@@ -123,6 +123,66 @@ function streamEventKey(event: StreamEvent): string {
   }
 }
 
+function buildInspectorTools(events: StreamEvent[]): InspectorTool[] {
+  const results = new Map<string, { content: unknown; isError: boolean }>();
+  const toolIndexesById = new Map<string, number[]>();
+  const tools: InspectorTool[] = [];
+
+  for (const ev of events) {
+    if (ev.kind === "tool_use") {
+      const res = results.get(ev.id);
+      const index = tools.length;
+      tools.push({
+        id: ev.id,
+        name: ev.name,
+        input: ev.input,
+        result: res?.content,
+        status: !res ? "run" : res.isError ? "err" : "ok",
+      });
+      const indexes = toolIndexesById.get(ev.id);
+      if (indexes) {
+        indexes.push(index);
+      } else {
+        toolIndexesById.set(ev.id, [index]);
+      }
+    } else if (ev.kind === "tool_result") {
+      const result = { content: ev.content, isError: ev.isError };
+      results.set(ev.toolUseId, result);
+      const indexes = toolIndexesById.get(ev.toolUseId);
+      if (!indexes) continue;
+      for (const index of indexes) {
+        const tool = tools[index];
+        tools[index] = {
+          ...tool,
+          result: result.content,
+          status: result.isError ? "err" : "ok",
+        };
+      }
+    }
+  }
+
+  return tools;
+}
+
+function latestResultEvent(events: StreamEvent[]): StreamEvent | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (event.kind === "result") return event;
+  }
+  return null;
+}
+
+function runningToolState(tools: InspectorTool[]): { latest?: InspectorTool; count: number } {
+  let latest: InspectorTool | undefined;
+  let count = 0;
+  for (const tool of tools) {
+    if (tool.status !== "run") continue;
+    latest = tool;
+    count += 1;
+  }
+  return { latest, count };
+}
+
 export function ChatView({
   sessionId,
   initialMeta,
@@ -192,7 +252,6 @@ export function ChatView({
 
   // Tool selection — drives Inspector content.
   const [activeToolId, setActiveToolId] = useState<string | null>(null);
-  const [activeTool, setActiveTool] = useState<InspectorTool | null>(null);
 
   // Mark this chat as read on mount (fire-and-forget).
   useEffect(() => {
@@ -272,10 +331,15 @@ export function ChatView({
     cancelPendingEventFlush();
     startTransition(() => {
       setEvents((prev) => {
-        const incomingKeys = incomingEvents.map(streamEventKey);
-        const hasUnseenIncomingEvent = incomingKeys.some((key) => !seenRef.current.has(key));
+        const incomingKeys = new Set<string>();
+        let hasUnseenIncomingEvent = false;
+        for (const event of incomingEvents) {
+          const key = streamEventKey(event);
+          incomingKeys.add(key);
+          if (!seenRef.current.has(key)) hasUnseenIncomingEvent = true;
+        }
         if (incomingEvents.length < prev.length && !hasUnseenIncomingEvent) return prev;
-        seenRef.current = new Set(incomingKeys);
+        seenRef.current = incomingKeys;
         return incomingEvents;
       });
     });
@@ -374,12 +438,13 @@ export function ChatView({
       }
       const parsed = toEvents(obj);
       if (parsed.length === 0) return;
-      const fresh = parsed.filter((event) => {
+      const fresh: StreamEvent[] = [];
+      for (const event of parsed) {
         const key = streamEventKey(event);
-        if (seenRef.current.has(key)) return false;
+        if (seenRef.current.has(key)) continue;
         seenRef.current.add(key);
-        return true;
-      });
+        fresh.push(event);
+      }
       if (fresh.length === 0) return;
       pendingEventsRef.current.push(...fresh);
       scheduleEventFlush();
@@ -412,14 +477,11 @@ export function ChatView({
 
   const scrollToEnd = useCallback((behavior: ScrollBehavior = "auto") => {
     const scrollEl = getChatScrollElement();
-    const bottomMarker = chatBottomRef.current;
-    if (bottomMarker) {
-      const markerRect = bottomMarker.getBoundingClientRect();
-      const scrollerRect = scrollEl instanceof HTMLElement
-        ? scrollEl.getBoundingClientRect()
-        : { bottom: window.innerHeight };
-      const targetTop = scrollEl.scrollTop + markerRect.bottom - scrollerRect.bottom + 12;
-      scrollEl.scrollTo({ top: Math.max(0, targetTop), behavior });
+    if (scrollEl instanceof HTMLElement) {
+      scrollEl.scrollTo({
+        top: Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight),
+        behavior,
+      });
       return;
     }
 
@@ -431,15 +493,11 @@ export function ChatView({
     scrollEl.scrollTo({ top: Math.max(0, targetHeight - scrollEl.clientHeight), behavior });
   }, [getChatScrollElement]);
 
-  const chunks = useMemo<TurnChunk[]>(() => {
-    return buildTurnChunks(meta, renderedEvents);
-  }, [renderedEvents, meta.turns, meta.status]);
-
-  const hiddenTurnCount = Math.max(0, chunks.length - visibleTurnCount);
-  const visibleChunks = useMemo(
-    () => chunks.slice(hiddenTurnCount),
-    [chunks, hiddenTurnCount],
-  );
+  const turnCount = meta.turns.length;
+  const hiddenTurnCount = Math.max(0, turnCount - visibleTurnCount);
+  const visibleChunks = useMemo<TurnChunk[]>(() => {
+    return buildTurnChunks(meta, renderedEvents, { startTurnIndex: hiddenTurnCount });
+  }, [renderedEvents, meta.turns, meta.status, hiddenTurnCount]);
   const historyGateLabel = historyLoading
     ? "Loading..."
     : eventsPartial
@@ -499,7 +557,7 @@ export function ChatView({
   // pinned to the latest turn until the bottom sentinel has settled.
   useLayoutEffect(() => {
     if (didInitialBottomPinRef.current) return;
-    if (chunks.length === 0 && !pendingMessage) return;
+    if (turnCount === 0 && !pendingMessage) return;
     didInitialBottomPinRef.current = true;
     setAutoScroll(true);
     setAtBottom(true);
@@ -515,7 +573,7 @@ export function ChatView({
       window.cancelAnimationFrame(rafTwo);
       timers.forEach(window.clearTimeout);
     };
-  }, [chunks.length, pendingMessage, scrollToEnd]);
+  }, [turnCount, pendingMessage, scrollToEnd]);
 
   // Auto-scroll when new events arrive (while streaming AND user hasn't scrolled up)
   useEffect(() => {
@@ -529,14 +587,7 @@ export function ChatView({
     const scrollEl = getChatScrollElement();
     const onScroll = () => {
       const threshold = 200;
-      const markerBottom = chatBottomRef.current?.getBoundingClientRect().bottom;
-      const scrollerBottom = scrollEl instanceof HTMLElement
-        ? scrollEl.getBoundingClientRect().bottom
-        : window.innerHeight;
-      const distFromBottom =
-        markerBottom === undefined
-          ? scrollEl.scrollHeight - (scrollEl.scrollTop + scrollEl.clientHeight)
-          : markerBottom - scrollerBottom;
+      const distFromBottom = scrollEl.scrollHeight - (scrollEl.scrollTop + scrollEl.clientHeight);
       const nearBottom = distFromBottom < threshold;
       setAtBottom(nearBottom);
       // If user scrolls up mid-stream, pause autoscroll; resume when they return.
@@ -579,49 +630,37 @@ export function ChatView({
 
   // Collect tool events (order preserved) for the inspector's summary.
   const tools = useMemo<InspectorTool[]>(() => {
-    const results = new Map<string, { content: unknown; isError: boolean }>();
-    for (const ev of renderedEvents) {
-      if (ev.kind === "tool_result") {
-        results.set(ev.toolUseId, { content: ev.content, isError: ev.isError });
-      }
-    }
-    const out: InspectorTool[] = [];
-    for (const ev of renderedEvents) {
-      if (ev.kind !== "tool_use") continue;
-      const res = results.get(ev.id);
-      out.push({
-        id: ev.id,
-        name: ev.name,
-        input: ev.input,
-        result: res?.content,
-        status: !res ? "run" : res.isError ? "err" : "ok",
-      });
-    }
-    return out;
+    return buildInspectorTools(renderedEvents);
   }, [renderedEvents]);
 
   // Auto-select the latest failed tool while streaming so errors surface immediately.
   useEffect(() => {
     if (!streaming) return;
-    const latestFailed = [...tools].reverse().find((t) => t.status === "err");
+    let latestFailed: InspectorTool | undefined;
+    for (let i = tools.length - 1; i >= 0; i--) {
+      if (tools[i].status === "err") {
+        latestFailed = tools[i];
+        break;
+      }
+    }
     if (latestFailed && latestFailed.id !== activeToolId) {
       setActiveToolId(latestFailed.id);
-      setActiveTool(latestFailed);
     }
   }, [streaming, tools, activeToolId]);
 
-  // Keep activeTool payload in sync with latest tool state (result may arrive later).
-  useEffect(() => {
-    if (!activeToolId) return;
-    const refreshed = tools.find((t) => t.id === activeToolId) ?? null;
-    setActiveTool(refreshed);
-  }, [tools, activeToolId]);
+  const activeTool = useMemo(
+    () => activeToolId ? tools.find((t) => t.id === activeToolId) ?? null : null,
+    [activeToolId, tools],
+  );
 
-  const tokens = useMemo(() => getTokenBreakdown(renderedEvents), [renderedEvents]);
-  const runningTools = useMemo(() => tools.filter((tool) => tool.status === "run"), [tools]);
+  const latestResult = useMemo(() => latestResultEvent(renderedEvents), [renderedEvents]);
+  const tokens = useMemo(
+    () => getTokenBreakdown(latestResult ? [latestResult] : []),
+    [latestResult],
+  );
+  const runningTools = useMemo(() => runningToolState(tools), [tools]);
   const streamActivityLabel = useMemo(() => {
-    const latestTool = [...runningTools].reverse()[0];
-    if (latestTool) return `Running ${latestTool.name}`;
+    if (runningTools.latest) return `Running ${runningTools.latest.name}`;
     if (renderedEvents.length > 0) {
       const latest = renderedEvents[renderedEvents.length - 1];
       if (latest.kind === "assistant_text") return "Receiving answer";
@@ -631,11 +670,11 @@ export function ChatView({
     return "Waiting for first token";
   }, [renderedEvents, runningTools]);
   const streamActivityDetail = useMemo(() => {
-    if (runningTools.length > 0) {
-      return `${runningTools.length} tool${runningTools.length === 1 ? "" : "s"} active`;
+    if (runningTools.count > 0) {
+      return `${runningTools.count} tool${runningTools.count === 1 ? "" : "s"} active`;
     }
     return `${events.length.toLocaleString()} event${events.length === 1 ? "" : "s"}`;
-  }, [events.length, runningTools.length]);
+  }, [events.length, runningTools]);
 
   const awaitingPlanApproval = meta.plan_mode?.status === "awaiting_approval";
 
@@ -720,7 +759,7 @@ export function ChatView({
 
   const editFromMessage = (message: string, turnIndex: number) => {
     if (!turnRefs.current.has(turnIndex)) {
-      setVisibleTurnCount((current) => Math.max(current, chunks.length - turnIndex));
+      setVisibleTurnCount((current) => Math.max(current, turnCount - turnIndex));
     }
     setEditingTurnIndex(turnIndex);
     composerRef.current?.setDraft(message);
@@ -856,7 +895,6 @@ export function ChatView({
 
   const selectInspectorTool = useCallback((t: InspectorTool) => {
     setActiveToolId(t.id);
-    setActiveTool(t);
   }, []);
 
   const toolSelection = useMemo(() => ({
@@ -926,7 +964,7 @@ export function ChatView({
           </header>
 
           <div className="chat-stream" data-shell="chat-scroll">
-            {chunks.length === 0 && (
+            {turnCount === 0 && (
               <div className="card p-10 text-center text-muted text-[13px]">
                 Send a message to start the conversation.
               </div>
@@ -940,8 +978,8 @@ export function ChatView({
               </div>
             )}
             {visibleChunks.map((chunk) => {
-              const prevChunk = chunks.find((candidate) => candidate.turnIndex === chunk.turnIndex - 1);
-              const prevCli = prevChunk?.cli ?? null;
+              const previousTurn = chunk.turnIndex > 0 ? meta.turns[chunk.turnIndex - 1] : undefined;
+              const prevCli = previousTurn ? normalizeCli(previousTurn.cli) : null;
               const showCliTransition = chunk.turnIndex > 0 && chunk.cli !== prevCli;
 
               return (

@@ -178,6 +178,13 @@ export type SessionReadOptions = {
   recentMaxBytes?: number;
   compactEvents?: boolean;
   compactValueChars?: number;
+  compactMeta?: boolean;
+  compactMetaChars?: number;
+};
+
+export type SessionListOptions = {
+  compactMeta?: boolean;
+  compactMetaChars?: number;
 };
 
 export type RunMeta = {
@@ -221,9 +228,23 @@ const RECENT_SESSION_EVENT_TURNS = 4;
 const RECENT_SESSION_EVENT_MAX_BYTES = 2 * 1024 * 1024;
 const SESSION_STREAM_TAIL_CHUNK_BYTES = 256 * 1024;
 const TURN_START_MARKER = "saturn.turn_start";
+const TURN_END_MARKERS = [
+  "\"type\":\"turn.completed\"",
+  "\"type\": \"turn.completed\"",
+  "\"type\":\"result\"",
+  "\"type\": \"result\"",
+  "\"type\":\"step_finish\"",
+  "\"type\": \"step_finish\"",
+  "\"type\":\"turn.failed\"",
+  "\"type\": \"turn.failed\"",
+  "\"type\":\"saturn.turn_aborted\"",
+  "\"type\": \"saturn.turn_aborted\"",
+];
 const COMPACT_EVENT_VALUE_CHARS = 1200;
 const COMPACT_EVENT_ARRAY_ITEMS = 10;
 const COMPACT_EVENT_OBJECT_KEYS = 18;
+const COMPACT_SESSION_META_CHARS = 600;
+const COMPACT_SESSION_RECENT_FINAL_CHARS = 1200;
 
 type SessionStreamRead = {
   raw: string;
@@ -250,6 +271,18 @@ function countTurnStartMarkers(raw: string): number {
   return count;
 }
 
+function isTurnEndLine(line: string): boolean {
+  return TURN_END_MARKERS.some((marker) => line.includes(marker));
+}
+
+function countTurnEndMarkers(raw: string): number {
+  let count = 0;
+  for (const line of raw.split("\n")) {
+    if (isTurnEndLine(line)) count += 1;
+  }
+  return count;
+}
+
 function trimToRecentTurns(raw: string, recentTurns: number): { raw: string; trimmed: boolean } {
   const lines = raw.split("\n");
   const turnStartLines: number[] = [];
@@ -265,10 +298,35 @@ function trimToRecentTurns(raw: string, recentTurns: number): { raw: string; tri
   return { raw: lines.slice(startLine).join("\n"), trimmed: true };
 }
 
+function trimToRecentTurnEnds(
+  raw: string,
+  recentTurns: number,
+  hasTrailingTurn: boolean,
+): { raw: string; trimmed: boolean; markerCount: number } {
+  const lines = raw.split("\n");
+  const turnEndLines: number[] = [];
+  lines.forEach((line, idx) => {
+    if (isTurnEndLine(line)) turnEndLines.push(idx);
+  });
+
+  const completedTurnsToKeep = Math.max(0, hasTrailingTurn ? recentTurns - 1 : recentTurns);
+  const boundaryIdx = turnEndLines.length - completedTurnsToKeep - 1;
+  if (boundaryIdx < 0) {
+    return { raw, trimmed: false, markerCount: turnEndLines.length };
+  }
+
+  return {
+    raw: lines.slice(turnEndLines[boundaryIdx] + 1).join("\n"),
+    trimmed: true,
+    markerCount: turnEndLines.length,
+  };
+}
+
 async function readRecentSessionStream(
   streamFile: string,
   recentTurns: number,
   maxBytes: number,
+  hasTrailingTurn: boolean,
 ): Promise<SessionStreamRead> {
   let handle: FileHandle;
   try {
@@ -304,16 +362,23 @@ async function readRecentSessionStream(
       const raw = Buffer.concat(buffers).toString("utf8");
       candidate = stripPartialFirstLine(raw, candidateStart === 0);
       if (countTurnStartMarkers(candidate) >= recentTurns) break;
+      const requiredEndMarkers = Math.max(1, hasTrailingTurn ? recentTurns : recentTurns + 1);
+      if (countTurnEndMarkers(candidate) >= requiredEndMarkers) break;
     }
 
-    if (candidateStart > 0 && countTurnStartMarkers(candidate) === 0) {
-      return { raw: await readStreamFile(streamFile), partial: false };
+    const turnStartCount = countTurnStartMarkers(candidate);
+    if (turnStartCount > 0) {
+      const trimmed = trimToRecentTurns(candidate, recentTurns);
+      return {
+        raw: trimmed.raw,
+        partial: candidateStart > 0 || trimmed.trimmed,
+      };
     }
 
-    const trimmed = trimToRecentTurns(candidate, recentTurns);
+    const trimmed = trimToRecentTurnEnds(candidate, recentTurns, hasTrailingTurn);
     return {
       raw: trimmed.raw,
-      partial: candidateStart > 0 || trimmed.trimmed,
+      partial: candidateStart > 0 || trimmed.trimmed || trimmed.markerCount > recentTurns,
     };
   } finally {
     await handle.close();
@@ -323,6 +388,7 @@ async function readRecentSessionStream(
 async function readSessionStream(
   streamFile: string,
   options: SessionReadOptions,
+  hasTrailingTurn: boolean,
 ): Promise<SessionStreamRead> {
   if (options.eventMode !== "recent") {
     return { raw: await readStreamFile(streamFile), partial: false };
@@ -332,6 +398,7 @@ async function readSessionStream(
     streamFile,
     Math.max(1, options.recentTurns ?? RECENT_SESSION_EVENT_TURNS),
     Math.max(SESSION_STREAM_TAIL_CHUNK_BYTES, options.recentMaxBytes ?? RECENT_SESSION_EVENT_MAX_BYTES),
+    hasTrailingTurn,
   );
 }
 
@@ -341,6 +408,87 @@ function compactString(value: string, maxChars: number): string {
   }
   if (value.length <= maxChars) return value;
   return `${value.slice(0, maxChars)}\n...[${(value.length - maxChars).toLocaleString()} chars omitted from initial load]`;
+}
+
+function compactOptionalString(
+  value: string | null | undefined,
+  maxChars: number,
+): { value: string | undefined; changed: boolean } {
+  if (value === undefined) return { value, changed: false };
+  if (value === null) return { value: undefined, changed: true };
+  if (maxChars === Number.POSITIVE_INFINITY) return { value, changed: false };
+  if (maxChars <= 0) return { value: "", changed: value.length > 0 };
+  const compacted = compactString(value, maxChars);
+  return { value: compacted, changed: compacted !== value };
+}
+
+function firstUserMessageTurnIndex(turns: TurnRecord[]): number {
+  return turns.findIndex((turn) => Boolean(turn.user_message?.trim()));
+}
+
+function compactSessionMetaForList(
+  meta: SessionMeta,
+  maxChars: number,
+): { meta: SessionMeta; partial: boolean } {
+  const turns = meta.turns ?? [];
+  const firstUserIdx = firstUserMessageTurnIndex(turns);
+  const lastIdx = turns.length - 1;
+  let partial = false;
+
+  const compactTurns = turns.map((turn, idx): TurnRecord => {
+    const keepUserPreview = idx === firstUserIdx || idx === lastIdx;
+    const keepFinalPreview = idx === lastIdx;
+    const next: TurnRecord = { ...turn };
+
+    const user = compactOptionalString(next.user_message, keepUserPreview ? maxChars : 0);
+    next.user_message = user.value ?? "";
+    partial ||= user.changed;
+
+    const finalText = compactOptionalString(next.final_text, keepFinalPreview ? maxChars : 0);
+    if (finalText.value === undefined) delete next.final_text;
+    else next.final_text = finalText.value;
+    partial ||= finalText.changed;
+
+    return next;
+  });
+
+  return { meta: { ...meta, turns: compactTurns }, partial };
+}
+
+function compactSessionMetaForRecentRead(
+  meta: SessionMeta,
+  recentTurns: number,
+  maxChars: number,
+): { meta: SessionMeta; partial: boolean } {
+  const turns = meta.turns ?? [];
+  const firstUserIdx = firstUserMessageTurnIndex(turns);
+  const recentStart = Math.max(0, turns.length - Math.max(1, recentTurns));
+  let partial = false;
+
+  const compactTurns = turns.map((turn, idx): TurnRecord => {
+    const next: TurnRecord = { ...turn };
+    const keepFullUser = idx >= recentStart;
+    const keepTitleUser = idx === firstUserIdx;
+
+    const user = compactOptionalString(
+      next.user_message,
+      keepFullUser ? Number.POSITIVE_INFINITY : keepTitleUser ? maxChars : 0,
+    );
+    next.user_message = user.value ?? "";
+    partial ||= user.changed;
+
+    const finalText = compactOptionalString(
+      next.final_text,
+      idx >= recentStart ? COMPACT_SESSION_RECENT_FINAL_CHARS : 0,
+    );
+    if (finalText.value === undefined) delete next.final_text;
+    else next.final_text = finalText.value;
+    partial ||= finalText.changed;
+
+    return next;
+  });
+
+  return { meta: { ...meta, turns: compactTurns }, partial };
 }
 
 function compactEventValue(value: unknown, maxChars: number, depth = 0): unknown {
@@ -716,7 +864,7 @@ export function sessionDir(sessionId: string): string {
   return path.join(sessionsRoot(), sessionId);
 }
 
-export async function listSessions(): Promise<SessionMeta[]> {
+export async function listSessions(options: SessionListOptions = {}): Promise<SessionMeta[]> {
   let entries: import("node:fs").Dirent[];
   try {
     entries = await fs.readdir(sessionsRoot(), { withFileTypes: true });
@@ -739,7 +887,13 @@ export async function listSessions(): Promise<SessionMeta[]> {
   const out = await Promise.all(metas.filter((m): m is SessionMeta => m !== null).map(reconcileStaleRunningSession));
   for (const meta of out) normalizeSessionMeta(meta);
   out.sort((a, b) => (a.started_at < b.started_at ? 1 : -1));
-  return out;
+  if (!options.compactMeta) return out;
+  return out.map((meta) =>
+    compactSessionMetaForList(
+      meta,
+      options.compactMetaChars ?? COMPACT_SESSION_META_CHARS,
+    ).meta
+  );
 }
 
 function sumResultTokens(events: StreamEvent[]): number {
@@ -803,7 +957,7 @@ export async function getSession(
   normalizeSessionMeta(meta);
 
   const [stream, stderr] = await Promise.all([
-    readSessionStream(path.join(dir, "stream.jsonl"), options),
+    readSessionStream(path.join(dir, "stream.jsonl"), options, meta.status === "running"),
     fs.readFile(path.join(dir, "stderr.log"), "utf8").catch(() => ""),
   ]);
 
@@ -812,8 +966,21 @@ export async function getSession(
   const events = shouldCompactEvents
     ? compactStreamEvents(parsedEvents, options.compactValueChars ?? COMPACT_EVENT_VALUE_CHARS)
     : parsedEvents;
+  const shouldCompactMeta = Boolean(options.compactMeta ?? options.eventMode === "recent");
+  const compactedMeta = shouldCompactMeta
+    ? compactSessionMetaForRecentRead(
+      meta,
+      options.recentTurns ?? RECENT_SESSION_EVENT_TURNS,
+      options.compactMetaChars ?? COMPACT_SESSION_META_CHARS,
+    )
+    : { meta, partial: false };
 
-  return { meta, events, stderr, eventsPartial: stream.partial || shouldCompactEvents };
+  return {
+    meta: compactedMeta.meta,
+    events,
+    stderr,
+    eventsPartial: stream.partial || shouldCompactEvents || compactedMeta.partial,
+  };
 }
 
 function normalizeAgentCliFields(agent: Agent | undefined): void {

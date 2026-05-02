@@ -21,6 +21,11 @@ type EventSlice = {
   hasResult: boolean;
 };
 
+type BuildTurnChunksOptions = {
+  startTurnIndex?: number;
+  endTurnIndex?: number;
+};
+
 function rawRecord(ev: StreamEvent): Record<string, unknown> {
   return (ev.raw && typeof ev.raw === "object" ? ev.raw : {}) as Record<string, unknown>;
 }
@@ -43,9 +48,11 @@ function nativeSessionId(ev: StreamEvent): string | undefined {
 }
 
 function hasTerminalResult(events: StreamEvent[], start: number, end: number): boolean {
-  return events
-    .slice(start, end)
-    .some((ev) => ev.kind === "result" || rawRecord(ev).type === "saturn.turn_aborted");
+  for (let i = start; i < end; i++) {
+    const ev = events[i];
+    if (ev.kind === "result" || rawRecord(ev).type === "saturn.turn_aborted") return true;
+  }
+  return false;
 }
 
 function splitByResult(
@@ -94,7 +101,34 @@ function buildLegacySlices(events: StreamEvent[], start: number, end: number): E
 export function buildTurnChunks(
   meta: Pick<SessionMeta, "turns" | "status">,
   events: StreamEvent[],
+  options: BuildTurnChunksOptions = {},
 ): TurnChunk[] {
+  const startTurnIndex = Math.min(
+    meta.turns.length,
+    Math.max(0, options.startTurnIndex ?? 0),
+  );
+  const endTurnIndex = Math.min(
+    meta.turns.length,
+    Math.max(startTurnIndex, options.endTurnIndex ?? meta.turns.length),
+  );
+  const shouldMaterializeTurn = (index: number) => index >= startTurnIndex && index < endTurnIndex;
+  const makeChunk = (
+    t: SessionMeta["turns"][number],
+    i: number,
+    slice: EventSlice | undefined,
+  ): TurnChunk => {
+    const isLast = i === meta.turns.length - 1;
+    return {
+      turnIndex: i,
+      cli: normalizeCli(t.cli),
+      model: t.model,
+      reasoningEffort: t.reasoningEffort,
+      userMessage: t.user_message,
+      events: slice ? events.slice(slice.start, slice.end) : [],
+      streaming: !slice?.hasResult && meta.status === "running" && isLast,
+    };
+  };
+
   const turnStarts: Array<{ turnId: string; idx: number }> = [];
   events.forEach((ev, i) => {
     const turnId = turnMarkerId(ev);
@@ -115,9 +149,18 @@ export function buildTurnChunks(
     const consumedMarkerSlices = new Set<EventSlice>();
     const legacySlices = buildLegacySlices(events, 0, turnStarts[0].idx);
     let legacyCursor = 0;
+    let markerCursor = 0;
+    const nextUnclaimedMarkerSlice = () => {
+      while (markerCursor < markerSlices.length) {
+        const candidate = markerSlices[markerCursor];
+        markerCursor += 1;
+        if (!consumedMarkerSlices.has(candidate)) return candidate;
+      }
+      return undefined;
+    };
+    const result: TurnChunk[] = [];
 
-    return meta.turns.map((t, i) => {
-      const isLast = i === meta.turns.length - 1;
+    meta.turns.forEach((t, i) => {
       const turnId = (t as unknown as Record<string, unknown>).turn_id as string | undefined;
       let slice = turnId ? slicesByTurnId.get(turnId) : undefined;
       if (slice) {
@@ -128,20 +171,12 @@ export function buildTurnChunks(
         // Optimistic client turns do not know the server-generated turn_id yet.
         // Attach the next unclaimed saturn.turn_start slice so live output shows
         // immediately instead of waiting for a metadata refresh.
-        slice = markerSlices.find((candidate) => !consumedMarkerSlices.has(candidate));
+        slice = nextUnclaimedMarkerSlice();
         if (slice) consumedMarkerSlices.add(slice);
       }
-      const turnEvents = slice ? events.slice(slice.start, slice.end) : [];
-      return {
-        turnIndex: i,
-        cli: normalizeCli(t.cli),
-        model: t.model,
-        reasoningEffort: t.reasoningEffort,
-        userMessage: t.user_message,
-        events: turnEvents,
-        streaming: !slice?.hasResult && meta.status === "running" && isLast,
-      };
+      if (shouldMaterializeTurn(i)) result.push(makeChunk(t, i, slice));
     });
+    return result;
   }
 
   const allSlices = buildLegacySlices(events, 0, events.length);
@@ -157,6 +192,22 @@ export function buildTurnChunks(
   const consumedBySid = new Map<string, number>();
   const consumedSlices = new Set<EventSlice>();
   const result: TurnChunk[] = [];
+  let unclaimedSliceCursor = 0;
+  const nextUnclaimedSlice = () => {
+    while (unclaimedSliceCursor < allSlices.length) {
+      const slice = allSlices[unclaimedSliceCursor];
+      unclaimedSliceCursor += 1;
+      if (!consumedSlices.has(slice)) return slice;
+    }
+    return undefined;
+  };
+  const latestUnclaimedSlice = () => {
+    for (let i = allSlices.length - 1; i >= 0; i--) {
+      const slice = allSlices[i];
+      if (!consumedSlices.has(slice)) return slice;
+    }
+    return undefined;
+  };
 
   for (let i = 0; i < meta.turns.length; i++) {
     const t = meta.turns[i];
@@ -172,26 +223,16 @@ export function buildTurnChunks(
     } else if (isLast && meta.status === "running" && allSlices.length > 0) {
       // The turn stub is written before run-turn.sh fills cli_session_id.
       // Attach the newest unclaimed native slice so live output is visible.
-      slice = [...allSlices].reverse().find((s) => !consumedSlices.has(s));
+      slice = latestUnclaimedSlice();
     } else {
       // Legacy aborted turns were written before dashboard turn ids existed.
       // Preserve chronological order by assigning the next unclaimed slice,
       // even when the CLI reused a native session id from an earlier turn.
-      slice = allSlices.find((s) => !consumedSlices.has(s));
+      slice = nextUnclaimedSlice();
     }
 
     if (slice) consumedSlices.add(slice);
-    const turnEvents = slice ? events.slice(slice.start, slice.end) : [];
-    const hasResult = Boolean(slice?.hasResult);
-    result.push({
-      turnIndex: i,
-      cli: normalizeCli(t.cli),
-      model: t.model,
-      reasoningEffort: t.reasoningEffort,
-      userMessage: t.user_message,
-      events: turnEvents,
-      streaming: !hasResult && meta.status === "running" && isLast,
-    });
+    if (shouldMaterializeTurn(i)) result.push(makeChunk(t, i, slice));
   }
 
   return result;

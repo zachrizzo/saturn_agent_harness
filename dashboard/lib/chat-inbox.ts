@@ -286,9 +286,17 @@ export function folderCounts(list: InboxSession[]): Record<FolderKey, number> {
   const keys = Object.keys(FOLDER_LABELS) as FolderKey[];
   const out = Object.fromEntries(keys.map((k) => [k, 0])) as Record<FolderKey, number>;
   for (const s of list) {
-    for (const k of keys) {
-      if (matchesFolder(s, k)) out[k] += 1;
+    if (s.archived) {
+      out.archived += 1;
+      continue;
     }
+    out.all += 1;
+    if (s.needsReply) out["needs-reply"] += 1;
+    if (s.status === "running") out.live += 1;
+    if (s.status === "failed") out.failing += 1;
+    if (s.pinned) out.pinned += 1;
+    if (s.adHoc) out["ad-hoc"] += 1;
+    else out["from-agent"] += 1;
   }
   return out;
 }

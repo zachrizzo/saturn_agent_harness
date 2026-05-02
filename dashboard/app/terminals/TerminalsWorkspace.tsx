@@ -30,6 +30,31 @@ function statusClass(status: TerminalRecord["status"]): string {
   return "terminal-status success";
 }
 
+function isDocumentVisible(): boolean {
+  return typeof document === "undefined" || document.visibilityState === "visible";
+}
+
+function useDocumentVisible(): boolean {
+  const [visible, setVisible] = useState(isDocumentVisible);
+
+  useEffect(() => {
+    const update = () => setVisible(isDocumentVisible());
+    update();
+    document.addEventListener("visibilitychange", update);
+    return () => document.removeEventListener("visibilitychange", update);
+  }, []);
+
+  return visible;
+}
+
+function sameJsonValue(a: unknown, b: unknown): boolean {
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
+  }
+}
+
 function shortPath(path: string | null | undefined): string {
   if (!path) return "No project";
   const parts = path.split("/").filter(Boolean);
@@ -37,7 +62,10 @@ function shortPath(path: string | null | undefined): string {
 }
 
 function upsertTerminal(list: TerminalRecord[], terminal: TerminalRecord): TerminalRecord[] {
-  const next = list.some((item) => item.id === terminal.id)
+  const existing = list.find((item) => item.id === terminal.id);
+  if (existing && sameJsonValue(existing, terminal)) return list;
+
+  const next = existing
     ? list.map((item) => item.id === terminal.id ? terminal : item)
     : [terminal, ...list];
   return next.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -65,8 +93,15 @@ function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 export function TerminalsWorkspace({ initialData }: WorkspaceProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const pageVisible = useDocumentVisible();
   const [allTerminals, setAllTerminals] = useState<TerminalRecord[]>(initialData.terminals);
   const [projects, setProjects] = useState<TerminalProject[]>(initialData.projects ?? []);
+  const [totalTerminalCount, setTotalTerminalCount] = useState(
+    initialData.totalTerminalCount ?? initialData.terminals.length,
+  );
+  const [filteredTerminalCount, setFilteredTerminalCount] = useState(
+    initialData.filteredTerminalCount ?? initialData.terminals.length,
+  );
   const [selectedProjectPath, setSelectedProjectPath] = useState<string | null>(
     searchParams.get("project") || null,
   );
@@ -104,20 +139,38 @@ export function TerminalsWorkspace({ initialData }: WorkspaceProps) {
   );
   const activeProjectPath = selectedProjectPath ?? selected?.projectPath ?? groups[0]?.projectPath ?? defaultCwd ?? null;
 
-  const refresh = useCallback(async () => {
-    const data = await fetchJson<TerminalListResponse>("/api/terminals");
-    setAllTerminals(data.terminals);
-    setProjects(data.projects ?? []);
+  const applyTerminalData = useCallback((data: TerminalListResponse, projectPath: string | null) => {
+    setAllTerminals((current) => sameJsonValue(current, data.terminals) ? current : data.terminals);
+    setProjects((current) => {
+      const nextProjects = data.projects ?? [];
+      return sameJsonValue(current, nextProjects) ? current : nextProjects;
+    });
+    setTotalTerminalCount(data.totalTerminalCount ?? data.terminals.length);
+    setFilteredTerminalCount(data.filteredTerminalCount ?? data.terminals.length);
     setDefaultCwd(data.defaultCwd);
     setCwdDraft((current) => current || data.defaultCwd || data.groups[0]?.projectPath || "");
     setSelectedId((current) => {
-      const visible = selectedProjectPath
-        ? data.terminals.filter((terminal) => terminalProjectPath(terminal) === selectedProjectPath)
+      const visible = projectPath
+        ? data.terminals.filter((terminal) => terminalProjectPath(terminal) === projectPath)
         : data.terminals;
       if (current && visible.some((terminal) => terminal.id === current)) return current;
       return visible[0]?.id ?? null;
     });
-  }, [selectedProjectPath]);
+  }, []);
+
+  const refreshProject = useCallback(async (projectPath: string | null, signal?: AbortSignal) => {
+    const params = new URLSearchParams();
+    if (projectPath) params.set("project", projectPath);
+    const url = params.size > 0 ? `/api/terminals?${params.toString()}` : "/api/terminals";
+    const data = await fetchJson<TerminalListResponse>(url, { signal });
+    if (signal?.aborted) return;
+
+    applyTerminalData(data, projectPath);
+  }, [applyTerminalData]);
+
+  const refresh = useCallback(async (signal?: AbortSignal) => {
+    await refreshProject(selectedProjectPath, signal);
+  }, [refreshProject, selectedProjectPath]);
 
   useEffect(() => {
     const id = searchParams.get("terminal");
@@ -127,11 +180,27 @@ export function TerminalsWorkspace({ initialData }: WorkspaceProps) {
   }, [searchParams]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      refresh().catch(() => {});
-    }, 5000);
-    return () => window.clearInterval(timer);
-  }, [refresh]);
+    if (!pageVisible) return;
+
+    const controller = new AbortController();
+    let inFlight = false;
+    const poll = () => {
+      if (inFlight || controller.signal.aborted) return;
+      inFlight = true;
+      refresh(controller.signal)
+        .catch(() => {})
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+
+    poll();
+    const timer = window.setInterval(poll, 5000);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [pageVisible, refresh]);
 
   const selectTerminal = useCallback((terminal: TerminalRecord) => {
     setSelectedId(terminal.id);
@@ -155,7 +224,8 @@ export function TerminalsWorkspace({ initialData }: WorkspaceProps) {
     if (path) params.set("project", path);
     if (nextTerminal) params.set("terminal", nextTerminal.id);
     router.replace(params.size > 0 ? `/terminals?${params.toString()}` : "/terminals", { scroll: false });
-  }, [allTerminals, defaultCwd, router]);
+    refreshProject(path).catch(() => {});
+  }, [allTerminals, defaultCwd, refreshProject, router]);
 
   useEffect(() => {
     dataListenerRef.current?.dispose();
@@ -167,7 +237,7 @@ export function TerminalsWorkspace({ initialData }: WorkspaceProps) {
     fitAddonRef.current = null;
     pendingPtyDataRef.current = "";
 
-    if (!selected || selected.source !== "pty" || !xtermHostRef.current) return;
+    if (!pageVisible || !selected || selected.source !== "pty" || !xtermHostRef.current) return;
 
     const term = new XTerm({
       cursorBlink: selected.status === "running",
@@ -221,14 +291,19 @@ export function TerminalsWorkspace({ initialData }: WorkspaceProps) {
     });
 
     postResize();
+    let resizeFrame: number | null = null;
     const onWindowResize = () => {
-      fitAddon.fit();
-      postResize();
+      if (resizeFrame !== null) return;
+      resizeFrame = window.requestAnimationFrame(() => {
+        resizeFrame = null;
+        fitAddon.fit();
+      });
     };
     window.addEventListener("resize", onWindowResize);
 
     return () => {
       window.removeEventListener("resize", onWindowResize);
+      if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame);
       dataListenerRef.current?.dispose();
       resizeListenerRef.current?.dispose();
       term.dispose();
@@ -237,13 +312,14 @@ export function TerminalsWorkspace({ initialData }: WorkspaceProps) {
       if (xtermRef.current === term) xtermRef.current = null;
       if (fitAddonRef.current === fitAddon) fitAddonRef.current = null;
     };
-  }, [selected?.id, selected?.source]);
+  }, [pageVisible, selected?.id, selected?.source]);
 
   useEffect(() => {
-    if (!selected) return;
+    if (!pageVisible || !selected) return;
     setTranscript("");
     setStreamError(null);
     pendingPtyDataRef.current = "";
+    if (selected.source === "pty") xtermRef.current?.reset();
 
     const source = new EventSource(`/api/terminals/${encodeURIComponent(selected.id)}/stream`);
     source.onmessage = (event) => {
@@ -273,7 +349,7 @@ export function TerminalsWorkspace({ initialData }: WorkspaceProps) {
     };
 
     return () => source.close();
-  }, [selected?.id, selected?.source]);
+  }, [pageVisible, selected?.id, selected?.source]);
 
   const createTerminal = async () => {
     const cwd = cwdDraft.trim() || activeProjectPath || defaultCwd || "";
@@ -352,7 +428,7 @@ export function TerminalsWorkspace({ initialData }: WorkspaceProps) {
               onClick={() => selectProject(null)}
             >
               <span className="terminal-project-name">All projects</span>
-              <span className="terminal-project-count">{allTerminals.length}</span>
+              <span className="terminal-project-count">{totalTerminalCount}</span>
             </button>
             {projects.map((project) => (
               <button
@@ -376,7 +452,7 @@ export function TerminalsWorkspace({ initialData }: WorkspaceProps) {
         <div className="terminal-groups">
           <div className="terminal-groups-title">
             <span>{selectedProject ? selectedProject.label : "All terminals"}</span>
-            <span>{filteredTerminals.length}</span>
+            <span>{selectedProject ? filteredTerminalCount : totalTerminalCount}</span>
           </div>
           {groups.length === 0 ? (
             <div className="terminal-empty-list">

@@ -9,6 +9,7 @@ import { listSessions } from "@/lib/runs";
 import { toInboxSessions } from "@/lib/chat-inbox";
 import { Header } from "@/app/components/shell/Header";
 import { DesktopSidebar } from "@/app/components/shell/DesktopSidebar";
+import { ShellRecentsProvider } from "@/app/components/shell/ShellRecentsProvider";
 import type { RecentChatItem } from "@/app/components/shell/Sidebar";
 import { RouteContainer } from "./RouteContainer";
 
@@ -23,7 +24,7 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 async function getRecents(): Promise<RecentChatItem[]> {
-  const sessions = await listSessions();
+  const sessions = await listSessions({ compactMeta: true });
   const active = sessions.filter(
     (s) => !s.archived && ((s.turns ?? []).length > 0 || s.status === "running"),
   );
@@ -58,15 +59,17 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       <body className="antialiased">
         <ThemeProvider>
           <LinkTargetPolicy />
-          <div className="app-shell">
-            <Header recents={recents} />
-            <div className="flex-1 flex min-h-0 overflow-hidden">
-              <DesktopSidebar recents={recents} />
-              <main className="flex-1 min-w-0 min-h-0 overflow-y-auto overscroll-contain" data-shell="main-scroll">
-                <RouteContainer>{children}</RouteContainer>
-              </main>
+          <ShellRecentsProvider initialRecents={recents}>
+            <div className="app-shell">
+              <Header />
+              <div className="flex-1 flex min-h-0 overflow-hidden">
+                <DesktopSidebar />
+                <main className="flex-1 min-w-0 min-h-0 overflow-y-auto overscroll-contain" data-shell="main-scroll">
+                  <RouteContainer>{children}</RouteContainer>
+                </main>
+              </div>
             </div>
-          </div>
+          </ShellRecentsProvider>
         </ThemeProvider>
       </body>
     </html>

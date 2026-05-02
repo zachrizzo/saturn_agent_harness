@@ -8,7 +8,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const { id } = await params;
   const eventMode = req.nextUrl.searchParams.get("events") === "recent" ? "recent" : "all";
   const compactEvents = req.nextUrl.searchParams.get("compact") === "1";
-  const session = await getSession(id, { eventMode, compactEvents });
+  const compactMeta = req.nextUrl.searchParams.get("meta") === "full" ? false : undefined;
+  const session = await getSession(id, { eventMode, compactEvents, compactMeta });
   if (!session) return NextResponse.json({ error: "not found" }, { status: 404 });
   return NextResponse.json(session);
 }

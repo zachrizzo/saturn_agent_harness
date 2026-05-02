@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -32,6 +32,47 @@ type Props = {
   onInsertIntoComposer?: (text: string) => void;
   onClose?: () => void;
 };
+
+function sameInspectorTool(a: InspectorTool, b: InspectorTool): boolean {
+  return a.id === b.id
+    && a.name === b.name
+    && a.status === b.status
+    && a.startedAt === b.startedAt
+    && a.input === b.input
+    && a.result === b.result;
+}
+
+function useStableToolList(tools: InspectorTool[]): InspectorTool[] {
+  const previousRef = useRef<{ tools: InspectorTool[]; byId: Map<string, InspectorTool> } | null>(null);
+
+  return useMemo(() => {
+    const previous = previousRef.current;
+    if (!previous) {
+      previousRef.current = { tools, byId: new Map(tools.map((tool) => [tool.id, tool])) };
+      return tools;
+    }
+
+    let changed = previous.tools.length !== tools.length;
+    const byId = new Map<string, InspectorTool>();
+    const next = tools.map((tool, index) => {
+      const previousTool = previous.tools[index]?.id === tool.id
+        ? previous.tools[index]
+        : previous.byId.get(tool.id);
+      const stableTool = previousTool && sameInspectorTool(previousTool, tool)
+        ? previousTool
+        : tool;
+
+      if (stableTool !== previous.tools[index]) changed = true;
+      byId.set(stableTool.id, stableTool);
+      return stableTool;
+    });
+
+    if (!changed) return previous.tools;
+
+    previousRef.current = { tools: next, byId };
+    return next;
+  }, [tools]);
+}
 
 const INSPECTOR_TABS = [
   { key: "tool", label: "Tool" },
@@ -587,18 +628,27 @@ function terminalTitleFromCommand(command: string): string {
   return firstLine.length > 84 ? `${firstLine.slice(0, 81)}...` : firstLine;
 }
 
-function buildTerminalRecordFromTool(session: SessionMeta, tool: InspectorTool): TerminalRecord {
+type TerminalToolSession = {
+  sessionId: string;
+  cwd: string | null;
+  startedAt: string;
+  finishedAt?: string;
+  latestTurnStartedAt: string;
+  latestTurnFinishedAt: string;
+};
+
+function buildTerminalRecordFromTool(session: TerminalToolSession, tool: InspectorTool): TerminalRecord {
   const command = commandFromToolInput(tool.input);
-  const cwd = session.agent_snapshot?.cwd?.trim() || null;
-  const latestTurn = session.turns.at(-1);
+  const cwd = session.cwd;
+  const toolUpdatedAt = tool.status === "run" ? new Date().toISOString() : session.finishedAt;
   const updatedAt =
-    latestTurn?.finished_at ??
-    (tool.status === "run" ? new Date().toISOString() : session.finished_at) ??
-    latestTurn?.started_at ??
-    session.started_at;
+    session.latestTurnFinishedAt ||
+    toolUpdatedAt ||
+    session.latestTurnStartedAt ||
+    session.startedAt;
 
   return {
-    id: agentBashTerminalId(session.session_id, tool.id),
+    id: agentBashTerminalId(session.sessionId, tool.id),
     source: "agent-bash",
     readOnly: true,
     title: terminalTitleFromCommand(command),
@@ -606,9 +656,9 @@ function buildTerminalRecordFromTool(session: SessionMeta, tool: InspectorTool):
     projectName: projectNameFromPath(cwd),
     cwd,
     status: terminalStatusFromTool(tool.status),
-    createdAt: tool.startedAt ?? latestTurn?.started_at ?? session.started_at,
+    createdAt: tool.startedAt ?? (session.latestTurnStartedAt || session.startedAt),
     updatedAt,
-    sessionId: session.session_id,
+    sessionId: session.sessionId,
     toolUseId: tool.id,
     command,
     exitCode: null,
@@ -686,6 +736,155 @@ const JsonBlock = memo(function JsonBlock({ value, error }: { value: unknown; er
   );
 });
 
+const ToolRow = memo(function ToolRow({
+  id,
+  name,
+  status,
+  active,
+  onSelect,
+}: {
+  id: string;
+  name: string;
+  status: InspectorTool["status"];
+  active: boolean;
+  onSelect: (id: string) => void;
+}) {
+  const handleSelect = useCallback(() => onSelect(id), [id, onSelect]);
+
+  return (
+    <button
+      type="button"
+      className={`insp-tool-row ${active ? "active" : ""}`}
+      onClick={handleSelect}
+    >
+      <StatusDot status={status} />
+      <span className="insp-tool-name">{name}</span>
+      <span className="insp-tool-status" style={{ color: STATUS_COLOR[status] }}>
+        {STATUS_LABEL[status]}
+      </span>
+    </button>
+  );
+}, (prev, next) => (
+  prev.id === next.id
+  && prev.name === next.name
+  && prev.status === next.status
+  && prev.active === next.active
+  && prev.onSelect === next.onSelect
+));
+
+const ToolList = memo(function ToolList({
+  tools,
+  selectedId,
+  hiddenToolCount,
+  onSelect,
+}: {
+  tools: InspectorTool[];
+  selectedId: string | null;
+  hiddenToolCount: number;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <div className="insp-tool-list">
+      {hiddenToolCount > 0 && (
+        <div className="insp-tool-row insp-tool-row-muted">
+          <span className="insp-tool-name">
+            {hiddenToolCount.toLocaleString()} older tools hidden while streaming
+          </span>
+        </div>
+      )}
+      {tools.map((tool) => (
+        <ToolRow
+          key={tool.id}
+          id={tool.id}
+          name={tool.name}
+          status={tool.status}
+          active={selectedId === tool.id}
+          onSelect={onSelect}
+        />
+      ))}
+    </div>
+  );
+});
+
+const ToolDetail = memo(function ToolDetail({
+  tool,
+  onViewTerminal,
+}: {
+  tool: InspectorTool;
+  onViewTerminal: (toolId: string) => void;
+}) {
+  const isBashTool = isBashInspectorTool(tool);
+  const handleViewTerminal = useCallback(() => onViewTerminal(tool.id), [onViewTerminal, tool.id]);
+
+  return (
+    <div className="insp-tool-detail">
+      <div className="insp-detail-header">
+        <span className="insp-detail-name">{tool.name}</span>
+        <span
+          className="insp-detail-badge"
+          style={{
+            color: STATUS_COLOR[tool.status],
+            background: `color-mix(in srgb, ${STATUS_COLOR[tool.status]} 12%, transparent)`,
+          }}
+        >
+          {STATUS_LABEL[tool.status]}
+        </span>
+        {isBashTool && (
+          <button
+            type="button"
+            className="insp-terminal-link"
+            onClick={handleViewTerminal}
+          >
+            View terminal
+          </button>
+        )}
+      </div>
+      <Section title="Input">
+        <JsonBlock value={tool.input} />
+      </Section>
+      <Section title={tool.status === "err" ? "Result · error" : "Result"}>
+        <JsonBlock value={tool.result} error={tool.status === "err"} />
+      </Section>
+    </div>
+  );
+}, (prev, next) => (
+  prev.onViewTerminal === next.onViewTerminal
+  && sameInspectorTool(prev.tool, next.tool)
+));
+
+const TerminalRow = memo(function TerminalRow({
+  terminal,
+  active,
+  onSelect,
+}: {
+  terminal: TerminalRecord;
+  active: boolean;
+  onSelect: (id: string) => void;
+}) {
+  const handleSelect = useCallback(() => onSelect(terminal.id), [onSelect, terminal.id]);
+
+  return (
+    <button
+      type="button"
+      className={`insp-terminal-row ${active ? "active" : ""}`}
+      onClick={handleSelect}
+    >
+      <span className="insp-terminal-row-title">{terminal.title}</span>
+      <span className={terminalStatusClass(terminal.status)}>
+        {TERMINAL_STATUS_LABEL[terminal.status]}
+      </span>
+      <span className="insp-terminal-row-subtitle">{terminalKindLabel(terminal)}</span>
+    </button>
+  );
+}, (prev, next) => (
+  prev.active === next.active
+  && prev.onSelect === next.onSelect
+  && prev.terminal.id === next.terminal.id
+  && prev.terminal.title === next.terminal.title
+  && prev.terminal.status === next.terminal.status
+  && prev.terminal.source === next.terminal.source
+));
+
 function GitStatusBadge({ change }: { change: GitChange }) {
   const label = change.untracked ? "new" : change.status.trim() || change.status;
   const tone = change.untracked
@@ -711,7 +910,7 @@ function GitStatusBadge({ change }: { change: GitChange }) {
   );
 }
 
-function FileTreeNode({
+const FileTreeNode = memo(function FileTreeNode({
   node, depth, nodeKey, collapsedDirs, onToggleDir, onSelect, selectedFile,
 }: {
   node: PathTreeNode;
@@ -774,7 +973,24 @@ function FileTreeNode({
       {node.gitChange && !node.gitChange.exists && <span className="insp-file-missing">deleted</span>}
     </button>
   );
-}
+}, (prev, next) => {
+  if (
+    prev.node !== next.node
+    || prev.depth !== next.depth
+    || prev.nodeKey !== next.nodeKey
+    || prev.collapsedDirs !== next.collapsedDirs
+    || prev.onToggleDir !== next.onToggleDir
+    || prev.onSelect !== next.onSelect
+  ) {
+    return false;
+  }
+  if (prev.selectedFile === next.selectedFile) return true;
+  if (prev.node.isDir) return false;
+
+  const wasActive = prev.selectedFile === prev.node.fullPath;
+  const isActive = next.selectedFile === next.node.fullPath;
+  return wasActive === isActive;
+});
 
 function FileTree({
   root,
@@ -852,16 +1068,31 @@ export const Inspector = memo(function Inspector({
   const xtermResizeListenerRef = useRef<IDisposable | null>(null);
   const pendingPtyDataRef = useRef("");
   const latestTurn = session.turns.at(-1);
+  const latestTurnStartedAt = latestTurn?.started_at ?? "";
   const latestTurnFinishedAt = latestTurn?.finished_at ?? "";
+  const sessionCwd = session.agent_snapshot?.cwd?.trim() || null;
+  const firstToolId = tools[0]?.id ?? null;
+  const lastToolId = tools[tools.length - 1]?.id ?? null;
   const fileRefreshKey = `${tab === "files" ? events.length : 0}:${session.status}:${latestTurnFinishedAt}`;
-  const visibleTools = useMemo(() => {
+  const visibleToolCandidates = useMemo(() => {
     if (session.status !== "running" || tools.length <= RUNNING_TOOL_LIST_LIMIT) return tools;
     const recent = tools.slice(-RUNNING_TOOL_LIST_LIMIT);
     if (!selectedId || recent.some((tool) => tool.id === selectedId)) return recent;
     const selected = tools.find((tool) => tool.id === selectedId);
     return selected ? [selected, ...recent] : recent;
   }, [session.status, selectedId, tools]);
+  const visibleTools = useStableToolList(visibleToolCandidates);
   const hiddenToolCount = Math.max(0, tools.length - visibleTools.length);
+  const selectToolId = useCallback((toolId: string) => {
+    setSelectedId(toolId);
+  }, []);
+  const viewToolTerminal = useCallback((toolId: string) => {
+    setSelectedTerminalId(agentBashTerminalId(session.session_id, toolId));
+    setTab("terminal");
+  }, [session.session_id]);
+  const selectTerminalId = useCallback((terminalId: string) => {
+    setSelectedTerminalId(terminalId);
+  }, []);
 
   const startResize = (ev: ReactPointerEvent<HTMLButtonElement>) => {
     ev.preventDefault();
@@ -1005,21 +1236,41 @@ export const Inspector = memo(function Inspector({
 
   // Auto-select first tool when switching to tool tab
   useEffect(() => {
-    if (tab === "tool" && !selectedId && tools.length > 0) {
-      setSelectedId((session.status === "running" ? tools[tools.length - 1] : tools[0]).id);
+    if (tab === "tool" && !selectedId) {
+      const nextId = session.status === "running" ? lastToolId : firstToolId;
+      if (nextId) setSelectedId(nextId);
     }
-  }, [session.status, tab, tools, selectedId]);
+  }, [firstToolId, lastToolId, session.status, tab, selectedId]);
 
   const selectedTool = useMemo(
-    () => tools.find((t) => t.id === selectedId) ?? activeTool ?? null,
-    [tools, selectedId, activeTool],
+    () => (
+      selectedId
+        ? visibleTools.find((tool) => tool.id === selectedId) ?? activeTool ?? null
+        : activeTool ?? null
+    ),
+    [visibleTools, selectedId, activeTool],
   );
 
   const toolTerminals = useMemo(
     () => visibleTools
       .filter(isBashInspectorTool)
-      .map((tool) => buildTerminalRecordFromTool(session, tool)),
-    [session, visibleTools],
+      .map((tool) => buildTerminalRecordFromTool({
+        sessionId: session.session_id,
+        cwd: sessionCwd,
+        startedAt: session.started_at,
+        finishedAt: session.finished_at,
+        latestTurnStartedAt,
+        latestTurnFinishedAt,
+      }, tool)),
+    [
+      session.session_id,
+      session.started_at,
+      session.finished_at,
+      sessionCwd,
+      latestTurnStartedAt,
+      latestTurnFinishedAt,
+      visibleTools,
+    ],
   );
   const relatedTerminals = useMemo(
     () => mergeTerminalRecords(sessionTerminals, toolTerminals),
@@ -1029,7 +1280,7 @@ export const Inspector = memo(function Inspector({
     () => relatedTerminals.find((terminal) => terminal.id === selectedTerminalId) ?? relatedTerminals[0] ?? null,
     [relatedTerminals, selectedTerminalId],
   );
-  const terminalCwd = session.agent_snapshot?.cwd?.trim() || terminalDefaultCwd || "";
+  const terminalCwd = sessionCwd || terminalDefaultCwd || "";
 
   useEffect(() => {
     setSelectedTerminalId((current) => {
@@ -1348,24 +1599,24 @@ export const Inspector = memo(function Inspector({
   const hasExpandableDirs = visibleDirKeys.length > 0;
   const allVisibleExpanded = hasExpandableDirs && visibleDirKeys.every((key) => !collapsedDirs.has(key));
   const allVisibleCollapsed = hasExpandableDirs && visibleDirKeys.every((key) => collapsedDirs.has(key));
-  const toggleDir = (key: string) => {
+  const toggleDir = useCallback((key: string) => {
     setCollapsedDirs((current) => {
       const next = new Set(current);
       if (next.has(key)) next.delete(key);
       else next.add(key);
       return next;
     });
-  };
-  const expandVisibleDirs = () => {
+  }, []);
+  const expandVisibleDirs = useCallback(() => {
     setCollapsedDirs((current) => {
       const next = new Set(current);
       for (const key of visibleDirKeys) next.delete(key);
       return next;
     });
-  };
-  const collapseVisibleDirs = () => {
+  }, [visibleDirKeys]);
+  const collapseVisibleDirs = useCallback(() => {
     setCollapsedDirs((current) => new Set([...current, ...visibleDirKeys]));
-  };
+  }, [visibleDirKeys]);
   return (
     <aside className="inspector" style={{ width }}>
       <button
@@ -1423,64 +1674,16 @@ export const Inspector = memo(function Inspector({
           ) : (
             <>
               {/* Tool list */}
-              <div className="insp-tool-list">
-                {hiddenToolCount > 0 && (
-                  <div className="insp-tool-row insp-tool-row-muted">
-                    <span className="insp-tool-name">
-                      {hiddenToolCount.toLocaleString()} older tools hidden while streaming
-                    </span>
-                  </div>
-                )}
-                {visibleTools.map((t) => (
-                  <button
-                    key={t.id}
-                    type="button"
-                    className={`insp-tool-row ${selectedId === t.id ? "active" : ""}`}
-                    onClick={() => setSelectedId(t.id)}
-                  >
-                    <StatusDot status={t.status} />
-                    <span className="insp-tool-name">{t.name}</span>
-                    <span className="insp-tool-status" style={{ color: STATUS_COLOR[t.status] }}>
-                      {STATUS_LABEL[t.status]}
-                    </span>
-                  </button>
-                ))}
-              </div>
+              <ToolList
+                tools={visibleTools}
+                selectedId={selectedId}
+                hiddenToolCount={hiddenToolCount}
+                onSelect={selectToolId}
+              />
 
               {/* Tool detail */}
               {selectedTool && (
-                <div className="insp-tool-detail">
-                  <div className="insp-detail-header">
-                    <span className="insp-detail-name">{selectedTool.name}</span>
-                    <span
-                      className="insp-detail-badge"
-                      style={{
-                        color: STATUS_COLOR[selectedTool.status],
-                        background: `color-mix(in srgb, ${STATUS_COLOR[selectedTool.status]} 12%, transparent)`,
-                      }}
-                    >
-                      {STATUS_LABEL[selectedTool.status]}
-                    </span>
-                    {isBashInspectorTool(selectedTool) && (
-                      <button
-                        type="button"
-                        className="insp-terminal-link"
-                        onClick={() => {
-                          setSelectedTerminalId(agentBashTerminalId(session.session_id, selectedTool.id));
-                          setTab("terminal");
-                        }}
-                      >
-                        View terminal
-                      </button>
-                    )}
-                  </div>
-                  <Section title="Input">
-                    <JsonBlock value={selectedTool.input} />
-                  </Section>
-                  <Section title={selectedTool.status === "err" ? "Result · error" : "Result"}>
-                    <JsonBlock value={selectedTool.result} error={selectedTool.status === "err"} />
-                  </Section>
-                </div>
+                <ToolDetail tool={selectedTool} onViewTerminal={viewToolTerminal} />
               )}
             </>
           )}
@@ -1518,18 +1721,12 @@ export const Inspector = memo(function Inspector({
             <>
               <div className="insp-terminal-list">
                 {relatedTerminals.map((terminal) => (
-                  <button
+                  <TerminalRow
                     key={terminal.id}
-                    type="button"
-                    className={`insp-terminal-row ${selectedTerminal?.id === terminal.id ? "active" : ""}`}
-                    onClick={() => setSelectedTerminalId(terminal.id)}
-                  >
-                    <span className="insp-terminal-row-title">{terminal.title}</span>
-                    <span className={terminalStatusClass(terminal.status)}>
-                      {TERMINAL_STATUS_LABEL[terminal.status]}
-                    </span>
-                    <span className="insp-terminal-row-subtitle">{terminalKindLabel(terminal)}</span>
-                  </button>
+                    terminal={terminal}
+                    active={selectedTerminal?.id === terminal.id}
+                    onSelect={selectTerminalId}
+                  />
                 ))}
               </div>
 

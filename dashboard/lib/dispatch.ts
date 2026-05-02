@@ -205,7 +205,7 @@ async function readState(): Promise<DispatchOverview["state"] & { botUsername?: 
   const statePath = dispatchStatePath();
   const { state: parsed, exists } = await readDispatchState();
 
-  const sessions = await listSessions().catch(() => []);
+  const sessions = await listSessions({ compactMeta: true }).catch(() => []);
   const byId = new Map(sessions.map((session) => [session.session_id, session]));
   const chats = Object.entries(parsed.chats ?? {}).map(([chatId, chat]) => {
     const sessionId = chat.session_id;

@@ -111,8 +111,10 @@ async function readCreateSessionRequest(req: NextRequest): Promise<CreateSession
   return { body: parsed, files };
 }
 
-export async function GET() {
-  const sessions = await listSessions();
+export async function GET(req: NextRequest) {
+  const full = req.nextUrl.searchParams.get("full") === "1"
+    || req.nextUrl.searchParams.get("compact") === "0";
+  const sessions = await listSessions({ compactMeta: !full });
   return NextResponse.json({ sessions });
 }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import type { SessionMeta, CLI } from "@/lib/runs";
 import type { ModelReasoningEffort } from "@/lib/models";
@@ -24,16 +24,45 @@ type Props = {
   hiddenMcpImageServers?: string[];
 };
 
+const STREAM_EVENT_FLUSH_MS = 250;
+
+type PendingSwarmEvents = {
+  key: string;
+  events: StreamEvent[];
+};
+
+function isDocumentVisible(): boolean {
+  return typeof document === "undefined" || document.visibilityState === "visible";
+}
+
+function useDocumentVisible(): boolean {
+  const [visible, setVisible] = useState(isDocumentVisible);
+
+  useEffect(() => {
+    const update = () => setVisible(isDocumentVisible());
+    update();
+    document.addEventListener("visibilitychange", update);
+    return () => document.removeEventListener("visibilitychange", update);
+  }, []);
+
+  return visible;
+}
+
 export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImageServers }: Props) {
+  const pageVisible = useDocumentVisible();
   const [meta, setMeta] = useState<SessionMeta>(initialMeta);
   const metaRef = useRef<SessionMeta>(initialMeta);
   const [events, setEvents] = useState<StreamEvent[]>(initialEvents);
   const seenRef = useRef(new Set(initialEvents.map((e) => JSON.stringify(e.raw))));
+  const pendingEventsRef = useRef<PendingSwarmEvents[]>([]);
+  const pendingLineKeysRef = useRef(new Set<string>());
+  const eventFlushRef = useRef<number | null>(null);
   const [streaming, setStreaming] = useState(initialMeta.status === "running");
   const bottomRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const composerRef = useRef<ComposerHandle>(null);
   const [sliceRuns, setSliceRuns] = useState<SliceEntry[]>([]);
+  const sliceRunsKeyRef = useRef(JSON.stringify([]));
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
 
   // Keep metaRef in sync for use inside SSE callbacks
@@ -41,11 +70,59 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
     metaRef.current = meta;
   }, [meta]);
 
+  const clearPendingEvents = useCallback(() => {
+    if (eventFlushRef.current !== null) {
+      window.clearTimeout(eventFlushRef.current);
+      eventFlushRef.current = null;
+    }
+    pendingEventsRef.current = [];
+    pendingLineKeysRef.current.clear();
+  }, []);
+
+  const flushPendingEvents = useCallback(() => {
+    if (eventFlushRef.current !== null) {
+      window.clearTimeout(eventFlushRef.current);
+      eventFlushRef.current = null;
+    }
+
+    const pending = pendingEventsRef.current;
+    if (pending.length === 0) return;
+    pendingEventsRef.current = [];
+    pendingLineKeysRef.current.clear();
+
+    for (const item of pending) seenRef.current.add(item.key);
+    const nextEvents = pending.flatMap((item) => item.events);
+
+    startTransition(() => {
+      setEvents((prev) => [...prev, ...nextEvents]);
+    });
+  }, []);
+
+  const scheduleEventFlush = useCallback(() => {
+    if (eventFlushRef.current !== null) return;
+    eventFlushRef.current = window.setTimeout(flushPendingEvents, STREAM_EVENT_FLUSH_MS);
+  }, [flushPendingEvents]);
+
+  const applySliceRuns = useCallback((next: SliceEntry[]) => {
+    const key = JSON.stringify(next);
+    if (sliceRunsKeyRef.current === key) return;
+    sliceRunsKeyRef.current = key;
+    setSliceRuns(next);
+  }, []);
+
   // Connect SSE whenever status transitions to running
   useEffect(() => {
-    if (meta.status !== "running") return;
+    if (meta.status !== "running" || !pageVisible) return;
+    const params = new URLSearchParams();
+    const currentTurnId = meta.turns.at(-1)?.turn_id;
+    if (currentTurnId) {
+      params.set("from_turn_id", currentTurnId);
+    } else {
+      params.set("after_turns", String(Math.max(0, meta.turns.length - 1)));
+    }
+    const query = params.toString();
     const es = new EventSource(
-      `/api/sessions/${encodeURIComponent(sessionId)}/stream`
+      `/api/sessions/${encodeURIComponent(sessionId)}/stream${query ? `?${query}` : ""}`
     );
 
     es.onmessage = (e) => {
@@ -60,51 +137,74 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
         const incoming = (obj as { meta: SessionMeta }).meta;
         // Stale-read guard
         if (incoming.turns.length < metaRef.current.turns.length) return;
+        flushPendingEvents();
         setMeta(incoming);
         setStreaming(false);
         es.close();
         return;
       }
       const key = JSON.stringify(obj);
-      if (seenRef.current.has(key)) return;
-      seenRef.current.add(key);
+      if (seenRef.current.has(key) || pendingLineKeysRef.current.has(key)) return;
       const parsed = toEvents(obj);
-      if (parsed.length === 0) return;
-      setEvents((prev) => [...prev, ...parsed]);
+      if (parsed.length === 0) {
+        seenRef.current.add(key);
+        return;
+      }
+      pendingLineKeysRef.current.add(key);
+      pendingEventsRef.current.push({ key, events: parsed });
+      scheduleEventFlush();
     };
     es.onerror = () => {
+      flushPendingEvents();
       es.close();
       setStreaming(false);
     };
 
-    return () => es.close();
-  }, [sessionId, meta.status]);
+    return () => {
+      es.close();
+      clearPendingEvents();
+    };
+  }, [clearPendingEvents, flushPendingEvents, pageVisible, scheduleEventFlush, sessionId, meta.status, meta.turns]);
 
   // Poll slice index. Poll more frequently while streaming; also refresh once
   // after streaming stops so the final durations land in the UI.
   useEffect(() => {
+    if (!pageVisible) return;
+
     let cancelled = false;
+    let inFlight = false;
+    const controller = new AbortController();
     const poll = async () => {
+      if (inFlight || controller.signal.aborted) return;
+      inFlight = true;
       try {
         const res = await fetch(
           `/api/sessions/${encodeURIComponent(sessionId)}/slices`,
-          { cache: "no-store" }
+          { cache: "no-store", signal: controller.signal }
         );
         if (!res.ok) return;
         const data = await res.json();
-        if (!cancelled) setSliceRuns(data.slices ?? []);
+        if (!cancelled) applySliceRuns(Array.isArray(data.slices) ? data.slices : []);
       } catch {
         /* ignore */
+      } finally {
+        inFlight = false;
       }
     };
     poll();
-    if (!streaming) return;
+    if (!streaming) {
+      return () => {
+        cancelled = true;
+        controller.abort();
+      };
+    }
     const id = setInterval(poll, 1500);
     return () => {
       cancelled = true;
+      controller.abort();
       clearInterval(id);
     };
-  }, [sessionId, streaming]);
+  }, [applySliceRuns, pageVisible, sessionId, streaming]);
 
   // Jump to bottom on first mount
   useEffect(() => {
@@ -140,9 +240,12 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  const chunks = useMemo(() => buildTurnChunks(meta, events), [events, meta.turns, meta.status]);
+  const chunks = useMemo(
+    () => buildTurnChunks({ turns: meta.turns, status: meta.status }, events),
+    [events, meta.turns, meta.status],
+  );
 
-  const sendMessage = async (
+  const sendMessage = useCallback(async (
     message: string,
     cli: CLI,
     model?: string,
@@ -187,29 +290,35 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
       setStreaming(false);
       alert(e instanceof Error ? e.message : "Failed to send");
     }
-  };
+  }, [sessionId]);
 
-  const stopGeneration = async () => {
+  const stopGeneration = useCallback(async () => {
     setStreaming(false);
     setMeta((m) => ({ ...m, status: "failed" }));
     await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/abort`, {
       method: "POST",
     });
-  };
+  }, [sessionId]);
 
-  const handleAbort = () => {
+  const handleAbort = useCallback(() => {
     setStreaming(false);
     setMeta((m) => ({ ...m, status: "failed" }));
-  };
+  }, []);
 
-  const handleSliceRerun = () => {
+  const handleSliceRerun = useCallback(() => {
     fetch(`/api/sessions/${encodeURIComponent(sessionId)}/slices`, {
       cache: "no-store",
     })
       .then((r) => r.json())
-      .then((data) => setSliceRuns(data.slices ?? []))
+      .then((data) => applySliceRuns(Array.isArray(data.slices) ? data.slices : []))
       .catch(() => {});
-  };
+  }, [applySliceRuns, sessionId]);
+
+  const handleSliceSelect = useCallback((entry: SliceEntry) => {
+    setActiveRunId((current) =>
+      current === entry.slice_run_id ? null : entry.slice_run_id
+    );
+  }, []);
 
   const lastTurn = meta.turns[meta.turns.length - 1];
   const snap = meta.agent_snapshot as
@@ -284,11 +393,7 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
             slices={sliceRuns}
             streaming={streaming}
             activeRunId={activeRunId}
-            onSelect={(e) =>
-              setActiveRunId((cur) =>
-                cur === e.slice_run_id ? null : e.slice_run_id
-              )
-            }
+            onSelect={handleSliceSelect}
           />
 
           {/* Secondary: orchestrator's own thoughts + tool chips */}

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { MouseEvent, ReactNode } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import {
   IconAgent,
@@ -19,9 +19,7 @@ import {
   IconTask,
   IconTerminal,
 } from "./icons";
-import type { SessionMeta } from "@/lib/runs";
-import { toInboxSessions } from "@/lib/chat-inbox";
-
+import { useShellRecents } from "./ShellRecentsProvider";
 
 type NavItem = {
   href: string;
@@ -71,25 +69,7 @@ type RecentChatGroup = {
   items: RecentChatItem[];
 };
 
-function sameRecents(a: RecentChatItem[], b: RecentChatItem[]): boolean {
-  return a.length === b.length && a.every((item, index) => {
-    const other = b[index];
-    return Boolean(other)
-      && item.id === other.id
-      && item.title === other.title
-      && item.agent === other.agent
-      && item.preview === other.preview
-      && item.relTime === other.relTime
-      && item.projectName === other.projectName
-      && item.projectPath === other.projectPath
-      && item.isMultiCli === other.isMultiCli
-      && item.isSwarm === other.isSwarm
-      && item.lastReplyAt === other.lastReplyAt;
-  });
-}
-
 type SidebarProps = {
-  recents: RecentChatItem[];
   onNavigate?: () => void;
   recentsScrollable?: boolean;
   sidebarCollapsed?: boolean;
@@ -104,7 +84,24 @@ function linkClass(layout: string, active: boolean): string {
   return `${layout} px-2.5 py-1.5 rounded-md transition-colors ${state}`;
 }
 
-function documentNavigate(
+function handleLocalLinkClick(
+  event: MouseEvent<HTMLAnchorElement>,
+  beforeNavigate?: () => void,
+): void {
+  if (
+    event.defaultPrevented ||
+    event.button !== 0 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.shiftKey ||
+    event.altKey
+  ) {
+    return;
+  }
+  beforeNavigate?.();
+}
+
+function handleDocumentChatClick(
   event: MouseEvent<HTMLAnchorElement>,
   href: string,
   beforeNavigate?: () => void,
@@ -166,9 +163,9 @@ function setCollapsedNav(collapsed: boolean) {
   } catch {}
 }
 
-function markSeen(id: string) {
+function markSeen(id: string, seenAt: string) {
   const map = getSeenMap();
-  map[id] = new Date().toISOString();
+  map[id] = seenAt;
   try { localStorage.setItem(SEEN_KEY, JSON.stringify(map)); } catch {}
 }
 
@@ -270,56 +267,7 @@ function ArchiveButton({
   );
 }
 
-function useRecents(initial: RecentChatItem[]): RecentChatItem[] {
-  const [recents, setRecents] = useState<RecentChatItem[]>(initial);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    setRecents((current) => (sameRecents(current, initial) ? current : initial));
-  }, [initial]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const poll = async () => {
-      try {
-        const res = await fetch("/api/sessions");
-        if (!res.ok || cancelled) return;
-        const { sessions } = await res.json() as { sessions: SessionMeta[] };
-        const active = sessions.filter(
-          (s) => !s.archived && ((s.turns ?? []).length > 0 || s.status === "running"),
-        );
-        const items = toInboxSessions(active).slice(0, 8).map((s) => ({
-          id: s.id,
-          title: s.title,
-          agent: s.agent,
-          preview: s.preview,
-          relTime: s.relTime,
-          projectName: s.projectName,
-          projectPath: s.projectPath,
-          isMultiCli: s.multi,
-          isSwarm: s.isSwarm,
-          lastReplyAt: s.lastFinishedAt ?? null,
-        }));
-        if (!cancelled) {
-          setRecents((current) => (sameRecents(current, items) ? current : items));
-        }
-      } catch {}
-      if (!cancelled) timerRef.current = setTimeout(poll, 5000);
-    };
-
-    timerRef.current = setTimeout(poll, 5000);
-    return () => {
-      cancelled = true;
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, []);
-
-  return recents;
-}
-
 export function Sidebar({
-  recents: initialRecents,
   onNavigate,
   recentsScrollable = false,
   sidebarCollapsed = false,
@@ -327,7 +275,7 @@ export function Sidebar({
   showDesktopControls = false,
 }: SidebarProps): JSX.Element {
   const pathname = usePathname() || "/";
-  const recents = useRecents(initialRecents);
+  const { recents, removeRecent } = useShellRecents();
   const [seenMap, setSeenMap] = useState<Record<string, string>>({});
   const [collapsedProjectsLoaded, setCollapsedProjectsLoaded] = useState(false);
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
@@ -335,38 +283,52 @@ export function Sidebar({
   const [desktopNavCollapsed, setDesktopNavCollapsed] = useState(false);
   const [archiving, setArchiving] = useState<string | null>(null);
   const [hiddenIds, setHiddenIds] = useState<Set<string>>(new Set());
+  const seenMapRef = useRef<Record<string, string>>({});
 
-  const archiveChat = async (e: React.MouseEvent, id: string) => {
+  const archiveChat = useCallback(async (e: React.MouseEvent, id: string) => {
     e.preventDefault();
     e.stopPropagation();
     setArchiving(id);
     setHiddenIds((prev) => new Set([...prev, id]));
     try {
-      await fetch(`/api/sessions/${id}`, {
+      const res = await fetch(`/api/sessions/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ archived: true }),
       });
+      if (!res.ok) throw new Error("Failed to archive chat");
+      removeRecent(id);
     } catch {
       setHiddenIds((prev) => { const s = new Set(prev); s.delete(id); return s; });
     } finally {
       setArchiving(null);
     }
-  };
+  }, [removeRecent]);
 
-  const recordSeen = (id: string) => {
-    markSeen(id);
-    setSeenMap((prev) => ({ ...prev, [id]: new Date().toISOString() }));
-  };
+  const recordSeen = useCallback((id: string) => {
+    const seenMs = Date.now();
+    const seenAt = new Date(seenMs).toISOString();
+    const previousSeenMs = Date.parse(seenMapRef.current[id] ?? "");
+    if (Number.isFinite(previousSeenMs) && seenMs - previousSeenMs < 1000) return;
+    seenMapRef.current = { ...seenMapRef.current, [id]: seenAt };
+    markSeen(id, seenAt);
+    setSeenMap((prev) => ({ ...prev, [id]: seenAt }));
+  }, []);
 
   // Load from localStorage on mount (client-only)
   useEffect(() => {
-    setSeenMap(getSeenMap());
+    const storedSeenMap = getSeenMap();
+    seenMapRef.current = storedSeenMap;
+    setSeenMap(storedSeenMap);
     setCollapsedProjects(getCollapsedRecentProjects());
     setDesktopNavCollapsed(getCollapsedNav());
     setCollapsedProjectsLoaded(true);
     setNavCollapsedLoaded(true);
   }, []);
+
+  useEffect(() => {
+    seenMapRef.current = seenMap;
+  }, [seenMap]);
 
   useEffect(() => {
     if (!collapsedProjectsLoaded) return;
@@ -382,21 +344,26 @@ export function Sidebar({
   useEffect(() => {
     const match = pathname.match(/^\/chats\/([^/]+)$/);
     if (match) recordSeen(match[1]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pathname]);
+  }, [pathname, recordSeen]);
 
-  const visibleRecents = recents.filter((r) => !hiddenIds.has(r.id));
-  const unreadCount = visibleRecents.filter((r) => hasUnread(r, seenMap)).length;
-  const recentGroups = groupRecentChats(visibleRecents);
+  const visibleRecents = useMemo(
+    () => recents.filter((r) => !hiddenIds.has(r.id)),
+    [hiddenIds, recents],
+  );
+  const unreadCount = useMemo(
+    () => visibleRecents.filter((r) => hasUnread(r, seenMap)).length,
+    [seenMap, visibleRecents],
+  );
+  const recentGroups = useMemo(() => groupRecentChats(visibleRecents), [visibleRecents]);
   const navCollapsed = showDesktopControls && desktopNavCollapsed && !sidebarCollapsed;
-  const toggleProjectCollapsed = (key: string) => {
+  const toggleProjectCollapsed = useCallback((key: string) => {
     setCollapsedProjects((current) => {
       const next = new Set(current);
       if (next.has(key)) next.delete(key);
       else next.add(key);
       return next;
     });
-  };
+  }, []);
 
   return (
     <nav
@@ -442,13 +409,7 @@ export function Sidebar({
               <li key={n.href} className={sidebarCollapsed ? "w-9" : undefined}>
                 <Link
                   href={n.href}
-                  onClick={(event) => {
-                    if (n.href === "/chats") {
-                      documentNavigate(event, n.href, onNavigate);
-                      return;
-                    }
-                    onNavigate?.();
-                  }}
+                  onClick={(event) => handleLocalLinkClick(event, onNavigate)}
                   title={sidebarCollapsed ? n.label : undefined}
                   aria-label={sidebarCollapsed ? n.label : undefined}
                   className={linkClass(
@@ -480,7 +441,7 @@ export function Sidebar({
           </span>
           <Link
             href="/chats/new"
-            onClick={onNavigate}
+            onClick={(event) => handleLocalLinkClick(event, onNavigate)}
             title="New chat"
             className="text-subtle hover:text-fg transition-colors text-base leading-none"
           >
@@ -537,7 +498,7 @@ export function Sidebar({
                         <Link
                           href={href}
                           prefetch={false}
-                          onClick={(event) => documentNavigate(event, href, () => {
+                          onClick={(event) => handleDocumentChatClick(event, href, () => {
                             recordSeen(r.id);
                             onNavigate?.();
                           })}
@@ -608,7 +569,7 @@ export function Sidebar({
         <div className="px-2.5 pt-1">
           <Link
             href="/chats"
-            onClick={(event) => documentNavigate(event, "/chats", onNavigate)}
+            onClick={(event) => handleLocalLinkClick(event, onNavigate)}
             className="text-[11px] text-muted hover:text-fg transition-colors"
           >
             See all &rarr;

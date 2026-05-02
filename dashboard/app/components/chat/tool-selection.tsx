@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, type ReactNode } from "react";
+import { createContext, useContext, useMemo, type ReactNode } from "react";
 import type { InspectorTool } from "./Inspector";
 
 type Ctx = {
@@ -8,10 +8,8 @@ type Ctx = {
   select: (tool: InspectorTool) => void;
 };
 
-const ToolSelectionContext = createContext<Ctx>({
-  activeId: null,
-  select: () => {},
-});
+const ActiveToolIdContext = createContext<string | null>(null);
+const SelectToolContext = createContext<Ctx["select"]>(() => {});
 
 export function ToolSelectionProvider({
   value,
@@ -20,9 +18,25 @@ export function ToolSelectionProvider({
   value: Ctx;
   children: ReactNode;
 }) {
-  return <ToolSelectionContext.Provider value={value}>{children}</ToolSelectionContext.Provider>;
+  return (
+    <SelectToolContext.Provider value={value.select}>
+      <ActiveToolIdContext.Provider value={value.activeId}>
+        {children}
+      </ActiveToolIdContext.Provider>
+    </SelectToolContext.Provider>
+  );
 }
 
 export function useToolSelection(): Ctx {
-  return useContext(ToolSelectionContext);
+  const activeId = useContext(ActiveToolIdContext);
+  const select = useContext(SelectToolContext);
+  return useMemo(() => ({ activeId, select }), [activeId, select]);
+}
+
+export function useActiveToolId(): string | null {
+  return useContext(ActiveToolIdContext);
+}
+
+export function useSelectTool(): Ctx["select"] {
+  return useContext(SelectToolContext);
 }

@@ -51,7 +51,7 @@ export default async function DashboardPage() {
     listJobs(),
     listRuns(),
     listRunTokenSummaries(),
-    listSessions(),
+    listSessions({ compactMeta: true }),
     listSessionTokenSummaries(),
     listTasks(),
   ]);

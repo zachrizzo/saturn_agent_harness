@@ -44,6 +44,8 @@ export type TerminalListResponse = {
   groups: TerminalGroup[];
   projects: TerminalProject[];
   defaultCwd: string | null;
+  totalTerminalCount?: number;
+  filteredTerminalCount?: number;
 };
 
 export function projectNameFromPath(cwd: string | null | undefined): string | null {

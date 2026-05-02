@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Budget, BudgetLimits } from "@/lib/budget";
 import { Button } from "@/app/components/ui";
 import type { SliceEntry } from "./SliceLane";
@@ -36,7 +36,47 @@ function deriveClock(budget: Budget | null, limits: BudgetLimits): Clock {
   };
 }
 
+function isDocumentVisible(): boolean {
+  return typeof document === "undefined" || document.visibilityState === "visible";
+}
+
+function useDocumentVisible(): boolean {
+  const [visible, setVisible] = useState(isDocumentVisible);
+
+  useEffect(() => {
+    const update = () => setVisible(isDocumentVisible());
+    update();
+    document.addEventListener("visibilitychange", update);
+    return () => document.removeEventListener("visibilitychange", update);
+  }, []);
+
+  return visible;
+}
+
+function sameBudget(a: Budget | null, b: Budget | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.tokens_used === b.tokens_used &&
+    a.slice_calls === b.slice_calls &&
+    a.wallclock_started_at === b.wallclock_started_at &&
+    a.recursion_depth === b.recursion_depth &&
+    a.stop === b.stop &&
+    a.stop_reason === b.stop_reason
+  );
+}
+
+function sameLimits(a: BudgetLimits, b: BudgetLimits): boolean {
+  return (
+    a.max_total_tokens === b.max_total_tokens &&
+    a.max_slice_calls === b.max_slice_calls &&
+    a.max_wallclock_seconds === b.max_wallclock_seconds &&
+    a.max_recursion_depth === b.max_recursion_depth
+  );
+}
+
 export function SwarmProgress({ sessionId, streaming, slices, onAbort }: Props) {
+  const pageVisible = useDocumentVisible();
   const [budget, setBudget] = useState<Budget | null>(null);
   const [limits, setLimits] = useState<BudgetLimits>({});
   const [clock, setClock] = useState<Clock>({ elapsed: "00:00", remaining: null });
@@ -45,36 +85,58 @@ export function SwarmProgress({ sessionId, streaming, slices, onAbort }: Props) 
 
   // Poll budget while streaming; do one last fetch when we stop.
   useEffect(() => {
+    if (!pageVisible) return;
+
+    let cancelled = false;
+    let inFlight = false;
+    const controller = new AbortController();
     const poll = async () => {
+      if (inFlight || controller.signal.aborted) return;
+      inFlight = true;
       try {
         const res = await fetch(
           `/api/sessions/${encodeURIComponent(sessionId)}/budget`,
-          { cache: "no-store" }
+          { cache: "no-store", signal: controller.signal }
         );
         if (!res.ok) return;
         const data = await res.json();
-        setBudget(data.budget ?? null);
-        setLimits(data.limits ?? {});
+        if (cancelled) return;
+        const nextBudget = (data.budget ?? null) as Budget | null;
+        const nextLimits = (data.limits ?? {}) as BudgetLimits;
+        setBudget((current) => sameBudget(current, nextBudget) ? current : nextBudget);
+        setLimits((current) => sameLimits(current, nextLimits) ? current : nextLimits);
       } catch {
         /* ignore */
+      } finally {
+        inFlight = false;
       }
     };
     poll();
     if (streaming) {
       pollRef.current = setInterval(poll, 2000);
       return () => {
-        if (pollRef.current) clearInterval(pollRef.current);
+        cancelled = true;
+        controller.abort();
+        if (pollRef.current) {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+        }
       };
     }
-  }, [sessionId, streaming]);
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [pageVisible, sessionId, streaming]);
 
   // Tick the wallclock locally so it feels live even between polls.
   useEffect(() => {
-    if (!budget?.wallclock_started_at) return;
+    if (!budget?.wallclock_started_at || !pageVisible) return;
     setClock(deriveClock(budget, limits));
+    if (!streaming) return;
     const t = setInterval(() => setClock(deriveClock(budget, limits)), 1000);
     return () => clearInterval(t);
-  }, [budget?.wallclock_started_at, limits]);
+  }, [budget, budget?.wallclock_started_at, limits, pageVisible, streaming]);
 
   const handleAbort = async () => {
     setAborting(true);
@@ -106,8 +168,10 @@ export function SwarmProgress({ sessionId, streaming, slices, onAbort }: Props) 
   const callsTone: "" | "kpi-warn" | "kpi-fail" =
     callsPct >= 90 ? "kpi-fail" : callsPct >= 70 ? "kpi-warn" : "";
 
-  const running = slices.filter((s) => s.status === "running").length;
-  const completed = slices.filter((s) => s.status !== "running").length;
+  const { running, completed } = useMemo(() => ({
+    running: slices.filter((s) => s.status === "running").length,
+    completed: slices.filter((s) => s.status !== "running").length,
+  }), [slices]);
 
   return (
     <section

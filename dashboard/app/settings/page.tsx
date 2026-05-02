@@ -14,6 +14,8 @@ export const revalidate = 0;
 export const dynamic = "force-dynamic";
 
 const execFileAsync = promisify(execFile);
+const OBSERVED_MCP_SESSION_LIMIT = 80;
+const OBSERVED_MCP_STREAM_SAMPLE_BYTES = 768 * 1024;
 
 type McpServerSummary = {
   name: string;
@@ -95,11 +97,11 @@ function mcpServerFromToolEvent(ev: StreamEvent): string | undefined {
 }
 
 async function loadObservedMcpServers(limit = 100): Promise<McpServerSummary[]> {
-  const sessions = await listSessions().catch(() => []);
+  const sessions = await listSessions({ compactMeta: true }).catch(() => []);
   const names = new Set<string>();
   await Promise.all(
     sessions.slice(0, limit).map(async (session) => {
-      const raw = await fs.readFile(path.join(sessionsRoot(), session.session_id, "stream.jsonl"), "utf8").catch(() => "");
+      const raw = await readStreamSample(path.join(sessionsRoot(), session.session_id, "stream.jsonl")).catch(() => "");
       for (const ev of parseStreamJsonl(raw)) {
         const name = mcpServerFromToolEvent(ev);
         if (name) names.add(name);
@@ -113,6 +115,31 @@ async function loadObservedMcpServers(limit = 100): Promise<McpServerSummary[]> 
     envKeys: [],
     targets: [],
   }));
+}
+
+async function readStreamSample(filePath: string): Promise<string> {
+  const handle = await fs.open(filePath, "r");
+  try {
+    const stat = await handle.stat();
+    if (stat.size <= OBSERVED_MCP_STREAM_SAMPLE_BYTES) {
+      return await fs.readFile(filePath, "utf8");
+    }
+
+    const half = Math.floor(OBSERVED_MCP_STREAM_SAMPLE_BYTES / 2);
+    const head = Buffer.allocUnsafe(half);
+    const tail = Buffer.allocUnsafe(OBSERVED_MCP_STREAM_SAMPLE_BYTES - half);
+    const [headRead, tailRead] = await Promise.all([
+      handle.read(head, 0, head.length, 0),
+      handle.read(tail, 0, tail.length, stat.size - tail.length),
+    ]);
+
+    return [
+      head.subarray(0, headRead.bytesRead).toString("utf8"),
+      tail.subarray(0, tailRead.bytesRead).toString("utf8").replace(/^[^\n]*(?:\n|$)/, ""),
+    ].join("\n");
+  } finally {
+    await handle.close();
+  }
 }
 
 function mergeMcpServers(...groups: McpServerSummary[][]): McpServerSummary[] {
@@ -149,7 +176,7 @@ export default async function SettingsPage() {
     listJobs().catch(() => []),
     listWorkingDirectories().catch(() => []),
     loadMcpSummaries(),
-    loadObservedMcpServers(),
+    loadObservedMcpServers(OBSERVED_MCP_SESSION_LIMIT),
     loadAwsProfiles(),
   ]);
   const hiddenOnlyServers = settings.hiddenMcpImageServers.map((name) => ({

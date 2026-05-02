@@ -13,11 +13,28 @@ import { listWorkingDirectories } from "./working-directories";
 
 export type ListAllTerminalsOptions = {
   sessionId?: string;
+  projectPath?: string;
+  limit?: number | null;
 };
+
+const DEFAULT_TERMINAL_LIST_LIMIT = 300;
+const MAX_TERMINAL_LIST_LIMIT = 1000;
 
 function projectKey(path: string | null | undefined): string | null {
   const cleaned = path?.trim();
   return cleaned || null;
+}
+
+function terminalProjectKey(terminal: TerminalRecord): string | null {
+  return projectKey(terminal.projectPath ?? terminal.cwd);
+}
+
+function resolveLimit(limit: number | null | undefined, sessionScoped: boolean): number | null {
+  if (limit === null) return null;
+  if (sessionScoped && limit === undefined) return null;
+  const value = limit ?? DEFAULT_TERMINAL_LIST_LIMIT;
+  if (!Number.isFinite(value) || value <= 0) return DEFAULT_TERMINAL_LIST_LIMIT;
+  return Math.min(Math.trunc(value), MAX_TERMINAL_LIST_LIMIT);
 }
 
 function buildProjects(
@@ -78,14 +95,23 @@ export async function listAllTerminals(options: ListAllTerminalsOptions = {}): P
     ...agentBash.map((terminal) => terminal.record),
   ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const sessionId = options.sessionId?.trim();
-  const terminals = sessionId
+  const projectPath = options.projectPath?.trim();
+  let scopedTerminals = sessionId
     ? allTerminals.filter((terminal) => terminal.sessionId === sessionId)
     : allTerminals;
+  if (projectPath) {
+    scopedTerminals = scopedTerminals.filter((terminal) => terminalProjectKey(terminal) === projectPath);
+  }
+
+  const limit = resolveLimit(options.limit, Boolean(sessionId));
+  const terminals = limit === null ? scopedTerminals : scopedTerminals.slice(0, limit);
 
   return {
     terminals,
     groups: groupTerminalRecords(terminals),
-    projects: sessionId ? buildProjects([], terminals) : buildProjects(directories, allTerminals),
+    projects: sessionId ? buildProjects([], scopedTerminals) : buildProjects(directories, allTerminals),
     defaultCwd: settings?.defaultCwd ?? null,
+    totalTerminalCount: allTerminals.length,
+    filteredTerminalCount: scopedTerminals.length,
   };
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState, useEffect, useRef } from "react";
+import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import type { RunMeta } from "@/lib/runs";
 import type { StreamEvent, TokenBreakdown, ToolCallSummary } from "@/lib/events";
@@ -37,12 +37,45 @@ function statusVariant(status: string): StatusVariant {
   return "default";
 }
 
+const STREAM_EVENT_FLUSH_MS = 250;
+
+type PendingRunEvents = {
+  key: string;
+  events: StreamEvent[];
+};
+
+function isDocumentVisible(): boolean {
+  return typeof document === "undefined" || document.visibilityState === "visible";
+}
+
+function useDocumentVisible(): boolean {
+  const [visible, setVisible] = useState(isDocumentVisible);
+
+  useEffect(() => {
+    const update = () => setVisible(isDocumentVisible());
+    update();
+    document.addEventListener("visibilitychange", update);
+    return () => document.removeEventListener("visibilitychange", update);
+  }, []);
+
+  return visible;
+}
+
+function lastAssistantText(events: StreamEvent[]): string | null {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (event.kind === "assistant_text") return event.text;
+  }
+  return null;
+}
+
 export function RunDetailClient({
   name, ts,
   initialMeta, initialEvents, initialFinalMarkdown, initialStderr,
   initialTokenBreakdown, initialToolSummary,
   formattedStarted, modelLabel, cliLabel
 }: Props) {
+  const pageVisible = useDocumentVisible();
   const [meta, setMeta] = useState(initialMeta);
   const [events, setEvents] = useState(initialEvents);
   const [finalMarkdown, setFinalMarkdown] = useState(initialFinalMarkdown);
@@ -50,16 +83,56 @@ export function RunDetailClient({
   const [streaming, setStreaming] = useState(initialMeta.status === "running");
   const [elapsed, setElapsed] = useState(0);
   const seenLinesRef = useRef(new Set(initialEvents.map((e) => JSON.stringify(e.raw))));
+  const pendingEventsRef = useRef<PendingRunEvents[]>([]);
+  const pendingLineKeysRef = useRef(new Set<string>());
+  const eventFlushRef = useRef<number | null>(null);
   const startEpochRef = useRef(new Date(initialMeta.started_at).getTime());
 
-  useEffect(() => {
-    if (meta.status !== "running") return;
-    const t = setInterval(() => setElapsed(Date.now() - startEpochRef.current), 500);
-    return () => clearInterval(t);
-  }, [meta.status]);
+  const clearPendingEvents = useCallback(() => {
+    if (eventFlushRef.current !== null) {
+      window.clearTimeout(eventFlushRef.current);
+      eventFlushRef.current = null;
+    }
+    pendingEventsRef.current = [];
+    pendingLineKeysRef.current.clear();
+  }, []);
+
+  const flushPendingEvents = useCallback(() => {
+    if (eventFlushRef.current !== null) {
+      window.clearTimeout(eventFlushRef.current);
+      eventFlushRef.current = null;
+    }
+
+    const pending = pendingEventsRef.current;
+    if (pending.length === 0) return;
+    pendingEventsRef.current = [];
+    pendingLineKeysRef.current.clear();
+
+    for (const item of pending) seenLinesRef.current.add(item.key);
+    const nextEvents = pending.flatMap((item) => item.events);
+    const nextFinalMarkdown = lastAssistantText(nextEvents);
+
+    startTransition(() => {
+      setEvents((prev) => [...prev, ...nextEvents]);
+      if (nextFinalMarkdown !== null) {
+        setFinalMarkdown((current) => current === nextFinalMarkdown ? current : nextFinalMarkdown);
+      }
+    });
+  }, []);
+
+  const scheduleEventFlush = useCallback(() => {
+    if (eventFlushRef.current !== null) return;
+    eventFlushRef.current = window.setTimeout(flushPendingEvents, STREAM_EVENT_FLUSH_MS);
+  }, [flushPendingEvents]);
 
   useEffect(() => {
-    if (meta.status !== "running") return;
+    if (meta.status !== "running" || !pageVisible) return;
+    const t = setInterval(() => setElapsed(Date.now() - startEpochRef.current), 500);
+    return () => clearInterval(t);
+  }, [meta.status, pageVisible]);
+
+  useEffect(() => {
+    if (meta.status !== "running" || !pageVisible) return;
 
     const es = new EventSource(`/api/runs/${encodeURIComponent(name)}/${encodeURIComponent(ts)}/stream`);
 
@@ -69,48 +142,40 @@ export function RunDetailClient({
 
       if ((obj as { type?: string }).type === "_meta") {
         const m = (obj as { meta: RunMeta }).meta;
+        flushPendingEvents();
         setMeta(m);
         setStreaming(false);
         es.close();
-
-        setEvents((prev) => {
-          const textEvents = prev.filter((ev) => ev.kind === "assistant_text");
-          if (textEvents.length > 0) {
-            setFinalMarkdown(textEvents[textEvents.length - 1].text);
-          }
-          return prev;
-        });
         return;
       }
 
       const lineKey = JSON.stringify(obj);
-      if (seenLinesRef.current.has(lineKey)) return;
-      seenLinesRef.current.add(lineKey);
+      if (seenLinesRef.current.has(lineKey) || pendingLineKeysRef.current.has(lineKey)) return;
 
       const newEvents = toEvents(obj);
-      if (newEvents.length === 0) return;
+      if (newEvents.length === 0) {
+        seenLinesRef.current.add(lineKey);
+        return;
+      }
 
-      setEvents((prev) => {
-        const next = [...prev, ...newEvents];
-
-        const last = [...next].reverse().find((ev) => ev.kind === "assistant_text");
-        if (last && last.kind === "assistant_text") {
-          setFinalMarkdown(last.text);
-        }
-
-        return next;
-      });
+      pendingLineKeysRef.current.add(lineKey);
+      pendingEventsRef.current.push({ key: lineKey, events: newEvents });
+      scheduleEventFlush();
     };
 
     es.onerror = () => {
+      flushPendingEvents();
       es.close();
       setStreaming(false);
     };
 
-    return () => es.close();
-  }, [name, ts, meta.status]);
+    return () => {
+      es.close();
+      clearPendingEvents();
+    };
+  }, [clearPendingEvents, flushPendingEvents, name, pageVisible, scheduleEventFlush, ts, meta.status]);
 
-  const tokenBreakdown = (() => {
+  const tokenBreakdown = useMemo(() => {
     const bd = getTokenBreakdown(events);
     return {
       ...bd,
@@ -120,8 +185,8 @@ export function RunDetailClient({
       formattedCacheRead: formatTokens(bd.cacheRead),
       formattedTotal: formatTokens(bd.total || meta.total_tokens),
     };
-  })();
-  const toolSummary = getToolCallSummary(events);
+  }, [events, meta.total_tokens]);
+  const toolSummary = useMemo(() => getToolCallSummary(events), [events]);
 
   const formattedDuration = meta.status === "running"
     ? formatDuration(elapsed)
@@ -142,17 +207,25 @@ export function RunDetailClient({
     }
   }, [events.length, streaming, autoScroll]);
 
-  const toggleEvent = (i: number) => {
+  const toggleEvent = useCallback((i: number) => {
     setExpandedEvents((prev) => {
       const s = new Set(prev);
       if (s.has(i)) s.delete(i);
       else s.add(i);
       return s;
     });
-  };
+  }, []);
 
-  const filteredEvents = events.filter((ev) => eventTypeFilter.has(ev.kind));
-  const numTurns = meta.num_turns ?? (events.filter((e) => e.kind === "result").length || "—");
+  const filteredEvents = useMemo(
+    () => events
+      .map((event, index) => ({ event, index }))
+      .filter(({ event }) => eventTypeFilter.has(event.kind)),
+    [events, eventTypeFilter],
+  );
+  const numTurns = useMemo(
+    () => meta.num_turns ?? (events.filter((e) => e.kind === "result").length || "—"),
+    [events, meta.num_turns],
+  );
 
   function cacheEfficiencyLabel(pct: number): string {
     if (pct > 30) return "Excellent";
@@ -354,10 +427,15 @@ export function RunDetailClient({
         </div>
 
         <div className="space-y-2">
-          {filteredEvents.map((ev) => {
-            const origIdx = events.indexOf(ev);
-            return <EventCard key={origIdx} event={ev} index={origIdx} isExpanded={expandedEvents.has(origIdx)} onToggle={toggleEvent} />;
-          })}
+          {filteredEvents.map(({ event, index }) => (
+            <EventCard
+              key={index}
+              event={event}
+              index={index}
+              isExpanded={expandedEvents.has(index)}
+              onToggle={toggleEvent}
+            />
+          ))}
           {filteredEvents.length === 0 && (
             <Card className="p-6 text-center text-muted text-sm">
               {streaming ? (
@@ -409,7 +487,7 @@ function TokenStat({ label, value, swatch }: { label: string; value: string; swa
   );
 }
 
-function EventCard({
+const EventCard = memo(function EventCard({
   event,
   index,
   isExpanded,
@@ -501,7 +579,7 @@ function EventCard({
       )}
     </Card>
   );
-}
+});
 
 function renderToolResult(content: unknown): string {
   if (typeof content === "string") return content;
