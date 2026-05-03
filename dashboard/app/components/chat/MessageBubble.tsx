@@ -9,6 +9,7 @@ import type { CLI } from "@/lib/runs";
 import { formatReasoningEffort, type ModelReasoningEffort } from "@/lib/models";
 import { toClaudeAlias } from "@/lib/claude-models";
 import { CLI_SHORT_LABELS } from "@/lib/clis";
+import { Button } from "@/app/components/ui";
 import { Portal } from "../Portal";
 import { ToolInvocation } from "./ToolInvocation";
 import { SubAgentCard } from "./SubAgentCard";
@@ -38,8 +39,8 @@ type AssistantProps = {
   sessionId?: string;
   hiddenMcpImageServers?: string[];
   onOpenFile?: (path: string) => void;
-  onRunSubAgentInBackground?: (id: string) => void;
-  subAgentBackgrounding?: boolean;
+  onRunSubAgentInBackground?: (id: string, title: string) => void;
+  backgroundSubAgentIds?: Set<string>;
 };
 
 type Props = UserProps | AssistantProps;
@@ -62,6 +63,41 @@ function extractSaturnFailure(raw: unknown): SaturnFailureInfo | null {
   };
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function errorMessageFromPayload(payload: unknown): string | undefined {
+  const record = asRecord(payload);
+  if (typeof record.error === "string" && record.error.trim()) return record.error;
+  if (typeof record.message === "string" && record.message.trim()) return record.message;
+  const error = asRecord(record.error);
+  if (typeof error.message === "string" && error.message.trim()) return error.message;
+  return undefined;
+}
+
+function isBedrockAuthFailureText(text: string): boolean {
+  const lower = text.toLowerCase();
+  return (
+    lower.includes("bedrock is not authenticated") ||
+    lower.includes("aws sso login") ||
+    lower.includes("sso session associated with this profile") ||
+    lower.includes("sso session has expired")
+  );
+}
+
+function bedrockAuthCalloutDetail(text: string): string {
+  const profile = text.match(/AWS profile '([^']+)'/)?.[1]
+    ?? text.match(/AWS_PROFILE=([^\s]+)/)?.[1];
+  const region = text.match(/\bin ([a-z]{2}-[a-z]+-\d)\b/)?.[1]
+    ?? text.match(/AWS_REGION=([^\s]+)/)?.[1];
+  const target = [
+    profile ? `profile ${profile}` : "the configured AWS profile",
+    region ? `in ${region}` : "",
+  ].filter(Boolean).join(" ");
+  return `Bedrock needs an AWS SSO session for ${target}. Sign in, then retry your message.`;
+}
+
 function sameEventArray(a: StreamEvent[], b: StreamEvent[]): boolean {
   if (a === b) return true;
   if (a.length !== b.length) return false;
@@ -75,6 +111,15 @@ function sameStringArray(a?: string[], b?: string[]): boolean {
   if (a === b) return true;
   if (!a || !b || a.length !== b.length) return false;
   return a.every((item, index) => item === b[index]);
+}
+
+function sameSet(a?: Set<string>, b?: Set<string>): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.size !== b.size) return false;
+  for (const item of a) {
+    if (!b.has(item)) return false;
+  }
+  return true;
 }
 
 function areMessageBubblePropsEqual(prev: Props, next: Props): boolean {
@@ -100,7 +145,7 @@ function areMessageBubblePropsEqual(prev: Props, next: Props): boolean {
       prev.sessionId === next.sessionId &&
       prev.onOpenFile === next.onOpenFile &&
       prev.onRunSubAgentInBackground === next.onRunSubAgentInBackground &&
-      prev.subAgentBackgrounding === next.subAgentBackgrounding &&
+      sameSet(prev.backgroundSubAgentIds, next.backgroundSubAgentIds) &&
       sameStringArray(prev.hiddenMcpImageServers, next.hiddenMcpImageServers) &&
       sameEventArray(prev.events, next.events)
     );
@@ -1011,7 +1056,7 @@ function AssistantBlock({
   hiddenMcpImageServers,
   onOpenFile,
   onRunSubAgentInBackground,
-  subAgentBackgrounding,
+  backgroundSubAgentIds,
 }: AssistantProps) {
   const [hovered, setHovered] = useState(false);
   const displayEvents = useMemo(
@@ -1106,8 +1151,8 @@ function AssistantBlock({
             result={res?.content}
             status={status}
             active={status === "run" && streaming && isLast}
+            backgrounded={backgroundSubAgentIds?.has(ev.id)}
             onRunInBackground={onRunSubAgentInBackground}
-            runInBackgroundDisabled={subAgentBackgrounding}
             subEvents={subEventsByParent.get(ev.id)}
           />
         );

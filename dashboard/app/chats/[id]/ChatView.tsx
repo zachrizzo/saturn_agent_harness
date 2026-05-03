@@ -43,6 +43,15 @@ type BedrockAuthPrompt = {
   checking: boolean;
 };
 
+type BackgroundSubAgent = {
+  id: string;
+  title: string;
+};
+
+type BackgroundSubAgentRow = BackgroundSubAgent & {
+  status: "run" | "ok" | "err";
+};
+
 const STREAM_EVENT_FLUSH_MS = 250;
 const INITIAL_VISIBLE_TURNS = 4;
 const VISIBLE_TURN_INCREMENT = 8;
@@ -277,6 +286,41 @@ function runningToolState(tools: InspectorTool[]): { latest?: InspectorTool; cou
   return { latest, count };
 }
 
+function subAgentTitleFromInput(input: unknown): string {
+  if (!input || typeof input !== "object") return "Sub-agent";
+  const record = input as Record<string, unknown>;
+  const description = typeof record.description === "string" ? record.description.trim() : "";
+  if (description) return description;
+  const subagentType = typeof record.subagent_type === "string" ? record.subagent_type.trim() : "";
+  if (subagentType) return subagentType;
+  return "Sub-agent";
+}
+
+function backgroundSubAgentRows(
+  agents: Record<string, BackgroundSubAgent>,
+  events: StreamEvent[],
+): BackgroundSubAgentRow[] {
+  const rows = Object.values(agents);
+  if (rows.length === 0) return [];
+
+  const toolUses = new Map<string, Extract<StreamEvent, { kind: "tool_use" }>>();
+  const results = new Map<string, Extract<StreamEvent, { kind: "tool_result" }>>();
+  for (const event of events) {
+    if (event.kind === "tool_use" && event.name === "Agent") toolUses.set(event.id, event);
+    if (event.kind === "tool_result") results.set(event.toolUseId, event);
+  }
+
+  return rows.map((agent) => {
+    const toolUse = toolUses.get(agent.id);
+    const result = results.get(agent.id);
+    return {
+      ...agent,
+      title: toolUse ? subAgentTitleFromInput(toolUse.input) : agent.title,
+      status: !result ? "run" : result.isError ? "err" : "ok",
+    };
+  });
+}
+
 export function ChatView({
   sessionId,
   initialMeta,
@@ -326,6 +370,13 @@ export function ChatView({
   const eventSourceRef = useRef<EventSource | null>(null);
   const sseStartOverrideRef = useRef<SseStartOverride | null>(null);
   const sseActiveRef = useRef(false);
+  const mountedRef = useRef(false);
+  const snapshotGenerationRef = useRef(0);
+  const latestSnapshotRequestRef = useRef(0);
+  const terminalRefreshTimerRef = useRef<number | null>(null);
+  const editScrollTimerRef = useRef<number | null>(null);
+  const activeActionAbortRef = useRef<AbortController | null>(null);
+  const activeActionSeqRef = useRef(0);
   const [streaming, setStreaming] = useState(initialMeta.status === "running");
   const [autoScroll, setAutoScroll] = useState(true);
   const [atBottom, setAtBottom] = useState(true);
@@ -346,10 +397,44 @@ export function ChatView({
   const fileOpenRequestId = useRef(0);
   const [bedrockAuthPrompt, setBedrockAuthPrompt] = useState<BedrockAuthPrompt | null>(null);
   const [visibleTurnCount, setVisibleTurnCount] = useState(INITIAL_VISIBLE_TURNS);
-  const [backgrounding, setBackgrounding] = useState(false);
+  const [backgroundSubAgents, setBackgroundSubAgents] = useState<Record<string, BackgroundSubAgent>>({});
 
   // Tool selection — drives Inspector content.
   const [activeToolId, setActiveToolId] = useState<string | null>(null);
+
+  const clearTerminalRefreshTimer = useCallback(() => {
+    if (terminalRefreshTimerRef.current === null) return;
+    window.clearTimeout(terminalRefreshTimerRef.current);
+    terminalRefreshTimerRef.current = null;
+  }, []);
+
+  const clearEditScrollTimer = useCallback(() => {
+    if (editScrollTimerRef.current === null) return;
+    window.clearTimeout(editScrollTimerRef.current);
+    editScrollTimerRef.current = null;
+  }, []);
+
+  const beginMutation = useCallback(() => {
+    snapshotGenerationRef.current += 1;
+  }, []);
+
+  const beginExclusiveAction = useCallback(() => {
+    activeActionAbortRef.current?.abort();
+    const controller = new AbortController();
+    activeActionAbortRef.current = controller;
+    activeActionSeqRef.current += 1;
+    return { controller, seq: activeActionSeqRef.current };
+  }, []);
+
+  const isCurrentAction = useCallback((seq: number, controller: AbortController) => {
+    return mountedRef.current && activeActionSeqRef.current === seq && !controller.signal.aborted;
+  }, []);
+
+  const finishExclusiveAction = useCallback((seq: number, controller: AbortController) => {
+    if (activeActionSeqRef.current === seq && activeActionAbortRef.current === controller) {
+      activeActionAbortRef.current = null;
+    }
+  }, []);
 
   // Mark this chat as read on mount (fire-and-forget).
   useEffect(() => {
@@ -408,6 +493,22 @@ export function ChatView({
   }, [cancelPendingEventFlush]);
 
   useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      activeActionAbortRef.current?.abort();
+      activeActionAbortRef.current = null;
+      clearTerminalRefreshTimer();
+      clearEditScrollTimer();
+      pauseLiveUpdatesForNavigation();
+      if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
+      if (scrollTimerRef.current !== null) window.clearTimeout(scrollTimerRef.current);
+      scrollFrameRef.current = null;
+      scrollTimerRef.current = null;
+    };
+  }, [clearEditScrollTimer, clearTerminalRefreshTimer, pauseLiveUpdatesForNavigation]);
+
+  useEffect(() => {
     const onInternalNavigation = (event: PointerEvent) => {
       const target = event.target as Element | null;
       const anchor = target?.closest?.("a[href]") as HTMLAnchorElement | null;
@@ -425,6 +526,10 @@ export function ChatView({
   }, [pauseLiveUpdatesForNavigation]);
 
   const applySessionSnapshot = useCallback((incoming: SessionMeta, incomingEvents: StreamEvent[]) => {
+    if (!mountedRef.current) return;
+    // Ignore stale snapshots from before an optimistic edit/send/backtrack.
+    // Older snapshots can otherwise rehydrate truncated turns or tool events.
+    if (incoming.turns.length < metaRef.current.turns.length) return;
     if (incoming.turns.length >= metaRef.current.turns.length) {
       setMeta(incoming);
       setStreaming(incoming.status === "running");
@@ -461,7 +566,11 @@ export function ChatView({
   }, [flushPendingEvents]);
 
   const refreshSessionSnapshot = useCallback(async () => {
+    if (!mountedRef.current) return;
     if (sseActiveRef.current && metaRef.current.status === "running") return;
+    const requestId = latestSnapshotRequestRef.current + 1;
+    latestSnapshotRequestRef.current = requestId;
+    const generation = snapshotGenerationRef.current;
     try {
       const params = new URLSearchParams();
       if (eventsPartial) {
@@ -474,6 +583,13 @@ export function ChatView({
       });
       if (!res.ok) return;
       const data = await res.json() as { meta: SessionMeta; events: StreamEvent[]; eventsPartial?: boolean };
+      if (
+        !mountedRef.current ||
+        requestId !== latestSnapshotRequestRef.current ||
+        generation !== snapshotGenerationRef.current
+      ) {
+        return;
+      }
       applySessionSnapshot(data.meta, data.events ?? []);
       setEventsPartial(Boolean(data.eventsPartial));
     } catch {}
@@ -545,7 +661,11 @@ export function ChatView({
         flushPendingEvents();
         setMeta(incoming);
         setStreaming(false);
-        window.setTimeout(() => { void refreshSessionSnapshot(); }, 120);
+        clearTerminalRefreshTimer();
+        terminalRefreshTimerRef.current = window.setTimeout(() => {
+          terminalRefreshTimerRef.current = null;
+          if (mountedRef.current) void refreshSessionSnapshot();
+        }, 120);
         startTransition(() => router.refresh());
         es.close();
         if (eventSourceRef.current === es) eventSourceRef.current = null;
@@ -581,7 +701,7 @@ export function ChatView({
       if (eventSourceRef.current === es) eventSourceRef.current = null;
       cancelPendingEventFlush();
     };
-  }, [cancelPendingEventFlush, flushPendingEvents, refreshSessionSnapshot, router, scheduleEventFlush, sessionId, meta.status, meta.turns.length]);
+  }, [cancelPendingEventFlush, clearTerminalRefreshTimer, flushPendingEvents, refreshSessionSnapshot, router, scheduleEventFlush, sessionId, meta.status, meta.turns.length]);
 
   const getChatScrollElement = useCallback(() => (
     chatBottomRef.current?.closest<HTMLElement>('[data-shell="chat-scroll"]')
@@ -628,6 +748,7 @@ export function ChatView({
 
   const loadEarlierTurns = useCallback(async () => {
     if (historyLoading) return;
+    const generation = snapshotGenerationRef.current;
     const scrollEl = getChatScrollElement();
     preserveScrollRef.current = {
       top: scrollEl.scrollTop,
@@ -648,6 +769,10 @@ export function ChatView({
         });
         if (res.ok) {
           const data = await res.json() as { meta: SessionMeta; events: StreamEvent[]; eventsPartial?: boolean };
+          if (!mountedRef.current || generation !== snapshotGenerationRef.current) {
+            preserveScrollRef.current = null;
+            return;
+          }
           applySessionSnapshot(data.meta, data.events ?? []);
           setEventsPartial(Boolean(data.eventsPartial));
           shouldRevealEarlierTurns = true;
@@ -655,8 +780,12 @@ export function ChatView({
       } catch {
         shouldRevealEarlierTurns = false;
       } finally {
-        setHistoryLoading(false);
+        if (mountedRef.current) setHistoryLoading(false);
       }
+    }
+    if (!mountedRef.current || generation !== snapshotGenerationRef.current) {
+      preserveScrollRef.current = null;
+      return;
     }
     if (shouldRevealEarlierTurns) {
       setVisibleTurnCount((current) => current + VISIBLE_TURN_INCREMENT);
@@ -821,6 +950,7 @@ export function ChatView({
   const awaitingPlanApproval = meta.plan_mode?.status === "awaiting_approval";
 
   const showApiFailure = useCallback((failure: ApiFailure, restoreDraft?: string, restoreEditTurn?: number) => {
+    if (!mountedRef.current) return;
     if (isBedrockAuthFailure(failure.message)) {
       if (restoreDraft) composerRef.current?.setDraft(restoreDraft);
       if (typeof restoreEditTurn === "number") setEditingTurnIndex(restoreEditTurn);
@@ -843,6 +973,7 @@ export function ChatView({
         body: JSON.stringify({}),
       });
       const data = await res.json().catch(() => null) as unknown;
+      if (!mountedRef.current) return;
       if (!res.ok) {
         const detail = errorMessageFromPayload(data) ?? "failed to open AWS SSO login";
         throw new Error(detail);
@@ -857,6 +988,7 @@ export function ChatView({
           : "AWS SSO login opened. Complete it, then retry your message.",
       } : current);
     } catch (err) {
+      if (!mountedRef.current) return;
       setBedrockAuthPrompt((current) => current ? {
         ...current,
         launching: false,
@@ -870,6 +1002,7 @@ export function ChatView({
     try {
       const res = await fetch("/api/bedrock/auth");
       const data = await res.json().catch(() => null) as unknown;
+      if (!mountedRef.current) return;
       if (!res.ok) {
         const detail = errorMessageFromPayload(data) ?? "failed to check Bedrock auth";
         throw new Error(detail);
@@ -887,6 +1020,7 @@ export function ChatView({
         status: ready ? "Ready" : "Still not authenticated",
       } : current);
     } catch (err) {
+      if (!mountedRef.current) return;
       setBedrockAuthPrompt((current) => current ? {
         ...current,
         checking: false,
@@ -896,17 +1030,32 @@ export function ChatView({
   }, []);
 
   const doFork = async (message: string, atTurn?: number) => {
-    const res = await fetch(
-      `/api/sessions/${encodeURIComponent(sessionId)}/fork`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message, at_turn: atTurn }),
-      },
-    );
-    if (!res.ok) { showApiFailure(await apiFailure(res, "Fork failed")); return; }
-    const { session_id } = (await res.json()) as { session_id: string };
-    window.location.href = `/chats/${encodeURIComponent(session_id)}`;
+    const { controller, seq } = beginExclusiveAction();
+    try {
+      const res = await fetch(
+        `/api/sessions/${encodeURIComponent(sessionId)}/fork`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ message, at_turn: atTurn }),
+          signal: controller.signal,
+        },
+      );
+      if (!isCurrentAction(seq, controller)) return;
+      if (!res.ok) { showApiFailure(await apiFailure(res, "Fork failed")); return; }
+      const { session_id } = (await res.json()) as { session_id: string };
+      if (!isCurrentAction(seq, controller)) return;
+      pauseLiveUpdatesForNavigation();
+      window.location.href = `/chats/${encodeURIComponent(session_id)}`;
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      showApiFailure({
+        message: err instanceof Error ? err.message : "Fork failed",
+        statusLabel: "client error",
+      });
+    } finally {
+      finishExclusiveAction(seq, controller);
+    }
   };
 
   const doEdit = async (
@@ -917,24 +1066,42 @@ export function ChatView({
     mcpTools?: boolean,
     reasoningEffort?: ModelReasoningEffort,
   ) => {
+    const { controller, seq } = beginExclusiveAction();
     const normalizedCli = normalizeCli(cli);
     const previousTurnId = turnIdFromMetaTurn(metaRef.current.turns[atTurn - 1]);
     sseStartOverrideRef.current = previousTurnId
       ? { mode: "afterTurnId", turnId: previousTurnId }
       : { mode: "afterTurns", count: Math.max(0, atTurn) };
-    const res = await fetch(
-      `/api/sessions/${encodeURIComponent(sessionId)}/edit`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message, at_turn: atTurn, cli: normalizedCli, model, mcpTools, reasoningEffort }),
-      },
-    );
+    let res: Response;
+    try {
+      res = await fetch(
+        `/api/sessions/${encodeURIComponent(sessionId)}/edit`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ message, at_turn: atTurn, cli: normalizedCli, model, mcpTools, reasoningEffort }),
+          signal: controller.signal,
+        },
+      );
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      sseStartOverrideRef.current = null;
+      showApiFailure({
+        message: err instanceof Error ? err.message : "Edit failed",
+        statusLabel: "client error",
+      }, message, atTurn);
+      finishExclusiveAction(seq, controller);
+      return;
+    }
+
+    if (!isCurrentAction(seq, controller)) return;
     if (!res.ok) {
       sseStartOverrideRef.current = null;
       showApiFailure(await apiFailure(res, "Edit failed"), message, atTurn);
+      finishExclusiveAction(seq, controller);
       return;
     }
+    beginMutation();
     setBedrockAuthPrompt(null);
 
     // Truncate events to only those belonging to turns 0..atTurn-1.
@@ -973,9 +1140,11 @@ export function ChatView({
       ],
     }));
     setStreaming(true);
+    finishExclusiveAction(seq, controller);
   };
 
   const editFromMessage = (message: string, turnIndex: number) => {
+    clearEditScrollTimer();
     if (!turnRefs.current.has(turnIndex)) {
       setVisibleTurnCount((current) => Math.max(current, turnCount - turnIndex));
     }
@@ -987,12 +1156,14 @@ export function ChatView({
       el.scrollIntoView({ behavior: "smooth", block: "center" });
     }
     // Then after a moment scroll back down to show the composer too
-    setTimeout(() => {
-      scrollToEnd("smooth");
+    editScrollTimerRef.current = window.setTimeout(() => {
+      editScrollTimerRef.current = null;
+      if (mountedRef.current) scrollToEnd("smooth");
     }, 600);
   };
 
   const cancelEdit = () => {
+    clearEditScrollTimer();
     setEditingTurnIndex(null);
     composerRef.current?.setDraft("");
   };
@@ -1011,38 +1182,37 @@ export function ChatView({
   }, []);
 
   const stopGeneration = useCallback(async () => {
+    const { controller, seq } = beginExclusiveAction();
+    beginMutation();
     try {
-      await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/abort`, { method: "POST" });
-      await refreshSessionSnapshot();
-    } finally {
-      setStreaming(false);
-      setMeta((m) => ({ ...m, status: "failed" }));
-    }
-  }, [refreshSessionSnapshot, sessionId]);
-
-  const runInBackground = useCallback(async () => {
-    if (backgrounding) return;
-    setBackgrounding(true);
-    try {
-      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/background`, {
+      await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/abort`, {
         method: "POST",
+        signal: controller.signal,
       });
-      if (!res.ok) {
-        setBackgrounding(false);
-        showApiFailure(await apiFailure(res, "Run in background failed"));
-        return;
+      if (isCurrentAction(seq, controller)) {
+        await refreshSessionSnapshot();
       }
-      const { session_id } = (await res.json()) as { session_id: string };
-      pauseLiveUpdatesForNavigation();
-      window.location.href = `/chats/${encodeURIComponent(session_id)}`;
-    } catch (err) {
-      setBackgrounding(false);
-      showApiFailure({
-        message: err instanceof Error ? err.message : "Run in background failed",
-        statusLabel: "client error",
-      });
+    } finally {
+      if (isCurrentAction(seq, controller)) {
+        setStreaming(false);
+        setMeta((m) => ({ ...m, status: "failed" }));
+      }
+      finishExclusiveAction(seq, controller);
     }
-  }, [backgrounding, pauseLiveUpdatesForNavigation, sessionId, showApiFailure]);
+  }, [beginExclusiveAction, beginMutation, finishExclusiveAction, isCurrentAction, refreshSessionSnapshot, sessionId]);
+
+  const runSubAgentInBackground = useCallback((id: string, title: string) => {
+    setBackgroundSubAgents((current) => ({
+      ...current,
+      [id]: { id, title },
+    }));
+  }, []);
+
+  const showBackgroundSubAgent = useCallback((id: string) => {
+    const tool = tools.find((item) => item.id === id);
+    if (tool) setActiveToolId(id);
+    setMobileInspectorOpen(true);
+  }, [tools]);
 
   const sendMessage = useCallback(async (
     message: string,
@@ -1052,6 +1222,8 @@ export function ChatView({
     reasoningEffort?: ModelReasoningEffort,
     planAction?: PlanAction,
   ) => {
+    const { controller, seq } = beginExclusiveAction();
+    beginMutation();
     const previousTurnId = turnIdFromMetaTurn(metaRef.current.turns.at(-1));
     sseStartOverrideRef.current = previousTurnId
       ? { mode: "afterTurnId", turnId: previousTurnId }
@@ -1082,10 +1254,13 @@ export function ChatView({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ message, cli, model, mcpTools, reasoningEffort, planAction: effectivePlanAction }),
+          signal: controller.signal,
         }
       );
+      if (!isCurrentAction(seq, controller)) return;
       if (!res.ok) {
         const failure = await apiFailure(res, "Send failed");
+        if (!isCurrentAction(seq, controller)) return;
         setMeta((m) => ({
           ...m,
           status: "failed",
@@ -1098,6 +1273,7 @@ export function ChatView({
       }
       setBedrockAuthPrompt(null);
     } catch (e) {
+      if (controller.signal.aborted || !isCurrentAction(seq, controller)) return;
       sseStartOverrideRef.current = null;
       setMeta((m) => ({
         ...m,
@@ -1106,8 +1282,10 @@ export function ChatView({
       }));
       setStreaming(false);
       alert(e instanceof Error ? e.message : "Failed to send");
+    } finally {
+      finishExclusiveAction(seq, controller);
     }
-  }, [sessionId, showApiFailure]);
+  }, [beginExclusiveAction, beginMutation, finishExclusiveAction, isCurrentAction, sessionId, showApiFailure]);
 
   const approvePlan = () => {
     void sendMessage(
@@ -1152,6 +1330,14 @@ export function ChatView({
     activeId: activeToolId,
     select: selectInspectorTool,
   }), [activeToolId, selectInspectorTool]);
+  const backgroundSubAgentIds = useMemo(
+    () => new Set(Object.keys(backgroundSubAgents)),
+    [backgroundSubAgents],
+  );
+  const backgroundRows = useMemo(
+    () => backgroundSubAgentRows(backgroundSubAgents, renderedEvents),
+    [backgroundSubAgents, renderedEvents],
+  );
 
   return (
     <ToolSelectionProvider value={toolSelection}>
@@ -1214,6 +1400,34 @@ export function ChatView({
             </div>
           </header>
 
+          {backgroundRows.length > 0 && (
+            <div className="background-agents-tray" aria-label="Background agents">
+              <div className="background-agents-tray-copy">
+                <div className="background-agents-tray-title">Background agents</div>
+                <div className="background-agents-tray-subtitle">
+                  These sub-agents are still attached to this chat.
+                </div>
+              </div>
+              <div className="background-agents-list">
+                {backgroundRows.map((agent) => (
+                  <button
+                    key={agent.id}
+                    type="button"
+                    className="background-agent-chip"
+                    onClick={() => showBackgroundSubAgent(agent.id)}
+                    title={agent.title}
+                  >
+                    <span className={`background-agent-dot ${agent.status}`} aria-hidden="true" />
+                    <span className="background-agent-name">{agent.title}</span>
+                    <span className={`background-agent-status ${agent.status}`}>
+                      {agent.status === "run" ? "running" : agent.status === "ok" ? "done" : "failed"}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="chat-stream" data-shell="chat-scroll">
             {turnCount === 0 && (
               <div className="card p-10 text-center text-muted text-[13px]">
@@ -1262,7 +1476,7 @@ export function ChatView({
                       sessionId={sessionId}
                       turnIndex={chunk.turnIndex}
                       editing={editingTurnIndex === chunk.turnIndex}
-                      onFork={doFork}
+                      onFork={!streaming ? doFork : undefined}
                       onEdit={!streaming ? editFromMessage : undefined}
                     />
                   )}
@@ -1275,8 +1489,8 @@ export function ChatView({
                     sessionId={sessionId}
                     hiddenMcpImageServers={hiddenMcpImageServers}
                     onOpenFile={openFileInInspector}
-                    onRunSubAgentInBackground={chunk.streaming ? runInBackground : undefined}
-                    subAgentBackgrounding={backgrounding}
+                    onRunSubAgentInBackground={chunk.streaming ? runSubAgentInBackground : undefined}
+                    backgroundSubAgentIds={backgroundSubAgentIds}
                   />
                 </div>
               );

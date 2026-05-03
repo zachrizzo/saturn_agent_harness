@@ -17,8 +17,8 @@ type Props = {
   status: Status;
   active?: boolean;
   onClick?: () => void;
-  onRunInBackground?: (id: string) => void;
-  runInBackgroundDisabled?: boolean;
+  backgrounded?: boolean;
+  onRunInBackground?: (id: string, title: string) => void;
   subEvents?: StreamEvent[];
 };
 
@@ -126,8 +126,8 @@ export function SubAgentCard({
   status,
   active,
   onClick,
+  backgrounded,
   onRunInBackground,
-  runInBackgroundDisabled,
   subEvents = [],
 }: Props) {
   const [expanded, setExpanded] = useState(false);
@@ -174,19 +174,24 @@ export function SubAgentCard({
           {status === "run" ? "running" : status === "ok" ? "done" : "failed"}
         </span>
 
-        {status === "run" && onRunInBackground && (
+        {status === "run" && backgrounded && (
+          <span className="subagent-backgrounded-pill">
+            background
+          </span>
+        )}
+
+        {status === "run" && !backgrounded && onRunInBackground && (
           <button
             type="button"
             className="subagent-background-button"
-            disabled={runInBackgroundDisabled}
             onClick={(event) => {
               event.stopPropagation();
-              onRunInBackground(id);
+              onRunInBackground(id, title);
             }}
-            title="Keep this sub-agent running in the background and continue from the last completed turn"
+            title="Keep this sub-agent visible as a background run in this chat"
             aria-label="Run sub-agent in background"
           >
-            {runInBackgroundDisabled ? "Moving..." : "Background"}
+            Background
           </button>
         )}
 
