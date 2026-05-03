@@ -17,6 +17,8 @@ type Props = {
   status: Status;
   active?: boolean;
   onClick?: () => void;
+  onRunInBackground?: (id: string) => void;
+  runInBackgroundDisabled?: boolean;
   subEvents?: StreamEvent[];
 };
 
@@ -117,7 +119,17 @@ function ChevronIcon({ open }: { open: boolean }) {
   );
 }
 
-export function SubAgentCard({ input, result, status, active, onClick, subEvents = [] }: Props) {
+export function SubAgentCard({
+  id,
+  input,
+  result,
+  status,
+  active,
+  onClick,
+  onRunInBackground,
+  runInBackgroundDisabled,
+  subEvents = [],
+}: Props) {
   const [expanded, setExpanded] = useState(false);
   const { description, prompt, subagent_type } = parseInput(input);
   const resultText = parseResult(result);
@@ -161,6 +173,22 @@ export function SubAgentCard({ input, result, status, active, onClick, subEvents
           {status === "run" && <span className="subagent-pulse" />}
           {status === "run" ? "running" : status === "ok" ? "done" : "failed"}
         </span>
+
+        {status === "run" && onRunInBackground && (
+          <button
+            type="button"
+            className="subagent-background-button"
+            disabled={runInBackgroundDisabled}
+            onClick={(event) => {
+              event.stopPropagation();
+              onRunInBackground(id);
+            }}
+            title="Keep this sub-agent running in the background and continue from the last completed turn"
+            aria-label="Run sub-agent in background"
+          >
+            {runInBackgroundDisabled ? "Moving..." : "Background"}
+          </button>
+        )}
 
         {hasContent && (
           <span className="subagent-chevron" style={{ color: "var(--text-subtle)" }}>

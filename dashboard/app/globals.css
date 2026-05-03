@@ -2005,6 +2005,19 @@ h1, h2, h3, h4, h5, h6 {
   background: var(--accent-soft);
 }
 .tool-row {
+  display: grid;
+  gap: 5px;
+}
+.tool-row-label {
+  width: fit-content;
+  color: var(--text-subtle);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+.tool-row-chips {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
@@ -2134,7 +2147,6 @@ h1, h2, h3, h4, h5, h6 {
   gap: 8px;
   flex-wrap: wrap;
 }
-
 @media (max-width: 680px) {
   .plan-approval-banner {
     align-items: stretch;
@@ -4608,6 +4620,29 @@ h1, h2, h3, h4, h5, h6 {
 .subagent-status.run {
   color: var(--running);
   background: var(--warn-soft);
+}
+.subagent-background-button {
+  flex-shrink: 0;
+  border: 1px solid color-mix(in srgb, var(--running) 38%, var(--border));
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--running) 8%, transparent);
+  color: var(--running);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  padding: 5px 8px;
+  text-transform: uppercase;
+  transition: background 80ms ease, border-color 80ms ease, opacity 80ms ease;
+}
+.subagent-background-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--running) 58%, var(--border));
+  background: color-mix(in srgb, var(--running) 13%, transparent);
+}
+.subagent-background-button:disabled {
+  cursor: wait;
+  opacity: 0.58;
 }
 .subagent-pulse {
   width: 7px;

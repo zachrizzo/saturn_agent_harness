@@ -38,6 +38,8 @@ type AssistantProps = {
   sessionId?: string;
   hiddenMcpImageServers?: string[];
   onOpenFile?: (path: string) => void;
+  onRunSubAgentInBackground?: (id: string) => void;
+  subAgentBackgrounding?: boolean;
 };
 
 type Props = UserProps | AssistantProps;
@@ -79,6 +81,8 @@ function areMessageBubblePropsEqual(prev: Props, next: Props): boolean {
       prev.liveDetail === next.liveDetail &&
       prev.sessionId === next.sessionId &&
       prev.onOpenFile === next.onOpenFile &&
+      prev.onRunSubAgentInBackground === next.onRunSubAgentInBackground &&
+      prev.subAgentBackgrounding === next.subAgentBackgrounding &&
       sameStringArray(prev.hiddenMcpImageServers, next.hiddenMcpImageServers) &&
       sameEventArray(prev.events, next.events)
     );
@@ -502,6 +506,29 @@ function PlanChecklist({ items }: { items: Extract<StreamEvent, { kind: "todo_li
             </span>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+function ToolRow({ tools }: { tools: React.ReactNode[] }) {
+  const count = Children.count(tools);
+  const label = `${count} grouped tool calls`;
+  return (
+    <div
+      className={count > 1 ? "tool-row grouped" : "tool-row"}
+      aria-label={count > 1 ? label : "Tool call"}
+    >
+      {count > 1 && (
+        <div
+          className="tool-row-label"
+          title="Adjacent tool calls are grouped for compactness. This does not necessarily mean they ran in parallel."
+        >
+          {label}
+        </div>
+      )}
+      <div className="tool-row-chips">
+        {tools}
       </div>
     </div>
   );
@@ -950,6 +977,8 @@ function AssistantBlock({
   sessionId,
   hiddenMcpImageServers,
   onOpenFile,
+  onRunSubAgentInBackground,
+  subAgentBackgrounding,
 }: AssistantProps) {
   const [hovered, setHovered] = useState(false);
   const displayEvents = useMemo(
@@ -995,9 +1024,7 @@ function AssistantBlock({
   const flushToolRow = () => {
     if (toolBuffer.length === 0) return;
     rendered.push(
-      <div key={`tr-${rendered.length}`} className="tool-row">
-        {toolBuffer}
-      </div>
+      <ToolRow key={`tr-${rendered.length}`} tools={toolBuffer} />
     );
     toolBuffer = [];
   };
@@ -1046,6 +1073,8 @@ function AssistantBlock({
             result={res?.content}
             status={status}
             active={status === "run" && streaming && isLast}
+            onRunInBackground={onRunSubAgentInBackground}
+            runInBackgroundDisabled={subAgentBackgrounding}
             subEvents={subEventsByParent.get(ev.id)}
           />
         );

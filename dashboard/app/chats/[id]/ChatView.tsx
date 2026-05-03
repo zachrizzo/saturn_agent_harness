@@ -346,6 +346,7 @@ export function ChatView({
   const fileOpenRequestId = useRef(0);
   const [bedrockAuthPrompt, setBedrockAuthPrompt] = useState<BedrockAuthPrompt | null>(null);
   const [visibleTurnCount, setVisibleTurnCount] = useState(INITIAL_VISIBLE_TURNS);
+  const [backgrounding, setBackgrounding] = useState(false);
 
   // Tool selection — drives Inspector content.
   const [activeToolId, setActiveToolId] = useState<string | null>(null);
@@ -1019,6 +1020,30 @@ export function ChatView({
     }
   }, [refreshSessionSnapshot, sessionId]);
 
+  const runInBackground = useCallback(async () => {
+    if (backgrounding) return;
+    setBackgrounding(true);
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/background`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        setBackgrounding(false);
+        showApiFailure(await apiFailure(res, "Run in background failed"));
+        return;
+      }
+      const { session_id } = (await res.json()) as { session_id: string };
+      pauseLiveUpdatesForNavigation();
+      window.location.href = `/chats/${encodeURIComponent(session_id)}`;
+    } catch (err) {
+      setBackgrounding(false);
+      showApiFailure({
+        message: err instanceof Error ? err.message : "Run in background failed",
+        statusLabel: "client error",
+      });
+    }
+  }, [backgrounding, pauseLiveUpdatesForNavigation, sessionId, showApiFailure]);
+
   const sendMessage = useCallback(async (
     message: string,
     cli: CLI,
@@ -1250,6 +1275,8 @@ export function ChatView({
                     sessionId={sessionId}
                     hiddenMcpImageServers={hiddenMcpImageServers}
                     onOpenFile={openFileInInspector}
+                    onRunSubAgentInBackground={chunk.streaming ? runInBackground : undefined}
+                    subAgentBackgrounding={backgrounding}
                   />
                 </div>
               );
