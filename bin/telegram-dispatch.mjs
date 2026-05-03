@@ -3,6 +3,8 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createTelegramStateManager, NO_TOOLS_SENTINEL } from "./lib/telegram-state.mjs";
+import { parseCommandLine, helpText } from "./lib/telegram-router.mjs";
 
 const root = process.env.AUTOMATIONS_ROOT || path.resolve(process.cwd());
 const token = mustEnv("TELEGRAM_BOT_TOKEN");
@@ -53,7 +55,7 @@ const cliOptions = [
 ];
 const cliValues = new Set([...cliOptions.map((cli) => cli.id), "claude"]);
 const defaultPrompt = "You are Saturn Dispatch. Help the user from Telegram.";
-const noToolsSentinel = "__SATURN_NO_TOOLS__";
+const noToolsSentinel = NO_TOOLS_SENTINEL;
 const imageExts = new Set([
   ".avif",
   ".bmp",
@@ -120,7 +122,26 @@ if (!allowAll && allowedChatIds.size === 0) {
   throw new Error("Set TELEGRAM_ALLOWED_CHAT_IDS, or set TELEGRAM_ALLOW_ALL=1 for local testing.");
 }
 
-let state = await loadState();
+// State management lives in lib/telegram-state.mjs. The manager owns the
+// in-memory state object and the load/save/mutate helpers; we alias them
+// at module scope so the rest of this file reads the same as before.
+const stateMgr = await createTelegramStateManager({
+  stateFile,
+  maxQueueMessages,
+  maxSentMediaSessions,
+  allowAll,
+  allowedChatIds,
+});
+let state = stateMgr.state;
+const saveState = stateMgr.saveState;
+const ensureChat = stateMgr.ensureChat;
+const enqueueChatMessage = stateMgr.enqueueChatMessage;
+const clearSessionMapping = stateMgr.clearSessionMapping;
+const isAllowed = stateMgr.isAllowed;
+const mediaSentKeys = stateMgr.mediaSentKeys;
+const markMediaSent = stateMgr.markMediaSent;
+const formatAllowedTools = stateMgr.formatAllowedTools;
+
 await ensureDefaultDispatchCwd();
 await refreshBotIdentity();
 await syncBotCommands();
@@ -323,51 +344,6 @@ async function handleCommand(chatId, text, attachments = []) {
   }
 
   return false;
-}
-
-function parseCommandLine(text) {
-  const [rawCommand = ""] = String(text || "").split(/\s+/);
-  return {
-    rawCommand,
-    command: rawCommand.split("@")[0].toLowerCase(),
-    arg: String(text || "").slice(rawCommand.length).trim(),
-  };
-}
-
-function helpText() {
-  return [
-    "Saturn Dispatch is connected.",
-    "",
-    "Send messages normally. If a turn is running, follow-ups are queued and sent next.",
-    "Send or take a photo with an optional caption to attach it to the next turn.",
-    "Use /new <caption> with a photo to start a fresh session with that image.",
-    "",
-    "Session",
-    "/new <task> starts a fresh Saturn chat.",
-    "/new, /reset, or /clear clears the current session mapping.",
-    "/session shows the current Saturn session id.",
-    "/status shows status, turns, queue, and active route.",
-    "/settings shows this chat's Dispatch settings.",
-    "",
-    "Routing",
-    "/project list shows recent projects.",
-    "/project <number|path|off> sets the cwd for new ad-hoc chats; off returns to Dispatch workspace.",
-    "/agent <id|off> routes new chats through a saved agent.",
-    "/agents lists saved agents.",
-    "",
-    "Runtime",
-    "/cli <codex|claude-personal|claude-bedrock|claude-local> sets backend.",
-    "/model <id|off> sets or clears the model.",
-    "/models lists the available CLIs and models.",
-    "/think shows valid reasoning levels for the current model.",
-    "/think <level|off> sets or clears reasoning.",
-    "/tools <preset|csv|off> sets Claude allowed tools. Presets: none, read, code, full.",
-    "/mcp <on|off> toggles MCP tools for the session.",
-    "/timeout <seconds|off> sets new-chat timeout.",
-    "/prompt <text|off> sets the ad-hoc system prompt.",
-    "/verbose <on|off> toggles dashboard links.",
-    "/clear settings resets every Dispatch setting for this chat.",
-  ].join("\n");
 }
 
 async function setReasoning(chatId, arg) {
@@ -1624,27 +1600,6 @@ function isWithinRoot(filePath, rootDir) {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function mediaSentKeys(chat, sessionId) {
-  chat.sent_media ||= {};
-  const keys = Array.isArray(chat.sent_media[sessionId]) ? chat.sent_media[sessionId] : [];
-  return new Set(keys);
-}
-
-function markMediaSent(chatId, sessionId, key) {
-  ensureChat(chatId);
-  const chat = state.chats[chatId];
-  chat.sent_media ||= {};
-  const keys = Array.isArray(chat.sent_media[sessionId]) ? chat.sent_media[sessionId] : [];
-  if (!keys.includes(key)) keys.push(key);
-  chat.sent_media[sessionId] = keys.slice(-100);
-  const sessionIds = Object.keys(chat.sent_media);
-  if (sessionIds.length > maxSentMediaSessions) {
-    for (const staleId of sessionIds.slice(0, sessionIds.length - maxSentMediaSessions)) {
-      delete chat.sent_media[staleId];
-    }
-  }
-}
-
 async function sendImageAsset(chatId, asset, sessionId) {
   if (asset.kind === "remote") {
     const method = telegramPhotoExts.has(asset.ext) ? "sendPhoto" : "sendDocument";
@@ -1755,58 +1710,9 @@ function chunkText(text, maxLen) {
   return chunks.length ? chunks : ["(no response)"];
 }
 
-function ensureChat(chatId) {
-  state.chats ||= {};
-  state.chats[chatId] ||= { queue: [] };
-  state.chats[chatId].queue ||= [];
-  if (Array.isArray(state.chats[chatId].allowedTools) && state.chats[chatId].allowedTools.length === 0) {
-    state.chats[chatId].allowedTools = [noToolsSentinel];
-  }
-}
-
-function enqueueChatMessage(chatId, text, attachments = []) {
-  ensureChat(chatId);
-  const chat = state.chats[chatId];
-  chat.queue ||= [];
-  const overflow = Math.max(0, chat.queue.length - maxQueueMessages + 1);
-  if (overflow > 0) chat.queue.splice(0, overflow);
-  chat.queue.push({ text, attachments, queued_at: new Date().toISOString() });
-  return { length: chat.queue.length, dropped: overflow };
-}
-
-function clearSessionMapping(chatId) {
-  ensureChat(chatId);
-  delete state.chats[chatId].session_id;
-  delete state.chats[chatId].pending_session_id;
-  state.chats[chatId].queue = [];
-}
-
-function formatAllowedTools(tools) {
-  if (!Array.isArray(tools) || tools.length === 0 || tools.includes(noToolsSentinel)) return "none";
-  return tools.join(", ");
-}
-
 function formatAllowedToolsCsv(value) {
   const tools = csv(value);
   return tools ? formatAllowedTools(tools) : "";
-}
-
-function isAllowed(chatId) {
-  return allowAll || allowedChatIds.has(chatId);
-}
-
-async function loadState() {
-  try {
-    const raw = await fs.readFile(stateFile, "utf8");
-    return JSON.parse(raw);
-  } catch {
-    return { offset: 0, chats: {} };
-  }
-}
-
-async function saveState() {
-  await fs.mkdir(path.dirname(stateFile), { recursive: true });
-  await fs.writeFile(stateFile, JSON.stringify(state, null, 2), "utf8");
 }
 
 function mustEnv(name) {
