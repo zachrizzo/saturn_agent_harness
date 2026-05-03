@@ -16,10 +16,11 @@ SATURN_REPO_ROOT="$(cd "$SATURN_LIB_DIR/../.." && pwd)"
 saturn_prepend_path() {
   local dir="$1"
   [[ -n "$dir" && -d "$dir" ]] || return 0
-  case ":${PATH:-}:" in
-    *":$dir:"*) ;;
-    *) PATH="$dir${PATH:+:$PATH}" ;;
-  esac
+  local current=":${PATH:-}:"
+  current="${current//:$dir:/:}"
+  current="${current#:}"
+  current="${current%:}"
+  PATH="$dir${current:+:$current}"
 }
 
 saturn_latest_nvm_bin() {

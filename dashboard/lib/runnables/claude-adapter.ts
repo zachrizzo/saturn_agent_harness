@@ -14,7 +14,8 @@ import type {
   NeutralTranscript,
   NeutralPart,
 } from "./types";
-import { normalizeReasoningEffortForCli, type ModelReasoningEffort } from "../models";
+import type { ModelReasoningEffort } from "../models";
+import { resolveReasoningEffortForCliModel } from "../model-capabilities";
 import { isBedrockCli, isLocalClaudeCli, isPersonalClaudeCli, normalizeCli } from "../clis";
 import type { CLI } from "../clis";
 import { toBedrockId } from "../claude-models";
@@ -333,12 +334,13 @@ export class ClaudeAdapter implements RunnableAdapter {
     const abort = new AbortController();
     internal.abort = abort;
     const model = overrides?.model ?? internal.model;
-    const reasoningEffort = normalizeReasoningEffortForCli(
-      internal.cli,
-      overrides?.reasoningEffort ?? internal.reasoningEffort,
-    ) as ClaudeEffort | undefined;
     const allowedTools = overrides?.allowedTools ?? internal.allowedTools;
     const provider = await providerOptions(internal.cli, model);
+    const reasoningEffort = await resolveReasoningEffortForCliModel(
+      internal.cli,
+      provider.model ?? model,
+      overrides?.reasoningEffort ?? internal.reasoningEffort,
+    ) as ClaudeEffort | undefined;
     const prompt = consumePendingContext(internal, userMessage);
 
     yield { kind: "turn_start", ts: new Date().toISOString(), model: provider.model };

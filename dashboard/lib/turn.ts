@@ -9,7 +9,8 @@ import { isOrchestrator } from "./session-utils";
 import { mintToken } from "./mcp/auth";
 import { toBedrockId } from "./claude-models";
 import type { CLI, Agent, PlanAction } from "./runs";
-import { normalizeReasoningEffortForCli, type ModelReasoningEffort } from "./models";
+import type { ModelReasoningEffort } from "./models";
+import { resolveReasoningEffortForCliModel } from "./model-capabilities";
 import { isBedrockCli, isLocalClaudeCli, isPersonalClaudeCli, normalizeCli } from "./clis";
 import { readBedrockConfig } from "./bedrock-auth";
 import { readAppSettings, type AppSettings } from "./settings";
@@ -193,14 +194,17 @@ export async function spawnTurn(
   const bedrockConfig = isBedrock ? await readBedrockConfig() : undefined;
   const localModel = model ?? "gemma4:26b-it-q4_K_M";
   const localSmallModel = "gemma4:4b";
-  const effectiveReasoningEffort = normalizeReasoningEffortForCli(
-    normalizedCli,
-    reasoningEffort ?? agentSnapshot?.reasoningEfforts?.[normalizedCli] ?? agentSnapshot?.reasoningEffort,
-  );
 
   // For Bedrock-backed Claude, expand short aliases like `claude-sonnet-4-6`
   // into the full inference profile ID the Bedrock API requires.
   const effectiveModel = isBedrock ? toBedrockId(model) : model;
+  const requestedReasoningEffort =
+    reasoningEffort ?? agentSnapshot?.reasoningEfforts?.[normalizedCli] ?? agentSnapshot?.reasoningEffort;
+  const effectiveReasoningEffort = await resolveReasoningEffortForCliModel(
+    normalizedCli,
+    effectiveModel ?? model,
+    requestedReasoningEffort,
+  );
 
   const localProxyEnv = {
     CLAUDE_CODE_USE_BEDROCK: "0",

@@ -5,10 +5,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { Model } from "@/lib/models";
+import { isModelReasoningEffort, normalizeSupportedReasoningEfforts } from "@/lib/models";
 import { claudeContextWindow, fallbackClaudeModels } from "@/lib/claude-models";
-import { REASONING_EFFORTS_BY_CLI } from "@/lib/models";
 import { normalizeCli } from "@/lib/clis";
 import { readBedrockConfig } from "@/lib/bedrock-auth";
+import { claudeCliReasoningEfforts, reasoningEffortsForCliModel } from "@/lib/model-capabilities";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +29,7 @@ function inferClaudeContextWindow(id: string, name: string): number | undefined 
   return 200_000;
 }
 
-function claudeReasoningEfforts(id: string, name: string) {
+function claudeReasoningEfforts(id: string, name: string, cliEfforts: NonNullable<Model["supportedReasoningEfforts"]>) {
   const value = `${id} ${name}`.toLowerCase();
   const supportsThinking =
     value.includes("claude-sonnet-4") ||
@@ -36,12 +37,13 @@ function claudeReasoningEfforts(id: string, name: string) {
     value.includes("claude-haiku-4") ||
     value.includes("claude-3-7-sonnet") ||
     value.includes("claude-3.7-sonnet");
-  return supportsThinking ? REASONING_EFFORTS_BY_CLI["claude-bedrock"] : [];
+  return supportsThinking ? cliEfforts : [];
 }
 
 async function getClaudeModels(): Promise<Model[]> {
   const { profile: awsProfile, region: awsRegion } = await readBedrockConfig();
   const env = { ...process.env, AWS_PROFILE: awsProfile, AWS_REGION: awsRegion, AWS_PAGER: "" };
+  const cliEfforts = await claudeCliReasoningEfforts();
 
   const [profilesOut, foundationOut] = await Promise.all([
     execFileAsync("aws", ["bedrock", "list-inference-profiles", "--profile", awsProfile, "--region", awsRegion, "--output", "json", "--no-cli-pager"], { env })
@@ -60,7 +62,7 @@ async function getClaudeModels(): Promise<Model[]> {
         id,
         name,
         contextWindow: inferClaudeContextWindow(id, name),
-        supportedReasoningEfforts: claudeReasoningEfforts(id, name),
+        supportedReasoningEfforts: claudeReasoningEfforts(id, name, cliEfforts),
       });
     }
   };
@@ -101,26 +103,31 @@ async function getClaudeModels(): Promise<Model[]> {
     ? models
     : fallbackClaudeModels().map((m) => ({
         ...m,
-        supportedReasoningEfforts: claudeReasoningEfforts(m.id, m.name),
+        supportedReasoningEfforts: claudeReasoningEfforts(m.id, m.name, cliEfforts),
       }));
 }
 
-function getPersonalClaudeModels(): Model[] {
+async function getPersonalClaudeModels(): Promise<Model[]> {
+  const [sonnetEfforts, opusEfforts, haikuEfforts] = await Promise.all([
+    reasoningEffortsForCliModel("claude-personal", "sonnet"),
+    reasoningEffortsForCliModel("claude-personal", "opus"),
+    reasoningEffortsForCliModel("claude-personal", "haiku"),
+  ]);
   return [
     {
       id: "sonnet",
       name: "Sonnet",
-      supportedReasoningEfforts: REASONING_EFFORTS_BY_CLI["claude-personal"],
+      supportedReasoningEfforts: sonnetEfforts,
     },
     {
       id: "opus",
       name: "Opus",
-      supportedReasoningEfforts: REASONING_EFFORTS_BY_CLI["claude-personal"],
+      supportedReasoningEfforts: opusEfforts,
     },
     {
       id: "haiku",
       name: "Haiku",
-      supportedReasoningEfforts: REASONING_EFFORTS_BY_CLI["claude-personal"],
+      supportedReasoningEfforts: haikuEfforts,
     },
   ];
 }
@@ -137,10 +144,8 @@ async function getCodexModels(): Promise<Model[]> {
         name: m.display_name ?? m.slug,
         contextWindow: typeof m.context_window === "number" ? m.context_window : undefined,
         maxOutputTokens: typeof m.max_output_tokens === "number" ? m.max_output_tokens : undefined,
-        defaultReasoningEffort: m.default_reasoning_level,
-        supportedReasoningEfforts: Array.isArray(m.supported_reasoning_levels)
-          ? m.supported_reasoning_levels.map((level: any) => level.effort).filter(Boolean)
-          : undefined,
+        defaultReasoningEffort: isModelReasoningEffort(m.default_reasoning_level) ? m.default_reasoning_level : undefined,
+        supportedReasoningEfforts: normalizeSupportedReasoningEfforts(m.supported_reasoning_levels),
       }));
   } catch {
     return [{
@@ -148,7 +153,7 @@ async function getCodexModels(): Promise<Model[]> {
       name: "GPT-5.5",
       contextWindow: 272_000,
       defaultReasoningEffort: "medium",
-      supportedReasoningEfforts: REASONING_EFFORTS_BY_CLI.codex,
+      supportedReasoningEfforts: [],
     }];
   }
 }
@@ -164,10 +169,11 @@ const LOCAL_DEFAULT: Model = {
   id: "gemma4:26b-it-q4_K_M",
   name: "Gemma 4 26B (4-bit)",
   contextWindow: 128_000,
-  supportedReasoningEfforts: REASONING_EFFORTS_BY_CLI["claude-local"],
 };
 
 async function getLMStudioModels(): Promise<Model[]> {
+  const cliEfforts = await reasoningEffortsForCliModel("claude-local", LOCAL_DEFAULT.id);
+  const localDefault = { ...LOCAL_DEFAULT, supportedReasoningEfforts: cliEfforts };
   // Native API has display_name + context window
   type NativeModel = { key: string; display_name?: string; type?: string; max_context_length?: number };
   const native = await fetchJson<{ models?: NativeModel[] }>("http://127.0.0.1:1234/api/v1/models");
@@ -179,12 +185,12 @@ async function getLMStudioModels(): Promise<Model[]> {
         id: m.key,
         name: m.display_name ?? m.key,
         contextWindow: m.max_context_length,
-        supportedReasoningEfforts: REASONING_EFFORTS_BY_CLI["claude-local"],
+        supportedReasoningEfforts: cliEfforts,
       }));
     // Ensure default model is always present and first
     return list.find((m) => m.id === LOCAL_DEFAULT.id)
       ? list
-      : [LOCAL_DEFAULT, ...list];
+      : [localDefault, ...list];
   }
 
   // Fall back to OpenAI-compatible endpoint
@@ -194,14 +200,14 @@ async function getLMStudioModels(): Promise<Model[]> {
     const list = compatList.map((m) => ({
       id: m.id,
       name: m.id,
-      supportedReasoningEfforts: REASONING_EFFORTS_BY_CLI["claude-local"],
+      supportedReasoningEfforts: cliEfforts,
     }));
     return list.find((m) => m.id === LOCAL_DEFAULT.id)
       ? list
-      : [LOCAL_DEFAULT, ...list];
+      : [localDefault, ...list];
   }
 
-  return [LOCAL_DEFAULT];
+  return [localDefault];
 }
 
 export async function GET(request: Request) {
@@ -213,7 +219,7 @@ export async function GET(request: Request) {
       return NextResponse.json({ models: await getCodexModels() });
     }
     if (cli === "claude-personal") {
-      return NextResponse.json({ models: getPersonalClaudeModels() });
+      return NextResponse.json({ models: await getPersonalClaudeModels() });
     }
     if (cli === "claude-local" || searchParams.get("cli") === "lmstudio") {
       return NextResponse.json({ models: await getLMStudioModels() });

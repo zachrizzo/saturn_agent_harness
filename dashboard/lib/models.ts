@@ -14,6 +14,8 @@ export type ModelReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhig
 
 export type ReasoningCli = CLI;
 
+export const ALL_REASONING_EFFORTS: ModelReasoningEffort[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+
 export const REASONING_EFFORT_OPTIONS: Array<{
   value: ModelReasoningEffort;
   label: string;
@@ -27,30 +29,39 @@ export const REASONING_EFFORT_OPTIONS: Array<{
   { value: "max", label: "Max", description: "Claude's maximum effort setting." },
 ];
 
-export const REASONING_EFFORTS_BY_CLI: Record<ReasoningCli, ModelReasoningEffort[]> = {
-  "claude-bedrock": ["low", "medium", "high", "xhigh", "max"],
-  "claude-personal": ["low", "medium", "high", "xhigh", "max"],
-  "claude-local": ["low", "medium", "high", "xhigh", "max"],
-  codex: ["minimal", "low", "medium", "high", "xhigh"],
-};
+export function isModelReasoningEffort(value: unknown): value is ModelReasoningEffort {
+  return typeof value === "string" && ALL_REASONING_EFFORTS.includes(value as ModelReasoningEffort);
+}
+
+export function normalizeSupportedReasoningEfforts(values: unknown): ModelReasoningEffort[] {
+  if (!Array.isArray(values)) return [];
+  const out: ModelReasoningEffort[] = [];
+  for (const raw of values) {
+    const value = typeof raw === "string"
+      ? raw
+      : raw && typeof raw === "object" && "effort" in raw
+        ? (raw as { effort?: unknown }).effort
+        : undefined;
+    if (!isModelReasoningEffort(value) || out.includes(value)) continue;
+    out.push(value);
+  }
+  return out;
+}
 
 export function normalizeReasoningEffortForCli(
-  cli: ReasoningCli,
+  _cli: ReasoningCli,
   effort?: ModelReasoningEffort | null,
 ): ModelReasoningEffort | undefined {
   if (!effort) return undefined;
-  if ((cli === "claude-bedrock" || cli === "claude-personal" || cli === "claude-local") && effort === "minimal") return "low";
-  if (cli === "codex" && effort === "max") return "xhigh";
-  return REASONING_EFFORTS_BY_CLI[cli].includes(effort) ? effort : undefined;
+  if (!isModelReasoningEffort(effort)) return undefined;
+  return effort;
 }
 
 export function reasoningEffortOptionsForCli(
-  cli: ReasoningCli,
+  _cli: ReasoningCli,
   model?: Pick<Model, "supportedReasoningEfforts"> | null,
 ): typeof REASONING_EFFORT_OPTIONS {
-  const cliEfforts = REASONING_EFFORTS_BY_CLI[cli];
-  const modelEfforts = model?.supportedReasoningEfforts;
-  const allowed = modelEfforts ? cliEfforts.filter((effort) => modelEfforts.includes(effort)) : cliEfforts;
+  const allowed = normalizeSupportedReasoningEfforts(model?.supportedReasoningEfforts);
   return REASONING_EFFORT_OPTIONS.filter((option) => allowed.includes(option.value));
 }
 

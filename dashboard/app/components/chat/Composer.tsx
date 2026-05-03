@@ -369,7 +369,7 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
     const normalized = normalizeReasoningEffortForCli(cli, reasoningEffort);
     const available = reasoningEffortOptionsForCli(cli, selected).map((option) => option.value);
     if (!normalized || normalized !== reasoningEffort || !available.includes(normalized)) {
-      setReasoningEffort(normalized && available.includes(normalized) ? normalized : "");
+      setReasoningEffort("");
     }
   }, [cli, model, models, reasoningEffort]);
 
@@ -674,6 +674,8 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
 
   const readyAttachmentCount = attachments.filter((a) => (a.path || a.file) && !a.error).length;
   const canSend = (!!message.trim() || readyAttachmentCount > 0) && !anyUploading;
+  const selectedModel = models.find((m) => m.id === model);
+  const effortOptions = reasoningEffortOptionsForCli(cli, selectedModel);
 
   const inner = (
     <div
@@ -892,18 +894,18 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
           <div className="h-3.5 w-px bg-border mx-1.5" />
 
           {/* Reasoning effort dropdown */}
-          <div className="relative flex items-center min-w-0 max-w-[100px]" title={`Reasoning: ${formatReasoningEffort(reasoningEffort || undefined)}`}>
+          <div className="relative flex items-center min-w-0 max-w-[100px]" title={`Reasoning: ${effortOptions.length ? formatReasoningEffort(reasoningEffort || undefined) : "Not supported by this model"}`}>
             <select
               value={reasoningEffort}
               onChange={(e) => {
                 didUserChoose.current = true;
                 setReasoningEffort(e.target.value as ModelReasoningEffort | "");
               }}
-              disabled={disabled}
+              disabled={disabled || effortOptions.length === 0}
               className="appearance-none bg-transparent text-[11px] text-muted hover:text-fg cursor-pointer pr-4 py-1 rounded transition-colors focus:outline-none disabled:opacity-40 truncate max-w-full"
             >
-              <option value="">Effort</option>
-              {reasoningEffortOptionsForCli(cli, models.find((m) => m.id === model)).map((o) => (
+              <option value="">{effortOptions.length ? "Effort" : "No effort"}</option>
+              {effortOptions.map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
                 </option>

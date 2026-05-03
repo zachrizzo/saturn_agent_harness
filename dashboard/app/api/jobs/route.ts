@@ -5,7 +5,7 @@ import { createJob, listJobs, type Job } from "@/lib/runs";
 import { binDir } from "@/lib/paths";
 import { toClaudeAlias } from "@/lib/claude-models";
 import { normalizeCli, isCli } from "@/lib/clis";
-import { normalizeReasoningEffortForCli, type ModelReasoningEffort } from "@/lib/models";
+import { isModelReasoningEffort, normalizeReasoningEffortForCli, type ModelReasoningEffort } from "@/lib/models";
 import parser from "cron-parser";
 
 export const dynamic = "force-dynamic";
@@ -44,7 +44,7 @@ export async function POST(req: Request) {
   }
   if (
     body.reasoningEffort !== undefined &&
-    !["minimal", "low", "medium", "high", "xhigh", "max"].includes(body.reasoningEffort as string)
+    !isModelReasoningEffort(body.reasoningEffort)
   ) {
     return NextResponse.json({ error: "invalid reasoningEffort" }, { status: 400 });
   }

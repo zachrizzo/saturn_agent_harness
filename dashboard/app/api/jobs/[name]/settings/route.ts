@@ -4,7 +4,7 @@ import { spawn } from "child_process";
 import { getJob, updateJobSettings } from "@/lib/runs";
 import { binDir } from "@/lib/paths";
 import { toClaudeAlias } from "@/lib/claude-models";
-import { normalizeReasoningEffortForCli, type ModelReasoningEffort } from "@/lib/models";
+import { isModelReasoningEffort, normalizeReasoningEffortForCli, type ModelReasoningEffort } from "@/lib/models";
 import { isCli, normalizeCli, type LegacyCLI } from "@/lib/clis";
 import parser from "cron-parser";
 
@@ -52,7 +52,7 @@ export async function PUT(
   if (
     reasoningEffort !== undefined &&
     reasoningEffort !== null &&
-    !["minimal", "low", "medium", "high", "xhigh", "max"].includes(reasoningEffort)
+    !isModelReasoningEffort(reasoningEffort)
   ) {
     return NextResponse.json({ error: "invalid reasoningEffort" }, { status: 400 });
   }

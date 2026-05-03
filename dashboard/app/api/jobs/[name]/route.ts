@@ -5,7 +5,7 @@ import parser from "cron-parser";
 import { getJob, updateJob } from "@/lib/runs";
 import { binDir } from "@/lib/paths";
 import { toClaudeAlias } from "@/lib/claude-models";
-import { normalizeReasoningEffortForCli, type ModelReasoningEffort } from "@/lib/models";
+import { isModelReasoningEffort, normalizeReasoningEffortForCli, type ModelReasoningEffort } from "@/lib/models";
 import { isCli, normalizeCli, type LegacyCLI } from "@/lib/clis";
 
 export const dynamic = "force-dynamic";
@@ -107,7 +107,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ name
 
   if (body.reasoningEffort !== undefined) {
     const effort = body.reasoningEffort as ModelReasoningEffort | null;
-    if (effort !== null && !["minimal", "low", "medium", "high", "xhigh", "max"].includes(effort)) {
+    if (effort !== null && !isModelReasoningEffort(effort)) {
       return NextResponse.json({ error: "invalid reasoningEffort" }, { status: 400 });
     }
     const cli = patch.cli ?? existing.cli ?? "claude-bedrock";

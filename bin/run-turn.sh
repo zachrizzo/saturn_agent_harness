@@ -570,7 +570,9 @@ if [[ "$ENGINE" == "codex" && -n "$CODEX_COLLAB_MODE" ]]; then
     RUN_ARGS+=(--thread-id "$RESUME_ID")
   fi
   [[ -n "$MODEL" ]] && RUN_ARGS+=(--model "$MODEL")
-  [[ -n "$REASONING_EFFORT" ]] && RUN_ARGS+=(--effort "$REASONING_EFFORT")
+  if [[ -n "$REASONING_EFFORT" ]] && codex_effort_supported "$MODEL" "$REASONING_EFFORT"; then
+    RUN_ARGS+=(--effort "$REASONING_EFFORT")
+  fi
   [[ -n "$AGENT_CWD" ]] && RUN_ARGS+=(--cwd "$AGENT_CWD")
 else
   build_cli_args "$CLI" "$MODEL" "$AGENT_ALLOWED_TOOLS" "$RESUME_ID" "$IS_RESUME" "$REASONING_EFFORT"

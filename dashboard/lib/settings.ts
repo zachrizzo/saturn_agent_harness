@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import { settingsFile } from "./paths";
-import { normalizeReasoningEffortForCli, type ModelReasoningEffort } from "./models";
+import { isModelReasoningEffort, normalizeReasoningEffortForCli, type ModelReasoningEffort } from "./models";
 import { DEFAULT_CLI, isCli, normalizeCli } from "./clis";
 import type { CLI } from "./clis";
 import { DEFAULT_BEDROCK_PROFILE, DEFAULT_BEDROCK_REGION } from "./bedrock-config";
@@ -33,7 +33,6 @@ export type AppSettings = {
   defaultCwd?: string;
 };
 
-const VALID_EFFORTS: ModelReasoningEffort[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 const VALID_MEMORY_RETRIEVAL_MODES: MemoryRetrievalMode[] = ["keyword", "semantic", "hybrid"];
 const VALID_MEMORY_PROVIDERS: MemoryProvider[] = ["openai-compatible", "bedrock", "local-http", "disabled"];
 
@@ -62,7 +61,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
 };
 
 function isEffort(value: unknown): value is ModelReasoningEffort {
-  return typeof value === "string" && VALID_EFFORTS.includes(value as ModelReasoningEffort);
+  return isModelReasoningEffort(value);
 }
 
 function cleanStringMap(value: unknown): Partial<Record<CLI, string>> {

@@ -90,6 +90,60 @@ normalize_cli_id() {
   esac
 }
 
+claude_reasoning_efforts() {
+  local line levels
+  line="$(claude --help 2>&1 | awk '/--effort/{ print; exit }' || true)"
+  levels="$(printf '%s\n' "$line" | sed -n 's/.*(\([^)]*\)).*/\1/p')"
+  [[ -n "$levels" ]] || return 1
+  printf '%s\n' "$levels" \
+    | tr ',|/' '\n' \
+    | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+    | awk 'NF'
+}
+
+claude_effort_supported() {
+  local effort="$1"
+  local level
+  while IFS= read -r level; do
+    [[ "$level" == "$effort" ]] && return 0
+  done < <(claude_reasoning_efforts)
+  return 1
+}
+
+codex_effort_supported() {
+  local model="$1"
+  local effort="$2"
+  [[ -n "$effort" ]] || return 1
+  node - "$model" "$effort" <<'NODE'
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+
+let model = process.argv[2];
+const effort = process.argv[3];
+const cachePath = path.join(os.homedir(), ".codex", "models_cache.json");
+const configPath = path.join(os.homedir(), ".codex", "config.toml");
+
+try {
+  if (!model) {
+    const config = fs.readFileSync(configPath, "utf8");
+    model = config.match(/^\s*model\s*=\s*"([^"]+)"/m)?.[1];
+  }
+  if (!model) process.exit(1);
+  const parsed = JSON.parse(fs.readFileSync(cachePath, "utf8"));
+  const found = (parsed.models || []).find((entry) => entry && entry.slug === model);
+  const levels = Array.isArray(found && found.supported_reasoning_levels)
+    ? found.supported_reasoning_levels
+        .map((level) => typeof level === "string" ? level : level && level.effort)
+        .filter(Boolean)
+    : [];
+  process.exit(levels.includes(effort) ? 0 : 1);
+} catch {
+  process.exit(1);
+}
+NODE
+}
+
 # ─── Build args for each CLI ─────────────────────────────────────────────────
 # Populates the RUN_ARGS array and RUN_CMD variable in the caller's scope.
 #
@@ -125,8 +179,7 @@ build_cli_args() {
         --dangerously-bypass-approvals-and-sandbox
       )
       [[ -n "$model" ]] && RUN_ARGS+=(-m "$model")
-      if [[ -n "$reasoning_effort" ]]; then
-        [[ "$reasoning_effort" == "max" ]] && reasoning_effort="xhigh"
+      if [[ -n "$reasoning_effort" ]] && codex_effort_supported "$model" "$reasoning_effort"; then
         RUN_ARGS+=(--config "model_reasoning_effort=\"$reasoning_effort\"")
       fi
       RUN_CMD="codex"
@@ -166,8 +219,7 @@ build_cli_args() {
         RUN_ARGS+=(--allowedTools "$allowed_tools")
       fi
       [[ -n "$resolved_model" ]] && RUN_ARGS+=(--model "$resolved_model")
-      if [[ -n "$reasoning_effort" ]]; then
-        [[ "$reasoning_effort" == "minimal" ]] && reasoning_effort="low"
+      if [[ -n "$reasoning_effort" ]] && claude_effort_supported "$reasoning_effort"; then
         RUN_ARGS+=(--effort "$reasoning_effort")
       fi
       RUN_CMD="claude"

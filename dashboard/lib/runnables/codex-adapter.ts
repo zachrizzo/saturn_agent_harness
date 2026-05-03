@@ -18,6 +18,7 @@ import type {
   NeutralPart,
 } from "./types";
 import { normalizeReasoningEffortForCli, type ModelReasoningEffort } from "../models";
+import { resolveReasoningEffortForCliModel } from "../model-capabilities";
 
 type CodexInternal = {
   codex: Codex;
@@ -122,12 +123,13 @@ export class CodexAdapter implements RunnableAdapter {
 
   async startSession(opts: StartSessionOpts): Promise<SessionHandle> {
     const codex = this.ensureClient();
-    const thread = codex.startThread(threadOptions(opts.model, opts.cwd, opts.reasoningEffort));
+    const reasoningEffort = await resolveReasoningEffortForCliModel("codex", opts.model, opts.reasoningEffort);
+    const thread = codex.startThread(threadOptions(opts.model, opts.cwd, reasoningEffort));
     const internal: CodexInternal = {
       codex,
       thread,
       model: opts.model,
-      reasoningEffort: opts.reasoningEffort,
+      reasoningEffort,
       cwd: opts.cwd,
     };
     return {
@@ -261,10 +263,11 @@ export class CodexAdapter implements RunnableAdapter {
     reasoningEffort?: ModelReasoningEffort,
   ): Promise<void> {
     const internal = handle.internal as CodexInternal;
+    const resolvedEffort = await resolveReasoningEffortForCliModel("codex", model, reasoningEffort);
     internal.model = model;
-    internal.reasoningEffort = reasoningEffort;
+    internal.reasoningEffort = resolvedEffort;
     // Re-open the thread with new model but resume from current thread id if present.
-    const opts = threadOptions(model, internal.cwd, reasoningEffort);
+    const opts = threadOptions(model, internal.cwd, resolvedEffort);
     internal.thread = handle.native_session_id
       ? internal.codex.resumeThread(handle.native_session_id, opts)
       : internal.codex.startThread(opts);
@@ -288,12 +291,13 @@ export class CodexAdapter implements RunnableAdapter {
 
   async importState(neutral: NeutralTranscript, opts: StartSessionOpts): Promise<SessionHandle> {
     const codex = this.ensureClient();
-    const thread = codex.startThread(threadOptions(opts.model, opts.cwd, opts.reasoningEffort));
+    const reasoningEffort = await resolveReasoningEffortForCliModel("codex", opts.model, opts.reasoningEffort);
+    const thread = codex.startThread(threadOptions(opts.model, opts.cwd, reasoningEffort));
     const internal: CodexInternal = {
       codex,
       thread,
       model: opts.model,
-      reasoningEffort: opts.reasoningEffort,
+      reasoningEffort,
       cwd: opts.cwd,
       pendingSeed: seedPromptFromTranscript(neutral),
     };

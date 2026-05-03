@@ -14,7 +14,7 @@ LABEL="com.zachrizzo.claude-cron-dashboard"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 NPM_BIN="$(command -v npm)"
 NODE_BIN_DIR="$(dirname "$NPM_BIN")"
-SERVICE_PATH="$NODE_BIN_DIR:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin"
+SERVICE_PATH="$NODE_BIN_DIR:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
 mkdir -p "$HOME/Library/LaunchAgents" "$AUTOMATIONS_ROOT/runs"
 
@@ -34,7 +34,7 @@ cat > "$PLIST" <<EOF
   <array>
     <string>/bin/bash</string>
     <string>-lc</string>
-    <string>cd "$ROOT_XML/dashboard" &amp;&amp; exec "$NPM_XML" run start</string>
+    <string>cd "$ROOT_XML/dashboard" &amp;&amp; export PATH="$PATH_XML" &amp;&amp; exec "$NPM_XML" run start</string>
   </array>
 
   <key>EnvironmentVariables</key>

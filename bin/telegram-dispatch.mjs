@@ -52,7 +52,6 @@ const cliOptions = [
   { id: "codex", label: "Codex" },
 ];
 const cliValues = new Set([...cliOptions.map((cli) => cli.id), "claude"]);
-const reasoningValues = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
 const defaultPrompt = "You are Saturn Dispatch. Help the user from Telegram.";
 const noToolsSentinel = "__SATURN_NO_TOOLS__";
 const imageExts = new Set([
@@ -360,7 +359,8 @@ function helpText() {
     "/cli <codex|claude-personal|claude-bedrock|claude-local> sets backend.",
     "/model <id|off> sets or clears the model.",
     "/models lists the available CLIs and models.",
-    "/think <minimal|low|medium|high|xhigh|max|off> sets reasoning.",
+    "/think shows valid reasoning levels for the current model.",
+    "/think <level|off> sets or clears reasoning.",
     "/tools <preset|csv|off> sets Claude allowed tools. Presets: none, read, code, full.",
     "/mcp <on|off> toggles MCP tools for the session.",
     "/timeout <seconds|off> sets new-chat timeout.",
@@ -372,23 +372,52 @@ function helpText() {
 
 async function setReasoning(chatId, arg) {
   const effort = arg.trim().toLowerCase();
+  const chat = state.chats[chatId];
+  const cli = effectiveCli(chat);
+  const model = effectiveModel(chat);
+  let caps;
+  try {
+    caps = await modelCapabilities(cli, model);
+  } catch (err) {
+    await sendMessage(chatId, `Could not load reasoning levels from Saturn: ${friendlyError(err)}`);
+    return;
+  }
+
   if (!effort) {
-    await sendMessage(chatId, "Use /think <minimal|low|medium|high|xhigh|max|off>.");
+    const modelLabel = caps.model?.id || model || "backend default";
+    await sendMessage(
+      chatId,
+      caps.efforts.length
+        ? [
+            `Reasoning levels for ${modelLabel}: ${caps.efforts.join(", ")}`,
+            `Current: ${chat.reasoningEffort || "default"}`,
+            "Use /think <level> or /think off.",
+          ].join("\n")
+        : [
+            `No reasoning levels were reported for ${modelLabel}.`,
+            "Use /models to choose a model, or /think off to clear the override.",
+          ].join("\n"),
+    );
     return;
   }
   if (effort === "off" || effort === "default" || effort === "none") {
-    delete state.chats[chatId].reasoningEffort;
+    delete chat.reasoningEffort;
     await saveState();
     await sendMessage(chatId, "Reasoning override cleared.");
     return;
   }
-  if (!reasoningValues.has(effort)) {
-    await sendMessage(chatId, "Use /think minimal, low, medium, high, xhigh, max, or off.");
+  if (!caps.efforts.includes(effort)) {
+    await sendMessage(
+      chatId,
+      caps.efforts.length
+        ? `That level is not available for ${caps.model?.id || model || cli}. Use one of: ${caps.efforts.join(", ")}.`
+        : `No reasoning levels were reported for ${caps.model?.id || model || cli}.`,
+    );
     return;
   }
-  state.chats[chatId].reasoningEffort = effort === "max" && normalizeCliValue(state.chats[chatId].cli) === "codex" ? "xhigh" : effort;
+  chat.reasoningEffort = effort;
   await saveState();
-  await sendMessage(chatId, `Reasoning set to ${state.chats[chatId].reasoningEffort}.`);
+  await sendMessage(chatId, `Reasoning set to ${chat.reasoningEffort}.`);
 }
 
 async function setModel(chatId, arg) {
@@ -404,10 +433,22 @@ async function setModel(chatId, arg) {
     await sendMessage(chatId, "Model override cleared.");
     return;
   }
-  state.chats[chatId].model = model;
-  delete state.chats[chatId].model_choices;
+  const chat = state.chats[chatId];
+  chat.model = model;
+  delete chat.model_choices;
+  let reasoningNote = "";
+  if (chat.reasoningEffort) {
+    const cli = effectiveCli(chat);
+    const caps = await modelCapabilities(cli, model).catch(() => null);
+    const selected = caps?.models.find((item) => item?.id === model);
+    const efforts = normalizeEffortList(selected?.supportedReasoningEfforts);
+    if (selected && !efforts.includes(chat.reasoningEffort)) {
+      reasoningNote = `Reasoning override cleared; ${model} supports ${efforts.length ? efforts.join(", ") : "no effort levels"}.`;
+      delete chat.reasoningEffort;
+    }
+  }
   await saveState();
-  await sendMessage(chatId, `Model set to ${model}.`);
+  await sendMessage(chatId, ["Model set to " + model + ".", reasoningNote].filter(Boolean).join("\n"));
 }
 
 async function setCli(chatId, arg) {
@@ -443,8 +484,8 @@ async function sendModels(chatId, arg = "") {
   }
 
   const chat = state.chats[chatId];
-  const currentCli = normalizeCliValue(chat.cli || process.env.SATURN_ADHOC_CLI || process.env.SATURN_CLI) || "claude-bedrock";
-  const currentModel = chat.model || process.env.SATURN_ADHOC_MODEL || process.env.SATURN_MODEL || "default";
+  const currentCli = effectiveCli(chat);
+  const currentModel = effectiveModel(chat) || "default";
   const choices = [];
   const sections = [
     "Available Dispatch CLIs and models",
@@ -512,6 +553,8 @@ function modelChoiceFromModel(option, model, index) {
     modelId: id,
     name: String(model?.name || "").trim(),
     contextWindow: model?.loadedContextWindow || model?.contextWindow,
+    defaultReasoningEffort: typeof model?.defaultReasoningEffort === "string" ? model.defaultReasoningEffort : "",
+    supportedReasoningEfforts: normalizeEffortList(model?.supportedReasoningEfforts),
   };
 }
 
@@ -523,9 +566,19 @@ function formatModelChoiceLine(choice) {
   const details = [
     name && name !== id ? name : "",
     context ? `${context} ctx` : "",
+    formatReasoningChoice(choice),
     choice?.cli ? `/cli ${choice.cli}` : "",
   ].filter(Boolean);
   return details.length ? `${id} - ${details.join(", ")}` : id;
+}
+
+function formatReasoningChoice(choice) {
+  const efforts = normalizeEffortList(choice?.supportedReasoningEfforts);
+  if (!efforts.length) return "no effort levels";
+  const defaultEffort = String(choice?.defaultReasoningEffort || "");
+  return defaultEffort && efforts.includes(defaultEffort)
+    ? `effort ${efforts.join("/")}; default ${defaultEffort}`
+    : `effort ${efforts.join("/")}`;
 }
 
 async function handleModelSelectionReply(chatId, text) {
@@ -555,6 +608,12 @@ async function handleModelSelectionReply(chatId, text) {
   chat.cli = choice.cli;
   chat.model = choice.modelId;
   delete chat.model_choices;
+  let reasoningNote = "";
+  const choiceEfforts = normalizeEffortList(choice.supportedReasoningEfforts);
+  if (chat.reasoningEffort && !choiceEfforts.includes(chat.reasoningEffort)) {
+    reasoningNote = `Reasoning override cleared; ${choice.modelId} supports ${choiceEfforts.length ? choiceEfforts.join(", ") : "no effort levels"}.`;
+    delete chat.reasoningEffort;
+  }
 
   if (choice.cli !== previousCli) {
     clearSessionMapping(chatId);
@@ -566,8 +625,9 @@ async function handleModelSelectionReply(chatId, text) {
     [
       `Model set to ${choice.modelId}.`,
       `CLI set to ${choice.cli}.`,
+      reasoningNote,
       choice.cli !== previousCli ? "New session ready; send a task or use /new <task>." : "Use /new <task> to start fresh if needed.",
-    ].join("\n"),
+    ].filter(Boolean).join("\n"),
   );
   return true;
 }
@@ -582,6 +642,37 @@ function parseModelSelectionNumber(text) {
 function isModelSelectionExpired(createdAt) {
   const createdMs = Date.parse(createdAt || "");
   return !Number.isFinite(createdMs) || Date.now() - createdMs > modelSelectionTtlMs;
+}
+
+function effectiveCli(chat) {
+  return normalizeCliValue(chat?.cli || process.env.SATURN_ADHOC_CLI || process.env.SATURN_CLI) || "claude-bedrock";
+}
+
+function effectiveModel(chat) {
+  return chat?.model || process.env.SATURN_ADHOC_MODEL || process.env.SATURN_MODEL || "";
+}
+
+function normalizeEffortList(values) {
+  if (!Array.isArray(values)) return [];
+  const out = [];
+  for (const value of values) {
+    if (typeof value !== "string" || !value.trim() || out.includes(value.trim())) continue;
+    out.push(value.trim());
+  }
+  return out;
+}
+
+async function modelCapabilities(cli, modelId) {
+  const data = await saturn(`/api/models?cli=${encodeURIComponent(cli)}`, { method: "GET" });
+  const models = Array.isArray(data.models) ? data.models : [];
+  const requestedModel = String(modelId || "").trim();
+  const exact = models.find((item) => item?.id === requestedModel) || null;
+  const model = exact || (!requestedModel || requestedModel === "default" ? models[0] || null : null);
+  return {
+    models,
+    model,
+    efforts: normalizeEffortList(model?.supportedReasoningEfforts),
+  };
 }
 
 function formatTokenCount(tokens) {
