@@ -1,0 +1,39 @@
+{
+  "$comment": "Single source of truth for Claude (Bedrock) model identifiers. Consumed by dashboard/lib/claude-models.ts and bin/lib/cli-dispatch.sh. When a new model ships, add it here — nowhere else.",
+  "defaults": {
+    "alias": "claude-sonnet-4-6",
+    "cheapAlias": "claude-haiku-4-5"
+  },
+  "models": [
+    {
+      "alias": "claude-opus-4-7",
+      "bedrockId": "global.anthropic.claude-opus-4-7",
+      "displayName": "Opus 4.7",
+      "contextWindow": 1000000
+    },
+    {
+      "alias": "claude-opus-4-6",
+      "bedrockId": "global.anthropic.claude-opus-4-6-v1",
+      "displayName": "Opus 4.6",
+      "contextWindow": 200000
+    },
+    {
+      "alias": "claude-sonnet-4-6",
+      "bedrockId": "global.anthropic.claude-sonnet-4-6",
+      "displayName": "Sonnet 4.6",
+      "contextWindow": 1000000
+    },
+    {
+      "alias": "claude-sonnet-4-5",
+      "bedrockId": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "displayName": "Sonnet 4.5",
+      "contextWindow": 200000
+    },
+    {
+      "alias": "claude-haiku-4-5",
+      "bedrockId": "us.anthropic.claude-haiku-4-5-20251001",
+      "displayName": "Haiku 4.5",
+      "contextWindow": 200000
+    }
+  ]
+}

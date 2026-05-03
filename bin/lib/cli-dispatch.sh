@@ -5,20 +5,31 @@
 # Expects AUTOMATIONS_ROOT to be set by the caller.
 
 # ─── Bedrock model alias expansion ───────────────────────────────────────────
-# Mirrors toBedrockId() in dashboard/lib/claude-models.ts.
-# Expands short aliases (claude-sonnet-4-6) to full Bedrock inference profile IDs.
+# Reads the canonical alias→bedrockId table from
+# dashboard/lib/claude-models.json (shared with toBedrockId() in TS).
 # Returns the input unchanged if already fully-qualified or unknown.
 to_bedrock_id() {
   local model="$1"
   case "$model" in
-    global.*|us.*|*anthropic.claude*) echo "$model" ;;  # already qualified
-    claude-opus-4-7)    echo "global.anthropic.claude-opus-4-7" ;;
-    claude-opus-4-6)    echo "global.anthropic.claude-opus-4-6-v1" ;;
-    claude-sonnet-4-6)  echo "global.anthropic.claude-sonnet-4-6" ;;
-    claude-sonnet-4-5)  echo "global.anthropic.claude-sonnet-4-5-20250929-v1:0" ;;
-    claude-haiku-4-5)   echo "us.anthropic.claude-haiku-4-5-20251001" ;;
-    *)                  echo "$model" ;;  # unknown alias — pass through unchanged
+    global.*|us.*|*anthropic.claude*) echo "$model"; return 0 ;;
   esac
+  local repo_root="${SATURN_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+  local table="$repo_root/dashboard/lib/claude-models.json"
+  if [[ ! -f "$table" ]]; then
+    echo "$model"
+    return 0
+  fi
+  node - "$table" "$model" <<'NODE' 2>/dev/null || echo "$model"
+const fs = require("fs");
+const [, , tablePath, alias] = process.argv;
+try {
+  const data = JSON.parse(fs.readFileSync(tablePath, "utf8"));
+  const found = (data.models || []).find((m) => m && m.alias === alias);
+  process.stdout.write(found?.bedrockId || alias);
+} catch {
+  process.stdout.write(alias);
+}
+NODE
 }
 
 # ─── Bedrock env setup ───────────────────────────────────────────────────────

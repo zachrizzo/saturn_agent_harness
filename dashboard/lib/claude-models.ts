@@ -8,16 +8,15 @@
  * that do not go through the CLI's own alias resolver and Bedrock rejects it
  * with `400 The provided model identifier is invalid`.
  *
+ * The data lives in `claude-models.json` so the bash dispatch layer
+ * (`bin/lib/cli-dispatch.sh`) can read the same table without duplicating it.
  * Any code that stores, displays, or dispatches a Claude model must go through
  * this module.
  */
 
-export type ClaudeAliasId =
-  | "claude-opus-4-7"
-  | "claude-opus-4-6"
-  | "claude-sonnet-4-6"
-  | "claude-sonnet-4-5"
-  | "claude-haiku-4-5";
+import claudeModelsData from "./claude-models.json";
+
+export type ClaudeAliasId = string;
 
 export type ClaudeModelSpec = {
   /** Short alias used in agent configs, UI, presets, etc. */
@@ -30,41 +29,7 @@ export type ClaudeModelSpec = {
   contextWindow: number;
 };
 
-/**
- * The canonical list. When a new model ships, add it here — nowhere else.
- */
-export const CLAUDE_MODELS: readonly ClaudeModelSpec[] = [
-  {
-    alias: "claude-opus-4-7",
-    bedrockId: "global.anthropic.claude-opus-4-7",
-    displayName: "Opus 4.7",
-    contextWindow: 1_000_000,
-  },
-  {
-    alias: "claude-opus-4-6",
-    bedrockId: "global.anthropic.claude-opus-4-6-v1",
-    displayName: "Opus 4.6",
-    contextWindow: 200_000,
-  },
-  {
-    alias: "claude-sonnet-4-6",
-    bedrockId: "global.anthropic.claude-sonnet-4-6",
-    displayName: "Sonnet 4.6",
-    contextWindow: 1_000_000,
-  },
-  {
-    alias: "claude-sonnet-4-5",
-    bedrockId: "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    displayName: "Sonnet 4.5",
-    contextWindow: 200_000,
-  },
-  {
-    alias: "claude-haiku-4-5",
-    bedrockId: "us.anthropic.claude-haiku-4-5-20251001",
-    displayName: "Haiku 4.5",
-    contextWindow: 200_000,
-  },
-] as const;
+export const CLAUDE_MODELS: readonly ClaudeModelSpec[] = claudeModelsData.models;
 
 /** Short alias → full spec. */
 const BY_ALIAS = new Map<string, ClaudeModelSpec>(
@@ -84,10 +49,10 @@ const BY_BEDROCK_ID = new Map<string, ClaudeModelSpec>(
 );
 
 /** Default model used when an agent/preset doesn't specify one. */
-export const DEFAULT_CLAUDE_ALIAS: ClaudeAliasId = "claude-sonnet-4-6";
+export const DEFAULT_CLAUDE_ALIAS: ClaudeAliasId = claudeModelsData.defaults.alias;
 
 /** Default "cheap tier" model for short-lived slices and bucketing tasks. */
-export const DEFAULT_CHEAP_CLAUDE_ALIAS: ClaudeAliasId = "claude-haiku-4-5";
+export const DEFAULT_CHEAP_CLAUDE_ALIAS: ClaudeAliasId = claudeModelsData.defaults.cheapAlias;
 
 /**
  * Canonicalize any Claude model identifier to the short alias form, if known.
