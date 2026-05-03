@@ -563,17 +563,7 @@ fi
 
 # ─── Build CLI args + run ─────────────────────────────────────────────────────
 if [[ "$ENGINE" == "codex" && -n "$CODEX_COLLAB_MODE" ]]; then
-  export CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
-  RUN_CMD="node"
-  RUN_ARGS=("$AUTOMATIONS_ROOT/bin/codex-app-server-turn.mjs" "--mode" "$CODEX_COLLAB_MODE")
-  if [[ -n "$RESUME_ID" && "$IS_RESUME" == "yes" ]]; then
-    RUN_ARGS+=(--thread-id "$RESUME_ID")
-  fi
-  [[ -n "$MODEL" ]] && RUN_ARGS+=(--model "$MODEL")
-  if [[ -n "$REASONING_EFFORT" ]] && codex_effort_supported "$MODEL" "$REASONING_EFFORT"; then
-    RUN_ARGS+=(--effort "$REASONING_EFFORT")
-  fi
-  [[ -n "$AGENT_CWD" ]] && RUN_ARGS+=(--cwd "$AGENT_CWD")
+  build_codex_collab_args "$CODEX_COLLAB_MODE" "$MODEL" "$RESUME_ID" "$IS_RESUME" "$REASONING_EFFORT" "$AGENT_CWD"
 else
   build_cli_args "$CLI" "$MODEL" "$AGENT_ALLOWED_TOOLS" "$RESUME_ID" "$IS_RESUME" "$REASONING_EFFORT"
 fi

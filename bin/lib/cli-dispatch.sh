@@ -257,6 +257,39 @@ build_cli_args() {
   esac
 }
 
+# ─── Codex app-server (collab mode) args ─────────────────────────────────────
+# Populates RUN_CMD + RUN_ARGS for the bin/codex-app-server-turn.mjs path.
+# Used by run-turn.sh when CODEX_COLLAB_MODE is set; kept here so all CLI
+# arg construction lives in one place.
+#
+# Args:
+#   $1 mode             - value passed to --mode
+#   $2 model            - model id or empty
+#   $3 session_id       - thread id (for resume)
+#   $4 is_resume        - "yes" to pass --thread-id, anything else to skip
+#   $5 reasoning_effort - optional thinking/reasoning level
+#   $6 cwd              - optional working directory
+build_codex_collab_args() {
+  local mode="$1"
+  local model="$2"
+  local session_id="$3"
+  local is_resume="${4:-no}"
+  local reasoning_effort="${5:-}"
+  local cwd="${6:-}"
+
+  export CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+  RUN_CMD="node"
+  RUN_ARGS=("$AUTOMATIONS_ROOT/bin/codex-app-server-turn.mjs" "--mode" "$mode")
+  if [[ -n "$session_id" && "$is_resume" == "yes" ]]; then
+    RUN_ARGS+=(--thread-id "$session_id")
+  fi
+  [[ -n "$model" ]] && RUN_ARGS+=(--model "$model")
+  if [[ -n "$reasoning_effort" ]] && codex_effort_supported "$model" "$reasoning_effort"; then
+    RUN_ARGS+=(--effort "$reasoning_effort")
+  fi
+  [[ -n "$cwd" ]] && RUN_ARGS+=(--cwd "$cwd")
+}
+
 # ─── Watchdog-run a CLI ──────────────────────────────────────────────────────
 # Runs the CLI configured in RUN_CMD + RUN_ARGS (set by build_cli_args) as the
 # leader of a fresh process group via bin/lib/pgid_shim.py, so the abort route
