@@ -760,6 +760,42 @@ EXIT_CODE="${EXIT_CODE:-0}"
 STATUS="success"
 [[ "$EXIT_CODE" -ne 0 ]] && STATUS="failed"
 
+# Surface CLI failures as a synthetic `result` event so the dashboard renders
+# an explicit error in the chat instead of leaving the turn with no
+# terminating event. Skipped when the CLI already produced its own
+# turn-end marker (result/turn.completed/turn.failed/step_finish).
+if [[ "$STATUS" == "failed" ]]; then
+  has_terminator=0
+  if [[ -f "$STREAM_FILE" ]]; then
+    if tail -n 200 "$STREAM_FILE" 2>/dev/null | \
+        grep -Eq '"type":[[:space:]]*"(result|turn\.completed|turn\.failed|step_finish|saturn\.turn_aborted)"'; then
+      has_terminator=1
+    fi
+  fi
+  if [[ "$has_terminator" -eq 0 ]]; then
+    stderr_tail=""
+    if [[ -f "$STDERR_FILE" ]]; then
+      stderr_tail="$(tail -c 2048 "$STDERR_FILE" 2>/dev/null || true)"
+    fi
+    jq -nc \
+      --arg turn_id "$TURN_ID" \
+      --argjson exit_code "$EXIT_CODE" \
+      --arg phase "cli" \
+      --arg stderr_tail "$stderr_tail" \
+      '{
+        type: "result",
+        subtype: "error",
+        is_error: true,
+        saturn_failure: {
+          phase: $phase,
+          exit_code: $exit_code,
+          stderr_tail: (if $stderr_tail == "" then null else $stderr_tail end)
+        },
+        turn_id: $turn_id
+      }' >> "$STREAM_FILE"
+  fi
+fi
+
 jq \
   --arg turn_id "$TURN_ID" \
   --arg cli "$CLI" \

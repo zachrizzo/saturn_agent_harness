@@ -2,7 +2,7 @@
 
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Children, isValidElement, memo, useEffect, useId, useMemo, useState } from "react";
+import { Children, isValidElement, memo, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { StreamEvent } from "@/lib/events";
 import type { CLI } from "@/lib/runs";
@@ -43,6 +43,24 @@ type AssistantProps = {
 };
 
 type Props = UserProps | AssistantProps;
+
+type SaturnFailureInfo = {
+  phase: string;
+  exitCode: number | null;
+  stderrTail: string | null;
+};
+
+function extractSaturnFailure(raw: unknown): SaturnFailureInfo | null {
+  if (!raw || typeof raw !== "object") return null;
+  const failure = (raw as Record<string, unknown>).saturn_failure;
+  if (!failure || typeof failure !== "object") return null;
+  const f = failure as Record<string, unknown>;
+  return {
+    phase: typeof f.phase === "string" && f.phase ? f.phase : "cli",
+    exitCode: typeof f.exit_code === "number" ? f.exit_code : null,
+    stderrTail: typeof f.stderr_tail === "string" ? f.stderr_tail : null,
+  };
+}
 
 function sameEventArray(a: StreamEvent[], b: StreamEvent[]): boolean {
   if (a === b) return true;
@@ -99,10 +117,25 @@ export const MessageBubble = memo(function MessageBubble(props: Props) {
 
 function CopyButton({ getText }: { getText: () => string }) {
   const [copied, setCopied] = useState(false);
+  const resetTimerRef = useRef<number | null>(null);
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (resetTimerRef.current !== null) window.clearTimeout(resetTimerRef.current);
+    };
+  }, []);
   const copy = () => {
     navigator.clipboard.writeText(getText()).then(() => {
+      if (!mountedRef.current) return;
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      if (resetTimerRef.current !== null) window.clearTimeout(resetTimerRef.current);
+      resetTimerRef.current = window.setTimeout(() => {
+        resetTimerRef.current = null;
+        if (!mountedRef.current) return;
+        setCopied(false);
+      }, 1500);
     });
   };
   return (
@@ -1165,12 +1198,25 @@ function AssistantBlock({
       return;
     }
     if (ev.kind === "result") {
+      const failure = !ev.success ? extractSaturnFailure(ev.raw) : null;
       rendered.push(
-        <div key={eventKey} className="flex items-center gap-3 text-[10px] text-subtle">
-          <span className={ev.success ? "text-success" : "text-fail"}>
-            {ev.success ? "✓ done" : "✗ failed"}
-          </span>
-          {ev.totalTokens > 0 && <span>{ev.totalTokens.toLocaleString()} tokens</span>}
+        <div key={eventKey} className="flex flex-col gap-1 text-[10px] text-subtle">
+          <div className="flex items-center gap-3">
+            <span className={ev.success ? "text-success" : "text-fail"}>
+              {ev.success ? "✓ done" : "✗ failed"}
+            </span>
+            {ev.totalTokens > 0 && <span>{ev.totalTokens.toLocaleString()} tokens</span>}
+            {failure && (
+              <span className="text-fail/80">
+                {failure.phase} (exit {failure.exitCode})
+              </span>
+            )}
+          </div>
+          {failure?.stderrTail && (
+            <pre className="whitespace-pre-wrap break-words text-[10px] text-fail/80 max-h-32 overflow-auto">
+              {failure.stderrTail}
+            </pre>
+          )}
         </div>
       );
     }
