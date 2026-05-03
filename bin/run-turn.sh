@@ -31,18 +31,46 @@ _cleanup_on_exit() {
   local code=$?
   if [[ $code -ne 0 ]]; then
     local meta="${META_FILE:-}"
+    local sdir="${SESSION_DIR:-}"
     if [[ -n "$meta" && -f "$meta" ]]; then
+      local _meta_lock=""
+      if [[ -n "$sdir" ]] && declare -F saturn_meta_lock_acquire >/dev/null 2>&1; then
+        _meta_lock="$(saturn_meta_lock_acquire "$sdir" 2>/dev/null || true)"
+      fi
       jq '.status = "failed" | del(.last_turn_started_at)' "$meta" > "${meta}.tmp" 2>/dev/null \
         && mv "${meta}.tmp" "$meta" || true
+      if [[ -n "$_meta_lock" ]] && declare -F saturn_meta_lock_release >/dev/null 2>&1; then
+        saturn_meta_lock_release "$_meta_lock"
+      fi
     fi
   fi
   rm -f "${LOCK_FILE:-}" 2>/dev/null || true
   rm -f "${_settings_tmp:-}" 2>/dev/null || true
+  # Defensive: drop any meta lock we might still hold if the script aborts
+  # mid-update (saturn_meta_update releases on success).
+  if [[ -n "${SESSION_DIR:-}" ]]; then
+    rm -f "$SESSION_DIR/meta.lock" 2>/dev/null || true
+  fi
 }
 trap _cleanup_on_exit EXIT
 
 # shellcheck source=lib/cli-dispatch.sh
 source "$AUTOMATIONS_ROOT/bin/lib/cli-dispatch.sh"
+# shellcheck source=lib/meta-lock.sh
+source "$AUTOMATIONS_ROOT/bin/lib/meta-lock.sh"
+
+# saturn_meta_update <jq-program> [<jq-args>...]
+# Atomic, lock-coordinated rewrite of $META_FILE: acquires the meta lock,
+# applies the jq program, swaps tmp→meta.json with mv (POSIX-atomic), then
+# releases the lock. Callers pass the same args they would to jq.
+saturn_meta_update() {
+  local lock_file
+  lock_file="$(saturn_meta_lock_acquire "$SESSION_DIR" || true)"
+  jq "$@" "$META_FILE" > "${META_FILE}.tmp" && mv "${META_FILE}.tmp" "$META_FILE"
+  local rc=$?
+  saturn_meta_lock_release "$lock_file"
+  return "$rc"
+}
 
 if [[ $# -ne 1 ]]; then
   echo "usage: run-turn.sh <session-id>  (user message on stdin)" >&2
@@ -361,7 +389,7 @@ fi
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 TURN_ID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
 
-jq --arg status "running" --arg started "$STARTED_AT" --arg turn_id "$TURN_ID" \
+saturn_meta_update --arg status "running" --arg started "$STARTED_AT" --arg turn_id "$TURN_ID" \
   --arg cli "$CLI" --arg model "$MODEL" --arg reasoning_effort "$REASONING_EFFORT" --arg user_msg "$USER_MESSAGE" \
   --arg plan_action "$PLAN_ACTION" --arg plan_mode "$PLAN_MODE_FOR_TURN" \
   '.status = $status
@@ -379,8 +407,7 @@ jq --arg status "running" --arg started "$STARTED_AT" --arg turn_id "$TURN_ID" \
       status: "running",
       user_message: $user_msg,
       final_text: null
-    }]' \
-  "$META_FILE" > "${META_FILE}.tmp" && mv "${META_FILE}.tmp" "$META_FILE"
+    }]'
 
 jq -nc \
   --arg type "saturn.turn_start" \
@@ -525,7 +552,7 @@ $output
     {type: "result", subtype: (if $is_error then "error" else "success" end), is_error: $is_error}
   ' >> "$STREAM_FILE"
 
-  jq \
+  saturn_meta_update \
     --arg turn_id "$TURN_ID" \
     --arg cli "$CLI" \
     --arg model "$MODEL" \
@@ -549,8 +576,7 @@ $output
       }
       | .status = $status
       | .finished_at = $finished
-      | del(.last_turn_started_at)' \
-    "$META_FILE" > "${META_FILE}.tmp" && mv "${META_FILE}.tmp" "$META_FILE"
+      | del(.last_turn_started_at)'
 
   printf '%s\n' "$final_text" > "$SESSION_DIR/final.md"
   capture_saturn_memory "$status"
@@ -796,7 +822,7 @@ if [[ "$STATUS" == "failed" ]]; then
   fi
 fi
 
-jq \
+saturn_meta_update \
   --arg turn_id "$TURN_ID" \
   --arg cli "$CLI" \
   --arg model "$MODEL" \
@@ -839,8 +865,7 @@ jq \
       end
     | .status = $status
     | .finished_at = $finished
-    | del(.last_turn_started_at)' \
-  "$META_FILE" > "${META_FILE}.tmp" && mv "${META_FILE}.tmp" "$META_FILE"
+    | del(.last_turn_started_at)'
 
 # Write final.md for the session (latest assistant reply)
 printf '%s\n' "$FINAL_TEXT" > "$SESSION_DIR/final.md"

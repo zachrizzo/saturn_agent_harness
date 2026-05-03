@@ -4,6 +4,7 @@ import { promises as fs } from "node:fs";
 import { NextResponse } from "next/server";
 import { sessionsRoot } from "@/lib/paths";
 import type { SessionMeta } from "@/lib/runs";
+import { withSessionMetaLock } from "@/lib/session-meta-lock";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -50,18 +51,33 @@ export async function POST(
   const { id: parentId } = await params;
   const parentMetaFile = path.join(sessionsRoot(), parentId, "meta.json");
 
-  let parentMeta: SessionMeta;
-  try {
-    parentMeta = JSON.parse(await fs.readFile(parentMetaFile, "utf8")) as SessionMeta;
-  } catch {
-    return NextResponse.json({ error: `session not found: ${parentId}` }, { status: 404 });
+  // Coordinate with run-turn.sh writes to the parent's meta.json. Without the
+  // lock, we can read a snapshot that's about to be invalidated by the parent
+  // turn finishing, and the continuation is then seeded from a stale view.
+  type Snapshot =
+    | { ok: true; meta: SessionMeta; cutoff: number; carriedStream: string }
+    | { ok: false; status: number; error: string };
+
+  const snapshot: Snapshot = await withSessionMetaLock(parentId, async () => {
+    let meta: SessionMeta;
+    try {
+      meta = JSON.parse(await fs.readFile(parentMetaFile, "utf8")) as SessionMeta;
+    } catch {
+      return { ok: false, status: 404, error: `session not found: ${parentId}` };
+    }
+    if (meta.status !== "running") {
+      return { ok: false, status: 409, error: "session is not running" };
+    }
+    const c = completedTurnCutoff(meta);
+    const stream = await carriedStreamForTurns(parentId, c);
+    return { ok: true, meta, cutoff: c, carriedStream: stream };
+  });
+
+  if (!snapshot.ok) {
+    return NextResponse.json({ error: snapshot.error }, { status: snapshot.status });
   }
 
-  if (parentMeta.status !== "running") {
-    return NextResponse.json({ error: "session is not running" }, { status: 409 });
-  }
-
-  const cutoff = completedTurnCutoff(parentMeta);
+  const { meta: parentMeta, cutoff, carriedStream } = snapshot;
   const carriedTurns = parentMeta.turns.slice(0, cutoff);
   const continuationId = randomUUID();
   const continuationDir = path.join(sessionsRoot(), continuationId);
@@ -83,8 +99,9 @@ export async function POST(
     continuationMeta.plan_mode = parentMeta.plan_mode;
   }
 
-  const carriedStream = await carriedStreamForTurns(parentId, cutoff);
   await fs.mkdir(continuationDir, { recursive: true });
+  // The continuation has its own session id, so its meta.json doesn't share
+  // a writer with the parent — no lock needed for these writes themselves.
   await fs.writeFile(
     path.join(continuationDir, "meta.json"),
     JSON.stringify(continuationMeta, null, 2),
