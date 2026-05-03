@@ -290,6 +290,113 @@ build_codex_collab_args() {
   [[ -n "$cwd" ]] && RUN_ARGS+=(--cwd "$cwd")
 }
 
+# ─── Plugin MCP config helper ────────────────────────────────────────────────
+# Builds a plugin-MCP config JSON for Claude Code (so plugin MCP servers are
+# injected into the print-mode turn) and appends `--mcp-config <path>` to
+# RUN_ARGS. No-op when STRICT_MCP=1, when the CLI isn't claude-*, or when no
+# plugins are installed. Used by run-turn.sh, run-job.sh, and run-slice.sh.
+#
+# Args:
+#   $1 cli              - cli id (only "claude-*" actually emits plugin MCPs)
+#   $2 output_path      - where to write the generated plugin-mcp-config.json
+#   $3 stderr_log       - file to capture builder stderr (optional, "" to skip)
+#
+# Sets PLUGIN_MCP_CONFIG_PATH in the caller's scope for later reuse.
+append_plugin_mcp_config_arg() {
+  local cli="$1"
+  local output_path="$2"
+  local stderr_log="${3:-}"
+  PLUGIN_MCP_CONFIG_PATH=""
+
+  [[ "$cli" == claude-* ]] || return 0
+  [[ "${STRICT_MCP:-}" != "1" ]] || return 0
+
+  if [[ -n "$stderr_log" ]]; then
+    PLUGIN_MCP_CONFIG_PATH="$(
+      node "$AUTOMATIONS_ROOT/bin/lib/build-plugin-mcp-config.mjs" \
+        "$output_path" \
+        2>> "$stderr_log" || true
+    )"
+  else
+    PLUGIN_MCP_CONFIG_PATH="$(
+      node "$AUTOMATIONS_ROOT/bin/lib/build-plugin-mcp-config.mjs" \
+        "$output_path" \
+        2>/dev/null || true
+    )"
+  fi
+
+  if [[ -n "$PLUGIN_MCP_CONFIG_PATH" && -f "$PLUGIN_MCP_CONFIG_PATH" ]]; then
+    prefer_plugin_mcp_servers "$PLUGIN_MCP_CONFIG_PATH"
+    RUN_ARGS+=(--mcp-config "$PLUGIN_MCP_CONFIG_PATH")
+  fi
+}
+
+# ─── Combined MCP config helper (run-turn.sh case) ───────────────────────────
+# Like append_plugin_mcp_config_arg but also threads in a caller-supplied
+# MCP_CONFIG_PATH (e.g. an explicit override from the dashboard). Emits a
+# single combined `--mcp-config <path1> <path2>` so Claude Code merges them
+# in order. No-op for non-claude engines.
+#
+# Args:
+#   $1 engine           - "claude" | "codex" (only "claude" generates args)
+#   $2 plugin_output    - where to write the generated plugin-mcp-config.json
+#                          (skipped if STRICT_MCP=1)
+#   $3 stderr_log       - file to capture builder stderr (optional, "" to skip)
+#   $4 explicit_path    - optional pre-existing MCP config path to include
+#                          (e.g. $MCP_CONFIG_PATH from the caller's env)
+#
+# Sets PLUGIN_MCP_CONFIG_PATH in the caller's scope.
+append_combined_mcp_config_arg() {
+  local engine="$1"
+  local plugin_output="$2"
+  local stderr_log="${3:-}"
+  local explicit_path="${4:-}"
+  PLUGIN_MCP_CONFIG_PATH=""
+
+  [[ "$engine" == "claude" ]] || return 0
+
+  if [[ "${STRICT_MCP:-}" != "1" ]]; then
+    if [[ -n "$stderr_log" ]]; then
+      PLUGIN_MCP_CONFIG_PATH="$(
+        node "$AUTOMATIONS_ROOT/bin/lib/build-plugin-mcp-config.mjs" \
+          "$plugin_output" \
+          2>> "$stderr_log" || true
+      )"
+    else
+      PLUGIN_MCP_CONFIG_PATH="$(
+        node "$AUTOMATIONS_ROOT/bin/lib/build-plugin-mcp-config.mjs" \
+          "$plugin_output" \
+          2>/dev/null || true
+      )"
+    fi
+  fi
+
+  local -a paths=()
+  if [[ -n "$explicit_path" && -f "$explicit_path" ]]; then
+    paths+=("$explicit_path")
+  fi
+  if [[ -n "$PLUGIN_MCP_CONFIG_PATH" && -f "$PLUGIN_MCP_CONFIG_PATH" ]]; then
+    prefer_plugin_mcp_servers "$PLUGIN_MCP_CONFIG_PATH"
+    paths+=("$PLUGIN_MCP_CONFIG_PATH")
+  fi
+  if [[ ${#paths[@]} -gt 0 ]]; then
+    RUN_ARGS+=(--mcp-config "${paths[@]}")
+  fi
+}
+
+# ─── Claude-local settings helper ────────────────────────────────────────────
+# When CLAUDE_LOCAL_SETTINGS is set (a JSON blob from the dashboard), write
+# it to a tempfile and append `--settings <tempfile>` to RUN_ARGS. The temp
+# path is captured in _settings_tmp so the caller's exit trap can clean up.
+# No-op when CLAUDE_LOCAL_SETTINGS is empty.
+append_claude_local_settings_arg() {
+  if [[ -n "${CLAUDE_LOCAL_SETTINGS:-}" ]]; then
+    _settings_tmp="$(mktemp -t claude-local-settings).json"
+    printf '%s' "$CLAUDE_LOCAL_SETTINGS" > "$_settings_tmp"
+    RUN_ARGS+=(--settings "$_settings_tmp")
+  fi
+}
+
 # ─── Watchdog-run a CLI ──────────────────────────────────────────────────────
 # Runs the CLI configured in RUN_CMD + RUN_ARGS (set by build_cli_args) as the
 # leader of a fresh process group via bin/lib/pgid_shim.py, so the abort route

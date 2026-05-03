@@ -89,24 +89,8 @@ fi
 # Build CLI-specific args (populates RUN_ARGS + RUN_CMD)
 build_cli_args "${CLI:-claude-bedrock}" "$MODEL" "$ALLOWED_TOOLS" "" "run" "$REASONING_EFFORT"
 
-if [[ "$CLI" == claude-* && "${STRICT_MCP:-}" != "1" ]]; then
-  PLUGIN_MCP_CONFIG_PATH="$(
-    node "$AUTOMATIONS_ROOT/bin/lib/build-plugin-mcp-config.mjs" \
-      "$RUN_DIR/plugin-mcp-config.json" \
-      2>> "$RUN_DIR/stderr.log" || true
-  )"
-  if [[ -n "$PLUGIN_MCP_CONFIG_PATH" && -f "$PLUGIN_MCP_CONFIG_PATH" ]]; then
-    prefer_plugin_mcp_servers "$PLUGIN_MCP_CONFIG_PATH"
-    RUN_ARGS+=(--mcp-config "$PLUGIN_MCP_CONFIG_PATH")
-  fi
-fi
-
-# Inject --settings override for claude-local jobs (write to temp file to avoid quoting issues)
-if [[ -n "${CLAUDE_LOCAL_SETTINGS:-}" ]]; then
-  _settings_tmp="$(mktemp -t claude-local-settings).json"
-  printf '%s' "$CLAUDE_LOCAL_SETTINGS" > "$_settings_tmp"
-  RUN_ARGS+=(--settings "$_settings_tmp")
-fi
+append_plugin_mcp_config_arg "$CLI" "$RUN_DIR/plugin-mcp-config.json" "$RUN_DIR/stderr.log"
+append_claude_local_settings_arg
 
 # Run the CLI with watchdog-enforced timeout (sets EXIT_CODE)
 run_with_watchdog "$TIMEOUT_SECONDS" "$RUN_DIR/stream.jsonl" "$RUN_DIR/stderr.log" "$PROMPT"

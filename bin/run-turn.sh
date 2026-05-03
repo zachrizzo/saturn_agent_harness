@@ -655,37 +655,15 @@ fi
 
 # Claude Code print-mode currently reports plugin MCP servers in `claude mcp
 # list`, but does not inject them into the turn unless they are passed as MCP
-# config under their plugin-auth namespace (`plugin:<plugin>:<server>`).
-if [[ "$ENGINE" == "claude" && "${STRICT_MCP:-}" != "1" ]]; then
-  PLUGIN_MCP_CONFIG_PATH="${PLUGIN_MCP_CONFIG_PATH:-}"
-  if [[ -z "$PLUGIN_MCP_CONFIG_PATH" ]]; then
-    PLUGIN_MCP_CONFIG_PATH="$(
-      node "$AUTOMATIONS_ROOT/bin/lib/build-plugin-mcp-config.mjs" \
-        "$SESSION_DIR/plugin-mcp-config.json" \
-        2>> "$STDERR_FILE" || true
-    )"
-  fi
-fi
+# config under their plugin-auth namespace (`plugin:<plugin>:<server>`). The
+# helper also handles the optional caller-supplied MCP_CONFIG_PATH override
+# so we emit a single `--mcp-config <explicit> <plugin>` invocation.
+append_combined_mcp_config_arg "$ENGINE" "$SESSION_DIR/plugin-mcp-config.json" "$STDERR_FILE" "${MCP_CONFIG_PATH:-}"
 
-MCP_CONFIG_ARGS=()
-if [[ -n "${MCP_CONFIG_PATH:-}" && -f "$MCP_CONFIG_PATH" && "$ENGINE" == "claude" ]]; then
-  MCP_CONFIG_ARGS+=("$MCP_CONFIG_PATH")
-fi
-if [[ -n "${PLUGIN_MCP_CONFIG_PATH:-}" && -f "$PLUGIN_MCP_CONFIG_PATH" && "$ENGINE" == "claude" ]]; then
-  prefer_plugin_mcp_servers "$PLUGIN_MCP_CONFIG_PATH"
-  MCP_CONFIG_ARGS+=("$PLUGIN_MCP_CONFIG_PATH")
-fi
-if [[ ${#MCP_CONFIG_ARGS[@]} -gt 0 ]]; then
-  RUN_ARGS+=(--mcp-config "${MCP_CONFIG_ARGS[@]}")
-fi
-
-# For claude-local sessions, write settings to a temp file to avoid shell quoting issues
-if [[ -n "${CLAUDE_LOCAL_SETTINGS:-}" ]]; then
-  _settings_tmp=""
-  _settings_tmp="$(mktemp -t claude-local-settings).json"
-  printf '%s' "$CLAUDE_LOCAL_SETTINGS" > "$_settings_tmp"
-  RUN_ARGS+=(--settings "$_settings_tmp")
-fi
+# For claude-local sessions, append --settings <tempfile> if the dashboard
+# passed CLAUDE_LOCAL_SETTINGS. Helper lives in cli-dispatch.sh so all CLI
+# arg construction stays in one place.
+append_claude_local_settings_arg
 
 # Stream events live into STREAM_FILE (for SSE) and simultaneously capture to TURN_FILE
 # so we can do post-processing (extract session id, final text) without re-reading the stream.

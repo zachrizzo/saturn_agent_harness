@@ -84,17 +84,7 @@ fi
 # ─── Build CLI args (empty session_id, is_resume=no — slices are always fresh)
 build_cli_args "$SLICE_CLI" "$SLICE_MODEL" "$SLICE_ALLOWED_TOOLS" "" "no"
 
-if [[ "$SLICE_CLI" == claude-* && "${STRICT_MCP:-}" != "1" ]]; then
-  PLUGIN_MCP_CONFIG_PATH="$(
-    node "$AUTOMATIONS_ROOT/bin/lib/build-plugin-mcp-config.mjs" \
-      "$SLICE_DIR/plugin-mcp-config.json" \
-      2>> "$STDERR_FILE" || true
-  )"
-  if [[ -n "$PLUGIN_MCP_CONFIG_PATH" && -f "$PLUGIN_MCP_CONFIG_PATH" ]]; then
-    prefer_plugin_mcp_servers "$PLUGIN_MCP_CONFIG_PATH"
-    RUN_ARGS+=(--mcp-config "$PLUGIN_MCP_CONFIG_PATH")
-  fi
-fi
+append_plugin_mcp_config_arg "$SLICE_CLI" "$SLICE_DIR/plugin-mcp-config.json" "$STDERR_FILE"
 
 # ─── Run with watchdog ────────────────────────────────────────────────────────
 # macOS BSD `date` doesn't support %N, so use python3 for millisecond precision.
