@@ -1047,6 +1047,85 @@ function PlanProposal({
   );
 }
 
+function BedrockAuthCallout({ sourceText }: { sourceText: string }) {
+  const [launching, setLaunching] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const detail = bedrockAuthCalloutDetail(sourceText);
+
+  const launch = async () => {
+    setLaunching(true);
+    setStatus(null);
+    try {
+      const res = await fetch("/api/bedrock/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json().catch(() => null) as unknown;
+      if (!res.ok) throw new Error(errorMessageFromPayload(data) ?? "failed to open AWS SSO login");
+      const ready = asRecord(asRecord(data).status).ready === true;
+      setStatus(ready ? "Bedrock is authenticated. Retry your message." : "AWS SSO login opened. Complete it, then retry your message.");
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "failed to open AWS SSO login");
+    } finally {
+      setLaunching(false);
+    }
+  };
+
+  const check = async () => {
+    setChecking(true);
+    setStatus(null);
+    try {
+      const res = await fetch("/api/bedrock/auth");
+      const data = await res.json().catch(() => null) as unknown;
+      if (!res.ok) throw new Error(errorMessageFromPayload(data) ?? "failed to check Bedrock auth");
+      const authStatus = asRecord(asRecord(data).status);
+      const ready = authStatus.ready === true;
+      const profile = typeof authStatus.profile === "string" ? authStatus.profile : "the configured AWS profile";
+      const region = typeof authStatus.region === "string" ? authStatus.region : "";
+      setStatus(ready
+        ? `Bedrock is authenticated for ${profile}${region ? ` in ${region}` : ""}. Retry your message.`
+        : `Bedrock still needs an AWS SSO session for ${profile}${region ? ` in ${region}` : ""}.`);
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "failed to check Bedrock auth");
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  return (
+    <div
+      className="rounded-xl border px-3 py-3 text-[12px]"
+      style={{
+        borderColor: "color-mix(in srgb, var(--warning, #f59e0b) 35%, var(--border))",
+        background: "color-mix(in srgb, var(--warning, #f59e0b) 9%, var(--bg-elev))",
+      }}
+    >
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-bg-subtle text-accent">
+          <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4" />
+          </svg>
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="font-semibold text-fg">Bedrock auth required</div>
+          <div className="mt-0.5 text-muted leading-snug">{detail}</div>
+          {status && <div className="mt-1 text-subtle" aria-live="polite">{status}</div>}
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <Button type="button" size="sm" variant="primary" onClick={launch} disabled={launching}>
+              {launching ? "Opening..." : "Sign in to AWS"}
+            </Button>
+            <Button type="button" size="sm" variant="ghost" onClick={check} disabled={checking}>
+              {checking ? "Checking..." : "Check again"}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AssistantBlock({
   events,
   streaming,
@@ -1072,6 +1151,15 @@ function AssistantBlock({
     .filter((ev) => ev.kind === "assistant_text" || ev.kind === "plan_text")
     .map((ev) => (ev as Extract<StreamEvent, { kind: "assistant_text" | "plan_text" }>).text)
     .join("\n\n");
+  const bedrockAuthSourceText = displayEvents
+    .map((ev) => {
+      if (ev.kind === "assistant_text" || ev.kind === "plan_text") return ev.text;
+      if (ev.kind === "result" && !ev.success) return extractSaturnFailure(ev.raw)?.stderrTail ?? "";
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n\n");
+  const showBedrockAuthCallout = !streaming && isBedrockAuthFailureText(bedrockAuthSourceText);
 
   // Group sub-agent child events by their parentToolUseId
   const subEventsByParent = new Map<string, StreamEvent[]>();
@@ -1267,6 +1355,9 @@ function AssistantBlock({
     }
   });
   flushToolRow();
+  if (showBedrockAuthCallout) {
+    rendered.push(<BedrockAuthCallout key="bedrock-auth" sourceText={bedrockAuthSourceText} />);
+  }
 
   if (rendered.length === 0 && streaming) {
     return (

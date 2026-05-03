@@ -43,6 +43,14 @@ _cleanup_on_exit() {
         saturn_meta_lock_release "$_meta_lock"
       fi
     fi
+    # Surface the bash-level abort to the dashboard via stream.jsonl so the
+    # SSE relay forwards a terminator and MessageBubble can render the phase
+    # + stderr tail. saturn_emit_synthetic_failure is a no-op when the
+    # stream already has a terminator, so it's safe to call unconditionally
+    # alongside the post-CLI emit further down.
+    if declare -F saturn_emit_synthetic_failure >/dev/null 2>&1; then
+      saturn_emit_synthetic_failure "shell" "$code"
+    fi
   fi
   rm -f "${LOCK_FILE:-}" 2>/dev/null || true
   rm -f "${_settings_tmp:-}" 2>/dev/null || true
@@ -70,6 +78,50 @@ saturn_meta_update() {
   local rc=$?
   saturn_meta_lock_release "$lock_file"
   return "$rc"
+}
+
+# saturn_emit_synthetic_failure <phase> <exit_code>
+# Append a synthetic terminator to $STREAM_FILE so the dashboard can render
+# explicit failure context instead of an empty/unterminated turn. Skipped
+# when the stream already has a terminating event.
+#
+# Used by both the post-CLI cleanup block AND the EXIT trap below — the
+# former covers CLI crashes, the latter covers bash errors that abort the
+# script before the CLI section is reached.
+saturn_emit_synthetic_failure() {
+  local phase="${1:-shell}"
+  local exit_code="${2:-1}"
+  local stream="${STREAM_FILE:-}"
+  local turn_id="${TURN_ID:-}"
+  local stderr_file="${STDERR_FILE:-}"
+  [[ -n "$stream" ]] || return 0
+
+  if [[ -f "$stream" ]] && tail -n 200 "$stream" 2>/dev/null | \
+      grep -Eq '"type":[[:space:]]*"(result|turn\.completed|turn\.failed|step_finish|saturn\.turn_aborted)"'; then
+    return 0
+  fi
+
+  local stderr_tail=""
+  if [[ -n "$stderr_file" && -f "$stderr_file" ]]; then
+    stderr_tail="$(tail -c 2048 "$stderr_file" 2>/dev/null || true)"
+  fi
+
+  jq -nc \
+    --arg turn_id "$turn_id" \
+    --argjson exit_code "$exit_code" \
+    --arg phase "$phase" \
+    --arg stderr_tail "$stderr_tail" \
+    '{
+      type: "result",
+      subtype: "error",
+      is_error: true,
+      saturn_failure: {
+        phase: $phase,
+        exit_code: $exit_code,
+        stderr_tail: (if $stderr_tail == "" then null else $stderr_tail end)
+      },
+      turn_id: (if $turn_id == "" then null else $turn_id end)
+    }' >> "$stream" 2>/dev/null || true
 }
 
 if [[ $# -ne 1 ]]; then
@@ -788,38 +840,10 @@ STATUS="success"
 
 # Surface CLI failures as a synthetic `result` event so the dashboard renders
 # an explicit error in the chat instead of leaving the turn with no
-# terminating event. Skipped when the CLI already produced its own
-# turn-end marker (result/turn.completed/turn.failed/step_finish).
+# terminating event. The helper is a no-op when the CLI already produced its
+# own turn-end marker (result/turn.completed/turn.failed/step_finish/...).
 if [[ "$STATUS" == "failed" ]]; then
-  has_terminator=0
-  if [[ -f "$STREAM_FILE" ]]; then
-    if tail -n 200 "$STREAM_FILE" 2>/dev/null | \
-        grep -Eq '"type":[[:space:]]*"(result|turn\.completed|turn\.failed|step_finish|saturn\.turn_aborted)"'; then
-      has_terminator=1
-    fi
-  fi
-  if [[ "$has_terminator" -eq 0 ]]; then
-    stderr_tail=""
-    if [[ -f "$STDERR_FILE" ]]; then
-      stderr_tail="$(tail -c 2048 "$STDERR_FILE" 2>/dev/null || true)"
-    fi
-    jq -nc \
-      --arg turn_id "$TURN_ID" \
-      --argjson exit_code "$EXIT_CODE" \
-      --arg phase "cli" \
-      --arg stderr_tail "$stderr_tail" \
-      '{
-        type: "result",
-        subtype: "error",
-        is_error: true,
-        saturn_failure: {
-          phase: $phase,
-          exit_code: $exit_code,
-          stderr_tail: (if $stderr_tail == "" then null else $stderr_tail end)
-        },
-        turn_id: $turn_id
-      }' >> "$STREAM_FILE"
-  fi
+  saturn_emit_synthetic_failure "cli" "$EXIT_CODE"
 fi
 
 saturn_meta_update \
