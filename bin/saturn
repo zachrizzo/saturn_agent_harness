@@ -27,7 +27,7 @@ Resources:
   tasks   list|get|create|update|claim|release
   agents  list|get|create|update
   slices  list|get|create|update
-  jobs    list|get|create|update
+  jobs    list|get|create|update|delete
   memory  list|get|create|update|delete|graph|recall|capture|embeddings-status|embeddings-rebuild|curate
   sessions/chats list|get
 
@@ -49,6 +49,7 @@ Examples:
   saturn agents create --file agent.json
   saturn slices update repo-scan --json '{"description":"Repo scanner"}'
   saturn jobs create --json '{"name":"daily-summary","cron":"0 9 * * *","prompt":"Summarize"}'
+  saturn jobs delete daily-summary
   saturn memory list --q "auth decision" --scope project --cwd "$PWD"
   saturn memory create --json '{"title":"Retry policy","type":"Decisions","scope":"project","cwd":"/path/to/project","content":"Use [[Backoff]] for transient failures."}'
   saturn memory graph --scope global
@@ -260,8 +261,8 @@ async function main() {
     method = resource === "tasks" || resource === "memory" ? "PATCH" : "PUT";
     path = resourcePath(resource, target);
     body = await payloadFrom(flags, true);
-  } else if (resource === "memory" && action === "delete") {
-    if (!target) fail("memory delete requires a note id");
+  } else if ((resource === "memory" || resource === "jobs") && action === "delete") {
+    if (!target) fail(`${resource} delete requires an id or name`);
     method = "DELETE";
     path = resourcePath(resource, target);
   } else if (resource === "memory" && action === "graph") {

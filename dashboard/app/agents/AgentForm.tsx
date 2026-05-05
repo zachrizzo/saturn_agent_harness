@@ -36,7 +36,6 @@ export function AgentForm({ existing }: { existing?: Agent } = {}) {
   const [cwd, setCwd] = useState(existing?.cwd ?? "");
   const [tags, setTags] = useState((existing?.tags ?? []).join(", "));
   const [cron, setCron] = useState(existing?.cron ?? "");
-  const [timeout, setTimeoutVal] = useState(existing?.timeout_seconds?.toString() ?? "1800");
   const [allowedTools, setAllowedTools] = useState((existing?.allowedTools ?? []).join(", "));
 
   // Orchestrator fields
@@ -55,7 +54,6 @@ export function AgentForm({ existing }: { existing?: Agent } = {}) {
   );
   const [budget, setBudget] = useState<OrchestratorBudget>(existing?.budget ?? {
     max_total_tokens: 200000,
-    max_wallclock_seconds: 600,
     max_slice_calls: 15,
     max_recursion_depth: 3,
   });
@@ -139,14 +137,17 @@ export function AgentForm({ existing }: { existing?: Agent } = {}) {
         allowedTools: allowedTools.split(",").map((s) => s.trim()).filter(Boolean),
         tags: tags.split(",").map((s) => s.trim()).filter(Boolean),
         cron: cron.trim() || null,
-        timeout_seconds: parseInt(timeout, 10) || 1800,
         kind,
         ...(kind === "orchestrator" ? {
           slices_available: slicesAll ? "*" : selectedSliceIdsForSave,
           slice_graph: sliceGraph,
           can_create_custom_slices: canCreateCustomSlices,
           allowed_mutations: Array.from(allowedMutations),
-          budget,
+          budget: {
+            max_total_tokens: budget.max_total_tokens,
+            max_slice_calls: budget.max_slice_calls,
+            max_recursion_depth: budget.max_recursion_depth,
+          },
           on_budget_exceeded: onBudgetExceeded,
           on_slice_failure: onSliceFailure,
         } : {}),
@@ -185,20 +186,6 @@ export function AgentForm({ existing }: { existing?: Agent } = {}) {
       )}
 
       <div className="agent-form-layout">
-        <aside className="agent-form-rail" aria-label="Agent setup flow">
-          <div className="agent-form-rail-title">Agent setup</div>
-          <a href="#agent-basics">1. Basics</a>
-          <a href="#agent-model">2. Model</a>
-          <a href="#agent-prompt">3. Prompt</a>
-          {kind === "orchestrator" && <a href="#agent-slices">4. Slices</a>}
-          {kind === "orchestrator" && <a href="#agent-limits">5. Limits</a>}
-          <a href="#agent-runtime">{kind === "orchestrator" ? "6" : "4"}. Runtime</a>
-          <div className="agent-form-rail-summary">
-            <span>{kind === "orchestrator" ? "Orchestrator" : "Chat agent"}</span>
-            <strong>{name.trim() || id.trim() || "Untitled agent"}</strong>
-          </div>
-        </aside>
-
         <div className="agent-form-content">
           <section id="agent-basics" className="agent-form-card">
             <SectionIntro
@@ -448,6 +435,7 @@ export function AgentForm({ existing }: { existing?: Agent } = {}) {
               <SliceWorkflowGraph
                 slices={allSlices}
                 graph={sliceGraph}
+                orchestratorName={name.trim() || id.trim() || "Orchestrator"}
                 onGraphChange={setSliceGraph}
                 selectedSlices={selectedSlices}
                 onSelectedSlicesChange={setSelectedSlices}
@@ -498,21 +486,13 @@ export function AgentForm({ existing }: { existing?: Agent } = {}) {
             />
             <div className="rounded-lg border border-border bg-bg-subtle p-4 space-y-3">
             <div className="text-[12px] font-semibold text-fg">Budget</div>
-            <div className="grid grid-cols-1 lg:grid-cols-4 gap-3">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
               <Field label="Max total tokens">
                 <Input
                   type="number"
                   value={budget.max_total_tokens?.toString() ?? ""}
                   onChange={(e) => setBudget((b) => ({ ...b, max_total_tokens: e.target.value ? parseInt(e.target.value, 10) : undefined }))}
                   placeholder="200000"
-                />
-              </Field>
-              <Field label="Max wallclock (seconds)">
-                <Input
-                  type="number"
-                  value={budget.max_wallclock_seconds?.toString() ?? ""}
-                  onChange={(e) => setBudget((b) => ({ ...b, max_wallclock_seconds: e.target.value ? parseInt(e.target.value, 10) : undefined }))}
-                  placeholder="600"
                 />
               </Field>
               <Field label="Max slice calls">
@@ -570,16 +550,9 @@ export function AgentForm({ existing }: { existing?: Agent } = {}) {
               description="Optional working directory, tool allowlist, tags, and schedule settings."
             />
 
-            <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_14rem] gap-3">
+            <div className="grid grid-cols-1 gap-3">
               <Field label="Working directory (optional)">
                 <DirPicker value={cwd} onChange={setCwd} />
-              </Field>
-              <Field label="Timeout seconds">
-                <Input
-                  type="number"
-                  value={timeout}
-                  onChange={(e) => setTimeoutVal(e.target.value)}
-                />
               </Field>
             </div>
 
@@ -647,6 +620,12 @@ const NODE_WIDTH = 220;
 const NODE_HEIGHT = 128;
 const NODE_PORT_X = NODE_WIDTH / 2;
 const NODE_VERTICAL_GAP = 52;
+const NODE_HORIZONTAL_GAP = 36;
+const ORCHESTRATOR_NODE_ID = "__orchestrator__";
+const ORCHESTRATOR_NODE_WIDTH = 260;
+const ORCHESTRATOR_NODE_HEIGHT = 92;
+const ORCHESTRATOR_NODE_Y = 28;
+const NODE_START_Y = ORCHESTRATOR_NODE_Y + ORCHESTRATOR_NODE_HEIGHT + 80;
 const CANVAS_SURFACE_PADDING = 120;
 
 type PaletteDragState = {
@@ -656,6 +635,16 @@ type PaletteDragState = {
   x: number;
   y: number;
   active: boolean;
+};
+
+type VisualWorkflowNode = {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  label?: string;
+  slice_id?: string;
 };
 
 function clamp(n: number, min: number, max: number): number {
@@ -715,13 +704,55 @@ function topDownNodeOrder(
 function topDownLayoutNodes(
   nodes: SliceGraph["nodes"],
   edges: SliceGraph["edges"],
-  laneX: number,
+  canvasWidth: number,
 ): SliceGraph["nodes"] {
-  return topDownNodeOrder(nodes, edges).map((node, index) => ({
-    ...node,
-    x: laneX,
-    y: 32 + index * (NODE_HEIGHT + NODE_VERTICAL_GAP),
-  }));
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const realEdges = edges.filter((edge) => byId.has(edge.from) && byId.has(edge.to));
+  const outgoing = new Map(nodes.map((node) => [node.id, [] as string[]]));
+  for (const edge of realEdges) {
+    outgoing.get(edge.from)?.push(edge.to);
+  }
+
+  const depthByNode = new Map(nodes.map((node) => [node.id, 0]));
+  for (const node of topDownNodeOrder(nodes, realEdges)) {
+    const nextDepth = (depthByNode.get(node.id) ?? 0) + 1;
+    for (const nextId of outgoing.get(node.id) ?? []) {
+      depthByNode.set(nextId, Math.max(depthByNode.get(nextId) ?? 0, nextDepth));
+    }
+  }
+
+  const layers = new Map<number, SliceGraph["nodes"]>();
+  for (const node of nodes) {
+    const depth = depthByNode.get(node.id) ?? 0;
+    layers.set(depth, [...(layers.get(depth) ?? []), node]);
+  }
+
+  const largestLayerSize = Math.max(1, ...[...layers.values()].map((layerNodes) => layerNodes.length));
+  const minimumLayoutWidth =
+    largestLayerSize * NODE_WIDTH + Math.max(0, largestLayerSize - 1) * NODE_HORIZONTAL_GAP + 56;
+  const layoutWidth = Math.max(canvasWidth, minimumLayoutWidth);
+  const arranged: SliceGraph["nodes"] = [];
+  let rowIndex = 0;
+
+  [...layers.entries()]
+    .sort(([a], [b]) => a - b)
+    .forEach(([, layerNodes]) => {
+      const orderedLayer = [...layerNodes].sort((a, b) => (
+        a.y - b.y || a.x - b.x || a.id.localeCompare(b.id)
+      ));
+      const rowWidth = orderedLayer.length * NODE_WIDTH + Math.max(0, orderedLayer.length - 1) * NODE_HORIZONTAL_GAP;
+      const startX = Math.max(28, (layoutWidth - rowWidth) / 2);
+      orderedLayer.forEach((node, rowNodeIndex) => {
+        arranged.push({
+          ...node,
+          x: startX + rowNodeIndex * (NODE_WIDTH + NODE_HORIZONTAL_GAP),
+          y: NODE_START_Y + rowIndex * (NODE_HEIGHT + NODE_VERTICAL_GAP),
+        });
+      });
+      rowIndex += 1;
+    });
+
+  return arranged;
 }
 
 function wouldCreateGraphCycle(
@@ -751,12 +782,14 @@ function wouldCreateGraphCycle(
 function SliceWorkflowGraph({
   slices,
   graph,
+  orchestratorName,
   onGraphChange,
   selectedSlices,
   onSelectedSlicesChange,
 }: {
   slices: Slice[];
   graph: SliceGraph;
+  orchestratorName: string;
   onGraphChange: React.Dispatch<React.SetStateAction<SliceGraph>>;
   selectedSlices: Set<string>;
   onSelectedSlicesChange: React.Dispatch<React.SetStateAction<Set<string>>>;
@@ -771,6 +804,7 @@ function SliceWorkflowGraph({
   const [paletteDrag, setPaletteDrag] = useState<PaletteDragState | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(graph.nodes[0]?.id ?? null);
   const [fullscreen, setFullscreen] = useState(false);
+  const [paletteCollapsed, setPaletteCollapsed] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
   const [canvasViewport, setCanvasViewport] = useState({ width: 720, height: 520 });
   const [viewOffset, setViewOffset] = useState({ x: 0, y: 0 });
@@ -781,14 +815,38 @@ function SliceWorkflowGraph({
     () => graph.nodes.find((node) => node.id === selectedNodeId) ?? null,
     [graph.nodes, selectedNodeId],
   );
+  const orchestratorNode = useMemo(() => {
+    const nodeMinX = graph.nodes.length > 0 ? Math.min(...graph.nodes.map((node) => node.x)) : 28;
+    const nodeMaxX = graph.nodes.length > 0 ? Math.max(...graph.nodes.map((node) => node.x + NODE_WIDTH)) : canvasViewport.width;
+    const graphCenter = graph.nodes.length > 0
+      ? (nodeMinX + nodeMaxX) / 2
+      : Math.max(canvasViewport.width / 2 - viewOffset.x, NODE_WIDTH / 2 + 28);
+    const surfaceWidth = Math.max(canvasViewport.width, nodeMaxX + CANVAS_SURFACE_PADDING);
+    const maxX = Math.max(28, surfaceWidth - ORCHESTRATOR_NODE_WIDTH - 28);
+    return {
+      id: ORCHESTRATOR_NODE_ID,
+      x: clamp(graphCenter - ORCHESTRATOR_NODE_WIDTH / 2, 28, maxX),
+      y: ORCHESTRATOR_NODE_Y,
+      width: ORCHESTRATOR_NODE_WIDTH,
+      height: ORCHESTRATOR_NODE_HEIGHT,
+      label: orchestratorName,
+    };
+  }, [canvasViewport.width, graph.nodes, orchestratorName, viewOffset.x]);
+
   const canvasSurfaceSize = useMemo(() => {
-    const maxNodeX = Math.max(0, ...graph.nodes.map((node) => node.x + NODE_WIDTH));
-    const maxNodeY = Math.max(0, ...graph.nodes.map((node) => node.y + NODE_HEIGHT));
+    const maxNodeX = Math.max(
+      orchestratorNode.x + ORCHESTRATOR_NODE_WIDTH,
+      ...graph.nodes.map((node) => node.x + NODE_WIDTH),
+    );
+    const maxNodeY = Math.max(
+      orchestratorNode.y + ORCHESTRATOR_NODE_HEIGHT,
+      ...graph.nodes.map((node) => node.y + NODE_HEIGHT),
+    );
     return {
       width: Math.max(canvasViewport.width, maxNodeX + CANVAS_SURFACE_PADDING),
       height: Math.max(canvasViewport.height, maxNodeY + CANVAS_SURFACE_PADDING),
     };
-  }, [canvasViewport.height, canvasViewport.width, graph.nodes]);
+  }, [canvasViewport.height, canvasViewport.width, graph.nodes, orchestratorNode]);
 
   useEffect(() => {
     if (!selectedNodeId || graph.nodes.some((node) => node.id === selectedNodeId)) return;
@@ -840,22 +898,25 @@ function SliceWorkflowGraph({
     const rangeX = Math.max(...xs) - Math.min(...xs);
     const rangeY = Math.max(...ys) - Math.min(...ys);
     const looksHorizontal = rangeX > NODE_WIDTH * 0.85 && rangeY < NODE_HEIGHT * 0.8;
-    if (!looksHorizontal) return;
+    const realEdgeCount = graph.edges.filter((edge) =>
+      graph.nodes.some((node) => node.id === edge.from) &&
+      graph.nodes.some((node) => node.id === edge.to)
+    ).length;
+    const looksStackedParallel = realEdgeCount === 0 && rangeX < NODE_WIDTH * 0.75 && rangeY > NODE_HEIGHT * 0.8;
+    if (!looksHorizontal && !looksStackedParallel) return;
     migratedTopDownLayoutRef.current = true;
     const canvasWidth = canvasRef.current?.clientWidth ?? canvasViewport.width;
-    const maxX = Math.max(28, canvasSurfaceSize.width - NODE_WIDTH - 28);
-    const laneX = clamp((canvasWidth - NODE_WIDTH) / 2, 28, maxX);
     onGraphChange((current) => ({
       ...current,
-      nodes: topDownLayoutNodes(current.nodes, current.edges, laneX),
+      nodes: topDownLayoutNodes(current.nodes, current.edges, canvasWidth),
     }));
-  }, [canvasSurfaceSize.width, canvasViewport.width, graph.nodes, onGraphChange]);
+  }, [canvasViewport.width, graph.edges, graph.nodes, onGraphChange]);
 
   const addNode = (sliceId: string, x?: number, y?: number) => {
     const slice = sliceById.get(sliceId);
     if (!slice) return;
     const fallbackX = getDefaultNodeX();
-    const fallbackY = 32 + graph.nodes.length * (NODE_HEIGHT + NODE_VERTICAL_GAP);
+    const fallbackY = NODE_START_Y + graph.nodes.length * (NODE_HEIGHT + NODE_VERTICAL_GAP);
     const desiredX = x ?? fallbackX;
     const desiredY = y ?? fallbackY;
     const maxX = Math.max(12, desiredX, canvasSurfaceSize.width - NODE_WIDTH - 12);
@@ -956,13 +1017,18 @@ function SliceWorkflowGraph({
 
   const addEdge = (fromNodeId: string, toNodeId: string) => {
     if (fromNodeId === toNodeId) return;
+    if (toNodeId === ORCHESTRATOR_NODE_ID) return;
     onGraphChange((current) => {
       const exists = current.edges.some((edge) => edge.from === fromNodeId && edge.to === toNodeId);
       if (exists) return current;
       if (wouldCreateGraphCycle(current.edges, fromNodeId, toNodeId)) return current;
+      const fromIsOrchestrator = fromNodeId === ORCHESTRATOR_NODE_ID;
+      const edgeId = fromIsOrchestrator
+        ? `edge-${ORCHESTRATOR_NODE_ID}-${toNodeId}`
+        : `edge-${fromNodeId}-${toNodeId}`;
       return {
         ...current,
-        edges: [...current.edges, { id: `edge-${fromNodeId}-${toNodeId}`, from: fromNodeId, to: toNodeId }],
+        edges: [...current.edges, { id: edgeId, from: fromNodeId, to: toNodeId }],
       };
     });
   };
@@ -1006,7 +1072,7 @@ function SliceWorkflowGraph({
     if (!point) return;
     e.preventDefault();
     e.stopPropagation();
-    setSelectedNodeId(nodeId);
+    setSelectedNodeId(nodeId === ORCHESTRATOR_NODE_ID ? null : nodeId);
     setDragging(null);
     setConnectionDrag({ fromNodeId: nodeId, ...point });
     setConnectionTarget(null);
@@ -1027,11 +1093,22 @@ function SliceWorkflowGraph({
   };
 
   const arrangeGraph = () => {
-    const laneX = getDefaultNodeX();
+    const canvasWidth = canvasRef.current?.clientWidth ?? canvasViewport.width;
+    const arrangedNodes = topDownLayoutNodes(graph.nodes, graph.edges, canvasWidth);
     onGraphChange((current) => ({
       ...current,
-      nodes: topDownLayoutNodes(current.nodes, current.edges, laneX),
+      nodes: topDownLayoutNodes(current.nodes, current.edges, canvasWidth),
     }));
+    if (arrangedNodes.length > 0) {
+      const minX = Math.min(...arrangedNodes.map((node) => node.x));
+      const maxX = Math.max(...arrangedNodes.map((node) => node.x + NODE_WIDTH));
+      setViewOffset({ x: Math.round(canvasWidth / 2 - (minX + maxX) / 2), y: 0 });
+    } else {
+      setViewOffset({ x: 0, y: 0 });
+    }
+    setSelectedNodeId(null);
+    setConnectionDrag(null);
+    setConnectionTarget(null);
   };
 
   const clearGraph = () => {
@@ -1151,10 +1228,35 @@ function SliceWorkflowGraph({
     };
   }, [canvasSurfaceSize.height, canvasSurfaceSize.width, connectionDrag, connectionTarget, dragging, graph.nodes, isPanning, viewOffset]);
 
-  const edgesWithNodes = graph.edges
+  const entryNodeIds = useMemo(() => {
+    const upstream = new Set(
+      graph.edges
+        .filter((edge) => edge.from !== ORCHESTRATOR_NODE_ID)
+        .map((edge) => edge.to),
+    );
+    return graph.nodes.filter((node) => !upstream.has(node.id)).map((node) => node.id);
+  }, [graph.edges, graph.nodes]);
+  const visualOrchestratorEdges = useMemo(() => {
+    const explicitRootEdges = graph.edges.filter((edge) => edge.from === ORCHESTRATOR_NODE_ID);
+    if (explicitRootEdges.length > 0) return explicitRootEdges;
+    return entryNodeIds.map((nodeId) => ({
+      id: `visual-edge-${ORCHESTRATOR_NODE_ID}-${nodeId}`,
+      from: ORCHESTRATOR_NODE_ID,
+      to: nodeId,
+    }));
+  }, [entryNodeIds, graph.edges]);
+  const visualNodeById = useMemo(() => {
+    const byId = new Map<string, VisualWorkflowNode>();
+    byId.set(ORCHESTRATOR_NODE_ID, orchestratorNode);
+    for (const node of graph.nodes) {
+      byId.set(node.id, { ...node, width: NODE_WIDTH, height: NODE_HEIGHT });
+    }
+    return byId;
+  }, [graph.nodes, orchestratorNode]);
+  const edgesWithNodes = [...visualOrchestratorEdges, ...graph.edges.filter((edge) => edge.from !== ORCHESTRATOR_NODE_ID)]
     .map((edge) => {
-      const from = graph.nodes.find((node) => node.id === edge.from);
-      const to = graph.nodes.find((node) => node.id === edge.to);
+      const from = visualNodeById.get(edge.from);
+      const to = visualNodeById.get(edge.to);
       if (!from || !to) return null;
       return { edge, from, to };
     })
@@ -1165,9 +1267,28 @@ function SliceWorkflowGraph({
       <div className="slice-workflow-header">
         <div className="min-w-0">
           <div className="slice-workflow-title">Slice workflow</div>
-          <div className="slice-workflow-subtitle">Drag slices onto the canvas, then connect work from top to bottom.</div>
+          <div className="slice-workflow-subtitle">Connect nodes only when one specialist depends on another; unconnected nodes run in parallel and feed final orchestration.</div>
         </div>
         <div className="slice-workflow-actions">
+          <button
+            type="button"
+            onClick={() => {
+              setPaletteCollapsed((value) => !value);
+              paletteDragRef.current = null;
+              setPaletteDrag(null);
+            }}
+            className="slice-workflow-action"
+            aria-pressed={paletteCollapsed}
+          >
+            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              {paletteCollapsed ? (
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M4 5h16M4 12h16M4 19h16" />
+              ) : (
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M8 5 4 12l4 7M20 5l-4 7 4 7" />
+              )}
+            </svg>
+            {paletteCollapsed ? "Show palette" : "Hide palette"}
+          </button>
           <button
             type="button"
             onClick={arrangeGraph}
@@ -1202,8 +1323,8 @@ function SliceWorkflowGraph({
         </div>
       </div>
 
-      <div className="slice-workflow-grid">
-        <div className="slice-workflow-palette">
+      <div className={["slice-workflow-grid", paletteCollapsed ? "palette-collapsed" : ""].join(" ")}>
+        {!paletteCollapsed && <div className="slice-workflow-palette">
           <div className="mb-2 text-[10px] uppercase tracking-wider text-subtle">Palette</div>
           <div className="slice-workflow-palette-list">
             {slices.length === 0 && (
@@ -1273,9 +1394,14 @@ function SliceWorkflowGraph({
               );
             })}
           </div>
-        </div>
+        </div>}
 
         <div className="slice-workflow-main">
+          {graph.nodes.length > 1 && graph.edges.filter((edge) => edge.from !== ORCHESTRATOR_NODE_ID).length === 0 && (
+            <div className="slice-workflow-note">
+              Parallel fan-out: the orchestrator sends the same run input to every entry slice and synthesizes terminal results after the graph completes.
+            </div>
+          )}
           <div
             ref={canvasRef}
             className={["slice-workflow-canvas", isPanning ? "panning" : ""].filter(Boolean).join(" ")}
@@ -1314,9 +1440,9 @@ function SliceWorkflowGraph({
                   </marker>
                 </defs>
                 {edgesWithNodes.map(({ edge, from, to }) => {
-                  const x1 = from.x + NODE_PORT_X;
-                  const y1 = from.y + NODE_HEIGHT;
-                  const x2 = to.x + NODE_PORT_X;
+                  const x1 = from.x + from.width / 2;
+                  const y1 = from.y + from.height;
+                  const x2 = to.x + to.width / 2;
                   const y2 = to.y;
                   return (
                     <path
@@ -1328,14 +1454,14 @@ function SliceWorkflowGraph({
                   );
                 })}
                 {connectionDrag && (() => {
-                  const from = graph.nodes.find((node) => node.id === connectionDrag.fromNodeId);
+                  const from = visualNodeById.get(connectionDrag.fromNodeId);
                   if (!from) return null;
                   const target = connectionTarget
-                    ? graph.nodes.find((node) => node.id === connectionTarget)
+                    ? visualNodeById.get(connectionTarget)
                     : null;
-                  const x1 = from.x + NODE_PORT_X;
-                  const y1 = from.y + NODE_HEIGHT;
-                  const x2 = target ? target.x + NODE_PORT_X : connectionDrag.x;
+                  const x1 = from.x + from.width / 2;
+                  const y1 = from.y + from.height;
+                  const x2 = target ? target.x + target.width / 2 : connectionDrag.x;
                   const y2 = target ? target.y : connectionDrag.y;
                   return (
                     <path
@@ -1352,6 +1478,29 @@ function SliceWorkflowGraph({
                   No slices placed
                 </div>
               )}
+
+              <div
+                className="slice-workflow-orchestrator-node absolute select-none"
+                style={{
+                  left: orchestratorNode.x,
+                  top: orchestratorNode.y,
+                  width: ORCHESTRATOR_NODE_WIDTH,
+                  height: ORCHESTRATOR_NODE_HEIGHT,
+                }}
+              >
+                <button
+                  type="button"
+                  className={[
+                    "slice-workflow-port output",
+                    connectionDrag?.fromNodeId === ORCHESTRATOR_NODE_ID ? "active" : "",
+                  ].filter(Boolean).join(" ")}
+                  aria-label="Connect from orchestrator"
+                  onPointerDown={(e) => startConnectionDrag(ORCHESTRATOR_NODE_ID, e)}
+                />
+                <div className="slice-workflow-orchestrator-eyebrow">Orchestrator</div>
+                <div className="slice-workflow-orchestrator-name">{orchestratorNode.label}</div>
+                <div className="slice-workflow-orchestrator-detail">starts graph and synthesizes terminal results</div>
+              </div>
 
               {graph.nodes.map((node) => {
                 const slice = sliceById.get(node.slice_id);
@@ -1463,17 +1612,19 @@ function SliceWorkflowGraph({
           {edgesWithNodes.length > 0 && (
             <div className="flex flex-wrap gap-2">
               {edgesWithNodes.map(({ edge, from, to }) => {
-                const fromSlice = sliceById.get(from.slice_id);
-                const toSlice = sliceById.get(to.slice_id);
+                const fromSlice = from.slice_id ? sliceById.get(from.slice_id) : null;
+                const toSlice = to.slice_id ? sliceById.get(to.slice_id) : null;
+                const fromLabel = fromSlice?.name ?? from.label ?? from.slice_id ?? "Orchestrator";
+                const toLabel = toSlice?.name ?? to.label ?? to.slice_id ?? "Node";
                 return (
                   <div key={edge.id} className="flex items-center gap-1 rounded-md border border-border bg-bg px-2 py-1 text-[11px] text-muted">
-                    <span className="max-w-[120px] truncate">{fromSlice?.name ?? from.slice_id}</span>
+                    <span className="max-w-[120px] truncate">{fromLabel}</span>
                     <span className="flex h-4 w-4 items-center justify-center text-accent" aria-hidden="true">
                       <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 5v14M7 14l5 5 5-5" />
                       </svg>
                     </span>
-                    <span className="max-w-[120px] truncate">{toSlice?.name ?? to.slice_id}</span>
+                    <span className="max-w-[120px] truncate">{toLabel}</span>
                     <button
                       type="button"
                       onClick={() => removeEdge(edge.id)}

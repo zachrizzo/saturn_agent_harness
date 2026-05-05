@@ -10,6 +10,10 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { z } from "zod/v3";
 
 import {
+  handleListSwarms,
+  handleDispatchSwarm,
+  handleListJobs,
+  handleDeleteJob,
   handleListSlices,
   handleDispatchSlice,
   handleDispatchCustomSlice,
@@ -30,8 +34,56 @@ function createServer(sessionId: string): McpServer {
   const server = new McpServer({ name: "orchestrator", version: "1.0" });
 
   server.registerTool(
+    "list_swarms",
+    { description: "List saved swarm/orchestrator agents this chat can dispatch." },
+    async () => asTextResult(await handleListSwarms(sessionId))
+  );
+
+  server.registerTool(
+    "dispatch_swarm",
+    {
+      description:
+        "Start a saved swarm/orchestrator agent as a separate Saturn chat. Returns the child chat id and URL; optionally waits briefly for completion.",
+      inputSchema: {
+        agent_id: z.string().describe("ID of the saved swarm/orchestrator agent to start"),
+        message: z.string().describe("Task prompt to send to the swarm"),
+        cwd: z.string().optional().describe("Optional working directory override. Defaults to this chat's cwd, then the swarm's saved cwd."),
+        title: z.string().optional().describe("Optional short title for the background run chip"),
+        wait_seconds: z.number().optional().describe("Optionally wait up to 60 seconds for the swarm session to finish before returning."),
+      },
+    },
+    async ({ agent_id, message, cwd, title, wait_seconds }) =>
+      asTextResult(
+        await handleDispatchSwarm(sessionId, {
+          agent_id,
+          message,
+          cwd,
+          title,
+          wait_seconds,
+        })
+      )
+  );
+
+  server.registerTool(
+    "list_jobs",
+    { description: "List saved scheduled jobs that can be managed through Saturn." },
+    async () => asTextResult(await handleListJobs())
+  );
+
+  server.registerTool(
+    "delete_job",
+    {
+      description: "Delete a saved scheduled job by name and remove its Saturn-managed cron entry. Old run logs remain on disk.",
+      inputSchema: {
+        name: z.string().describe("Name of the scheduled job to delete"),
+      },
+    },
+    async ({ name }) => asTextResult(await handleDeleteJob(sessionId, { name }))
+  );
+
+  server.registerTool(
     "list_slices",
-    { description: "List slices available to this orchestrator session." },
+    { description: "List specialist slices available to this chat's swarm tools, plus any saved agent-node workflow graph." },
     async () => asTextResult(await handleListSlices(sessionId))
   );
 
@@ -57,7 +109,7 @@ function createServer(sessionId: string): McpServer {
     "run_slice_graph",
     {
       description:
-        "Execute this orchestrator's saved slice graph in dependency order. Upstream node outputs are passed to downstream nodes as upstream_results so connected sub-agents can communicate.",
+        "Execute this orchestrator's saved graph of slice agents. Ready nodes run in parallel waves; edges define downstream flow, and upstream node outputs are passed as upstream_results.",
       inputSchema: {
         inputs: z.record(z.unknown()).optional().describe("Shared inputs for every workflow node, such as task, target files, or diff summary"),
         start_node_id: z.string().optional().describe("Optional graph node id to start from; downstream nodes will run after it"),
@@ -80,7 +132,7 @@ function createServer(sessionId: string): McpServer {
     "get_slice_graph_run",
     {
       description:
-        "Poll a run started by run_slice_graph. Returns node runs, status, terminal results, and upstream_result_count for each node.",
+        "Poll a run started by run_slice_graph. Returns agent-node runs, status, terminal results, and upstream/downstream metadata for each node.",
       inputSchema: {
         graph_run_id: z.string().optional().describe("Graph run id returned by run_slice_graph. Omit to fetch the latest run for this session."),
         wait_seconds: z.number().optional().describe("Optionally wait up to 30 seconds for the run to advance or finish before returning."),

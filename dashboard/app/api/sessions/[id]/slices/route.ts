@@ -21,6 +21,8 @@ type SliceIndexEntry = {
   sandbox_mode?: string;
   planned?: boolean;
   execution_order?: number;
+  upstream_node_ids?: string[];
+  downstream_node_ids?: string[];
 };
 
 type GraphRunRecord = {
@@ -29,9 +31,17 @@ type GraphRunRecord = {
   workflow_graph?: {
     nodes?: Array<{
       id?: string;
+      type?: string;
       slice_id?: string;
       label?: string;
       execution_order?: number;
+      upstream_node_ids?: string[];
+      downstream_node_ids?: string[];
+    }>;
+    edges?: Array<{
+      id?: string;
+      from?: string;
+      to?: string;
     }>;
   };
   runs?: Array<{
@@ -39,6 +49,8 @@ type GraphRunRecord = {
     slice_id?: string;
     label?: string;
     execution_order?: number;
+    upstream_node_ids?: string[];
+    downstream_node_ids?: string[];
     result?: {
       slice_run_id?: string;
       status?: string;
@@ -75,6 +87,12 @@ function tokenField(record: Record<string, unknown>): SliceIndexEntry["tokens"] 
   };
 }
 
+function stringArrayField(record: Record<string, unknown>, key: string): string[] | undefined {
+  const value = record[key];
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((item): item is string => typeof item === "string" && item.length > 0);
+}
+
 function normalizeEntry(value: unknown): SliceIndexEntry | null {
   const record = asRecord(value);
   const slice_run_id = stringField(record, "slice_run_id");
@@ -93,6 +111,8 @@ function normalizeEntry(value: unknown): SliceIndexEntry | null {
     sandbox_mode: stringField(record, "sandbox_mode"),
     planned: record.planned === true,
     execution_order: numberField(record, "execution_order"),
+    upstream_node_ids: stringArrayField(record, "upstream_node_ids"),
+    downstream_node_ids: stringArrayField(record, "downstream_node_ids"),
   };
 }
 
@@ -270,7 +290,8 @@ async function latestGraphRun(sessionDir: string): Promise<GraphRunRecord | null
 }
 
 function plannedEntriesFromGraph(graph: GraphRunRecord | null, actualEntries: SliceIndexEntry[]): SliceIndexEntry[] {
-  const nodes = graph?.workflow_graph?.nodes ?? [];
+  const nodes = (graph?.workflow_graph?.nodes ?? [])
+    .filter((node) => node.type !== "orchestrator" && Boolean(node.slice_id));
   if (!graph?.graph_run_id || nodes.length === 0) return [];
 
   const actualByRunId = new Map(actualEntries.map((entry) => [entry.slice_run_id, entry]));
@@ -292,6 +313,27 @@ function plannedEntriesFromGraph(graph: GraphRunRecord | null, actualEntries: Sl
         slice_id: actualByRunId.get(completedRunId)!.slice_id ?? node.slice_id,
         label: node.label ?? actualByRunId.get(completedRunId)!.label,
         execution_order: node.execution_order ?? index + 1,
+        upstream_node_ids: node.upstream_node_ids,
+        downstream_node_ids: node.downstream_node_ids,
+      };
+    }
+
+    const directNodeMatch = actualEntries.find((entry) =>
+      !usedRunIds.has(entry.slice_run_id) &&
+      entry.graph_run_id === graph.graph_run_id &&
+      entry.graph_node_id === node.id
+    );
+    if (directNodeMatch) {
+      usedRunIds.add(directNodeMatch.slice_run_id);
+      return {
+        ...directNodeMatch,
+        graph_run_id: graph.graph_run_id,
+        graph_node_id: node.id,
+        slice_id: directNodeMatch.slice_id ?? node.slice_id,
+        label: node.label ?? directNodeMatch.label,
+        execution_order: node.execution_order ?? index + 1,
+        upstream_node_ids: node.upstream_node_ids,
+        downstream_node_ids: node.downstream_node_ids,
       };
     }
 
@@ -309,6 +351,8 @@ function plannedEntriesFromGraph(graph: GraphRunRecord | null, actualEntries: Sl
         graph_node_id: node.id,
         label: node.label ?? runningMatch.label,
         execution_order: node.execution_order ?? index + 1,
+        upstream_node_ids: node.upstream_node_ids,
+        downstream_node_ids: node.downstream_node_ids,
       };
     }
 
@@ -321,6 +365,8 @@ function plannedEntriesFromGraph(graph: GraphRunRecord | null, actualEntries: Sl
       status: graph.status === "running" ? "queued" : "skipped",
       planned: true,
       execution_order: node.execution_order ?? index + 1,
+      upstream_node_ids: node.upstream_node_ids,
+      downstream_node_ids: node.downstream_node_ids,
     };
   });
 }
@@ -340,5 +386,14 @@ export async function GET(
   const actualEntries = await enrichWithStreamTokens(sessionDir, latestEntries([...indexEntries, ...metaEntries]));
   const graph = await latestGraphRun(sessionDir);
   const plannedEntries = plannedEntriesFromGraph(graph, actualEntries);
-  return NextResponse.json({ slices: plannedEntries.length > 0 ? latestEntries(plannedEntries) : actualEntries });
+  return NextResponse.json({
+    slices: plannedEntries.length > 0 ? latestEntries(plannedEntries) : actualEntries,
+    workflow_graph: graph?.workflow_graph ?? null,
+    graph_run: graph
+      ? {
+          graph_run_id: graph.graph_run_id,
+          status: graph.status,
+        }
+      : null,
+  });
 }

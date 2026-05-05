@@ -19,8 +19,9 @@ SERVICE_PATH="$NODE_BIN_DIR:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/u
 mkdir -p "$HOME/Library/LaunchAgents" "$AUTOMATIONS_ROOT/runs"
 
 ROOT_XML="$(printf '%s' "$AUTOMATIONS_ROOT" | saturn_xml_escape)"
-NPM_XML="$(printf '%s' "$NPM_BIN" | saturn_xml_escape)"
 PATH_XML="$(printf '%s' "$SERVICE_PATH" | saturn_xml_escape)"
+DASHBOARD_COMMAND="cd $(saturn_env_double_quote "$AUTOMATIONS_ROOT/dashboard") && export PATH=$(saturn_env_double_quote "$SERVICE_PATH") && exec $(saturn_env_double_quote "$NPM_BIN") run start"
+DASHBOARD_COMMAND_XML="$(printf '%s' "$DASHBOARD_COMMAND" | saturn_xml_escape)"
 
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -34,7 +35,7 @@ cat > "$PLIST" <<EOF
   <array>
     <string>/bin/bash</string>
     <string>-lc</string>
-    <string>cd "$ROOT_XML/dashboard" &amp;&amp; export PATH="$PATH_XML" &amp;&amp; exec "$NPM_XML" run start</string>
+    <string>$DASHBOARD_COMMAND_XML</string>
   </array>
 
   <key>EnvironmentVariables</key>

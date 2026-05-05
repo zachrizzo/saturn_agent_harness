@@ -1,0 +1,1 @@
+export const SIDEBAR_RECENT_CHAT_LIMIT = 24;

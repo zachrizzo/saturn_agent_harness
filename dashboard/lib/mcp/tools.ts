@@ -4,11 +4,24 @@
 
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
+import { spawn } from "node:child_process";
 import path from "node:path";
-import { getSession } from "@/lib/runs";
+import { DEFAULT_CLI, normalizeCli } from "@/lib/clis";
+import { spawnTurn } from "@/lib/turn";
+import {
+  deleteJob,
+  getAgent,
+  getSession,
+  getSessionMeta,
+  listJobs,
+  listAgents,
+  sessionDir,
+} from "@/lib/runs";
 import { listSlices } from "@/lib/slices";
-import { sessionsRoot } from "@/lib/paths";
-import { sliceFilterForOrchestrator } from "@/lib/session-utils";
+import { binDir, sessionsRoot } from "@/lib/paths";
+import { isOrchestrator, sliceFilterForOrchestrator } from "@/lib/session-utils";
+import { withSessionMetaLock } from "@/lib/session-meta-lock";
+import { markSessionRunnerFailed } from "@/lib/session-lifecycle";
 import {
   readBudget,
   checkBudget,
@@ -19,6 +32,7 @@ import {
   executeSlice,
   executeCustomSlice,
   type CustomSliceSpec,
+  type SliceExecutionContext,
   type SliceExecuteResult,
 } from "@/lib/slice-executor";
 import type { Agent, OrchestratorBudget, SessionMeta, SliceGraph, SliceGraphNode } from "@/lib/runs";
@@ -36,15 +50,94 @@ async function loadAgentAndMeta(
   return { agent, meta: session.meta };
 }
 
+const CHAT_SWARM_BUDGET: OrchestratorBudget = {
+  max_total_tokens: 300000,
+  max_slice_calls: 30,
+  max_recursion_depth: 1,
+};
+const ORCHESTRATOR_GRAPH_NODE_ID = "__orchestrator__";
+
+function syncJobCron(name: string): void {
+  const register = path.join(binDir(), "register-job.sh");
+  const proc = spawn(register, [name], { detached: true, stdio: "ignore" });
+  proc.on("error", () => {});
+  proc.unref();
+}
+
+function effectiveSwarmAgent(agent: Agent, meta: SessionMeta): Agent {
+  const overrideSlices = meta.overrides?.slices_available;
+  if (isOrchestrator(agent)) {
+    return overrideSlices !== undefined ? { ...agent, slices_available: overrideSlices } : agent;
+  }
+
+  return {
+    ...agent,
+    kind: "orchestrator",
+    slices_available: overrideSlices ?? agent.slices_available ?? "*",
+    can_create_custom_slices: agent.can_create_custom_slices ?? false,
+    allowed_mutations: agent.allowed_mutations ?? ["read-only", "writes-scratch", "writes-source"],
+    budget: agent.budget ?? CHAT_SWARM_BUDGET,
+    on_budget_exceeded: agent.on_budget_exceeded ?? "report-partial",
+    on_slice_failure: agent.on_slice_failure ?? "continue",
+  };
+}
+
 function effectiveLimits(agent: Agent, overrides?: OrchestratorBudget): BudgetLimits {
   const base = agent.budget ?? {};
   const over = overrides ?? {};
   return {
     max_total_tokens: over.max_total_tokens ?? base.max_total_tokens,
-    max_wallclock_seconds: over.max_wallclock_seconds ?? base.max_wallclock_seconds,
     max_slice_calls: over.max_slice_calls ?? base.max_slice_calls,
     max_recursion_depth: over.max_recursion_depth ?? base.max_recursion_depth,
   };
+}
+
+function compactTitle(value: string): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) return "Swarm run";
+  return normalized.length > 80 ? `${normalized.slice(0, 77)}...` : normalized;
+}
+
+async function waitForSessionFinalText(
+  sessionId: string,
+  waitSeconds?: number,
+): Promise<{ status?: SessionMeta["status"]; final_text?: string; finished_at?: string }> {
+  const deadline = Date.now() + Math.min(Math.max(waitSeconds ?? 0, 0), 60) * 1000;
+  let meta = await getSessionMeta(sessionId);
+  while (meta?.status === "running" && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    meta = await getSessionMeta(sessionId);
+  }
+  return {
+    status: meta?.status,
+    final_text: meta?.turns.at(-1)?.final_text,
+    finished_at: meta?.finished_at,
+  };
+}
+
+async function appendParentBackgroundRun(
+  parentSessionId: string,
+  childSessionId: string,
+  title: string,
+): Promise<void> {
+  await withSessionMetaLock(parentSessionId, async () => {
+    const file = path.join(sessionsRoot(), parentSessionId, "meta.json");
+    const raw = await fs.readFile(file, "utf8").catch(() => null);
+    if (!raw) return;
+    const meta = JSON.parse(raw) as SessionMeta;
+    const existing = meta.background_runs ?? [];
+    if (existing.some((run) => run.session_id === childSessionId)) return;
+    meta.background_runs = [
+      ...existing,
+      {
+        session_id: childSessionId,
+        title,
+        started_at: new Date().toISOString(),
+        source_turn: Math.max(0, meta.turns.length - 1),
+      },
+    ];
+    await fs.writeFile(file, JSON.stringify(meta, null, 2), "utf8");
+  });
 }
 
 type OrderedWorkflow = {
@@ -198,26 +291,59 @@ function buildOrderedWorkflow(agent: Agent): OrderedWorkflow | null {
 function workflowPayload(agent: Agent): object | null {
   const workflow = buildOrderedWorkflow(agent);
   if (!workflow) return null;
+  const realNodeIds = new Set(workflow.nodes.map((node) => node.id));
+  const entryNodeIds = workflow.nodes
+    .filter((node) => (workflow.upstreamByNode.get(node.id) ?? []).length === 0)
+    .map((node) => node.id);
+  const terminalNodeIds = workflow.nodes
+    .filter((node) => (workflow.downstreamByNode.get(node.id) ?? []).length === 0)
+    .map((node) => node.id);
+  const savedRootEdges = (agent.slice_graph?.edges ?? [])
+    .filter((edge) => edge.from === ORCHESTRATOR_GRAPH_NODE_ID && realNodeIds.has(edge.to));
+  const rootEdges = savedRootEdges.length > 0
+    ? savedRootEdges
+    : entryNodeIds.map((nodeId) => ({
+        id: `edge-${ORCHESTRATOR_GRAPH_NODE_ID}-${nodeId}`,
+        from: ORCHESTRATOR_GRAPH_NODE_ID,
+        to: nodeId,
+      }));
+  const rootDownstreamNodeIds = rootEdges.map((edge) => edge.to);
 
   return {
-    nodes: workflow.nodes.map((node, index) => ({
-      id: node.id,
-      slice_id: node.slice_id,
-      label: node.label,
-      instructions: node.instructions,
-      prompt: node.prompt,
-      config: node.config,
-      execution_order: index + 1,
-      upstream_node_ids: workflow.upstreamByNode.get(node.id) ?? [],
-      downstream_node_ids: workflow.downstreamByNode.get(node.id) ?? [],
-    })),
-    edges: workflow.edges,
-    entry_node_ids: workflow.nodes
-      .filter((node) => (workflow.upstreamByNode.get(node.id) ?? []).length === 0)
-      .map((node) => node.id),
-    terminal_node_ids: workflow.nodes
-      .filter((node) => (workflow.downstreamByNode.get(node.id) ?? []).length === 0)
-      .map((node) => node.id),
+    nodes: [
+      {
+        id: ORCHESTRATOR_GRAPH_NODE_ID,
+        type: "orchestrator",
+        label: agent.name,
+        execution_order: 0,
+        upstream_node_ids: [],
+        downstream_node_ids: rootDownstreamNodeIds,
+      },
+      ...workflow.nodes.map((node, index) => {
+        const upstreamNodeIds = workflow.upstreamByNode.get(node.id) ?? [];
+        return {
+          id: node.id,
+          type: "agent_slice",
+          slice_id: node.slice_id,
+          label: node.label,
+          instructions: node.instructions,
+          prompt: node.prompt,
+          config: node.config,
+          execution_order: index + 1,
+          upstream_node_ids: upstreamNodeIds.length > 0
+            ? upstreamNodeIds
+            : rootDownstreamNodeIds.includes(node.id)
+              ? [ORCHESTRATOR_GRAPH_NODE_ID]
+              : [],
+          downstream_node_ids: workflow.downstreamByNode.get(node.id) ?? [],
+        };
+      }),
+    ],
+    edges: [...rootEdges, ...workflow.edges],
+    execution_model: "dependency_graph",
+    orchestrator_node_id: ORCHESTRATOR_GRAPH_NODE_ID,
+    entry_node_ids: entryNodeIds,
+    terminal_node_ids: terminalNodeIds,
     validation: workflow.cycleNodeIds.length > 0
       ? {
           ok: false,
@@ -231,6 +357,136 @@ function workflowPayload(agent: Agent): object | null {
 function isFailedNodeResult(result: object): boolean {
   const status = (result as { status?: unknown }).status;
   return typeof status === "string" && status !== "success";
+}
+
+// ─── list_swarms / dispatch_swarm ────────────────────────────────────────────
+
+export async function handleListSwarms(_sessionId: string): Promise<object> {
+  const agents = await listAgents();
+  const swarms = agents.filter((agent) => agent.kind === "orchestrator");
+  return {
+    swarms: swarms.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      description: agent.description,
+      default_cli: agent.defaultCli ?? agent.cli,
+      model: agent.model,
+      models: agent.models,
+      cwd: agent.cwd,
+      slices_available: agent.slices_available,
+      budget: agent.budget,
+      tags: agent.tags ?? [],
+    })),
+  };
+}
+
+export async function handleDispatchSwarm(
+  sessionId: string,
+  params: {
+    agent_id: string;
+    message: string;
+    cwd?: string;
+    title?: string;
+    wait_seconds?: number;
+  },
+): Promise<object> {
+  const message = params.message.trim();
+  if (!message) return { status: "failed", error: "message is required" };
+
+  const { agent: parentAgent, meta: parentMeta } = await loadAgentAndMeta(sessionId);
+  const swarm = await getAgent(params.agent_id);
+  if (!swarm) {
+    return { status: "not_found", error: `Swarm agent not found: ${params.agent_id}` };
+  }
+  if (swarm.kind !== "orchestrator") {
+    return { status: "invalid_agent", error: `${params.agent_id} is not a swarm/orchestrator agent` };
+  }
+
+  const cwd = params.cwd?.trim() || parentAgent.cwd || swarm.cwd;
+  const childAgent: Agent = cwd ? { ...swarm, cwd } : swarm;
+  const cli = normalizeCli(childAgent.defaultCli ?? childAgent.cli ?? DEFAULT_CLI);
+  const model = childAgent.models?.[cli] ?? childAgent.model;
+  const reasoningEffort = childAgent.reasoningEfforts?.[cli] ?? childAgent.reasoningEffort;
+  const childSessionId = randomUUID();
+  const childDir = sessionDir(childSessionId);
+  const now = new Date().toISOString();
+  const title = compactTitle(params.title ?? `${childAgent.name}: ${message}`);
+
+  const meta: SessionMeta = {
+    session_id: childSessionId,
+    agent_id: childAgent.id,
+    agent_snapshot: childAgent,
+    started_at: now,
+    status: "running",
+    turns: [],
+    forked_from: { session_id: sessionId, at_turn: parentMeta.turns.length },
+    read_at: now,
+  };
+
+  await fs.mkdir(childDir, { recursive: true });
+  await fs.writeFile(path.join(childDir, "meta.json"), JSON.stringify(meta, null, 2), "utf8");
+  await fs.writeFile(path.join(childDir, "stream.jsonl"), "", "utf8");
+  await fs.writeFile(path.join(childDir, "stderr.log"), "", "utf8");
+
+  try {
+    await appendParentBackgroundRun(sessionId, childSessionId, title);
+    await spawnTurn(childSessionId, cli, model, message, childAgent, undefined, reasoningEffort);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    await markSessionRunnerFailed(childSessionId, `failed to start swarm: ${detail}`);
+    return {
+      status: "failed",
+      error: detail,
+      agent_id: childAgent.id,
+      session_id: childSessionId,
+      chat_url: `/chats/${childSessionId}`,
+    };
+  }
+
+  const waited = await waitForSessionFinalText(childSessionId, params.wait_seconds);
+  return {
+    status: waited.status === "running" || !waited.status ? "started" : waited.status,
+    agent_id: childAgent.id,
+    agent_name: childAgent.name,
+    session_id: childSessionId,
+    chat_url: `/chats/${childSessionId}`,
+    cwd,
+    ...(waited.final_text ? { final_text: waited.final_text } : {}),
+    ...(waited.finished_at ? { finished_at: waited.finished_at } : {}),
+  };
+}
+
+// ─── jobs ──────────────────────────────────────────────────────────────────────
+
+export async function handleListJobs(): Promise<object> {
+  const jobs = await listJobs();
+  return {
+    jobs: jobs.map((job) => ({
+      name: job.name,
+      cron: job.cron,
+      description: job.description,
+      cli: job.cli,
+      model: job.model,
+      cwd: job.cwd,
+      catchUpMissedRuns: job.catchUpMissedRuns,
+    })),
+  };
+}
+
+export async function handleDeleteJob(
+  _sessionId: string,
+  params: { name: string }
+): Promise<object> {
+  const job = await deleteJob(params.name);
+  syncJobCron(params.name);
+  return {
+    deleted: true,
+    job: {
+      name: job.name,
+      cron: job.cron,
+      description: job.description,
+    },
+  };
 }
 
 /**
@@ -262,9 +518,7 @@ async function applyFailurePolicy(
 
 export async function handleListSlices(sessionId: string): Promise<object> {
   const { agent, meta } = await loadAgentAndMeta(sessionId);
-  const overrideSlices = meta.overrides?.slices_available;
-  const effectiveAgent: Agent =
-    overrideSlices !== undefined ? { ...agent, slices_available: overrideSlices } : agent;
+  const effectiveAgent = effectiveSwarmAgent(agent, meta);
   const allSlices = await listSlices();
   const filtered = sliceFilterForOrchestrator(allSlices, effectiveAgent);
   return {
@@ -289,6 +543,7 @@ export async function handleListSlices(sessionId: string): Promise<object> {
 async function gateForDispatch(
   sessionId: string,
   limits: BudgetLimits,
+  options?: { skipRecursion?: boolean },
 ): Promise<
   | { blocked: object }
   | { blocked: null; release: () => Promise<void> }
@@ -302,6 +557,9 @@ async function gateForDispatch(
         remaining_budget: check.remaining,
       },
     };
+  }
+  if (options?.skipRecursion) {
+    return { blocked: null, release: async () => {} };
   }
   const maxDepth = limits.max_recursion_depth ?? 3;
   const recursion = await checkAndIncrementRecursion(sessionId, maxDepth);
@@ -319,12 +577,28 @@ async function gateForDispatch(
 
 export async function handleDispatchSlice(
   sessionId: string,
-  params: { slice_id: string; inputs: Record<string, unknown> }
+  params: {
+    slice_id: string;
+    inputs: Record<string, unknown>;
+    execution_context?: SliceExecutionContext;
+    internal_skip_recursion_gate?: boolean;
+  }
 ): Promise<object> {
   const { agent, meta } = await loadAgentAndMeta(sessionId);
-  const limits = effectiveLimits(agent, meta.overrides?.budget);
+  const effectiveAgent = effectiveSwarmAgent(agent, meta);
+  const availableSlices = sliceFilterForOrchestrator(await listSlices(), effectiveAgent);
+  if (!availableSlices.some((slice) => slice.id === params.slice_id)) {
+    return {
+      status: "forbidden",
+      error: `slice is not available to this chat: ${params.slice_id}`,
+    };
+  }
 
-  const gate = await gateForDispatch(sessionId, limits);
+  const limits = effectiveLimits(effectiveAgent, meta.overrides?.budget);
+
+  const gate = await gateForDispatch(sessionId, limits, {
+    skipRecursion: params.internal_skip_recursion_gate === true,
+  });
   if (gate.blocked) return gate.blocked;
 
   try {
@@ -333,10 +607,11 @@ export async function handleDispatchSlice(
         sessionId,
         sliceId: params.slice_id,
         inputs: params.inputs,
-        cwdOverride: agent.cwd,
+        executionContext: params.execution_context,
+        cwdOverride: effectiveAgent.cwd,
       });
     const first = await run();
-    const result = await applyFailurePolicy(sessionId, agent, first, run);
+    const result = await applyFailurePolicy(sessionId, effectiveAgent, first, run);
     const after = await checkBudget(sessionId, limits);
     return { ...result, remaining_budget: after.remaining };
   } finally {
@@ -375,13 +650,20 @@ async function executeWorkflowRun(params: {
     nodesToRun = nodesToRun.slice(0, params.maxNodes);
   }
 
+  const selectedNodeIds = new Set(nodesToRun.map((node) => node.id));
   const results = new Map<string, object>();
   const runs: object[] = [];
   let failedCount = 0;
 
-  for (const [index, node] of nodesToRun.entries()) {
+  const executionOrderByNode = new Map(nodesToRun.map((node, index) => [node.id, index + 1]));
+  const remainingNodeIds = new Set(selectedNodeIds);
+  const nodeById = new Map(nodesToRun.map((node) => [node.id, node]));
+
+  const runNode = async (node: SliceGraphNode) => {
+    const executionOrder = executionOrderByNode.get(node.id) ?? runs.length + 1;
     const upstreamNodeIds = (params.workflow.upstreamByNode.get(node.id) ?? [])
-      .filter((nodeId) => results.has(nodeId));
+      .filter((nodeId) => selectedNodeIds.has(nodeId) && results.has(nodeId));
+    const downstreamNodeIds = params.workflow.downstreamByNode.get(node.id) ?? [];
     const upstreamResults = upstreamNodeIds.map((nodeId) => results.get(nodeId));
     const nodeInputs = {
       ...params.baseInputs,
@@ -392,37 +674,67 @@ async function executeWorkflowRun(params: {
         instructions: node.instructions,
         prompt: node.prompt,
         config: node.config,
-        execution_order: index + 1,
+        execution_order: executionOrder,
         upstream_node_ids: upstreamNodeIds,
+        downstream_node_ids: downstreamNodeIds,
       },
       upstream_results: upstreamResults,
+    };
+    const executionContext: SliceExecutionContext = {
+      graph_run_id: params.record?.graph_run_id,
+      graph_node_id: node.id,
+      label: node.label,
+      execution_order: executionOrder,
+      upstream_node_ids: upstreamNodeIds,
+      downstream_node_ids: downstreamNodeIds,
     };
 
     const result = await handleDispatchSlice(params.sessionId, {
       slice_id: node.slice_id,
       inputs: nodeInputs,
+      execution_context: executionContext,
+      internal_skip_recursion_gate: true,
     });
-    const entry = {
+    return {
       node_id: node.id,
       slice_id: node.slice_id,
       label: node.label,
-      execution_order: index + 1,
+      execution_order: executionOrder,
       upstream_node_ids: upstreamNodeIds,
+      downstream_node_ids: downstreamNodeIds,
       upstream_result_count: upstreamResults.length,
       result,
     };
-    if (isFailedNodeResult(result)) failedCount += 1;
-    results.set(node.id, entry);
-    runs.push(entry);
+  };
 
+  while (remainingNodeIds.size > 0) {
+    const readyNodes = nodesToRun.filter((node) => {
+      if (!remainingNodeIds.has(node.id)) return false;
+      const requiredUpstreamNodeIds = (params.workflow.upstreamByNode.get(node.id) ?? [])
+        .filter((nodeId) => selectedNodeIds.has(nodeId));
+      return requiredUpstreamNodeIds.every((nodeId) => results.has(nodeId));
+    });
+
+    if (readyNodes.length === 0) {
+      throw new Error("No runnable slice graph nodes found; check graph dependencies for a cycle or missing upstream node.");
+    }
+
+    const waveEntries = await Promise.all(readyNodes.map((node) => runNode(node)));
+    for (const entry of waveEntries.sort((a, b) => a.execution_order - b.execution_order)) {
+      if (isFailedNodeResult(entry.result)) failedCount += 1;
+      results.set(entry.node_id, entry);
+      runs.push(entry);
+      remainingNodeIds.delete(entry.node_id);
+    }
     if (params.record) {
       params.record.runs = runs;
       await writeGraphRun(params.record);
     }
   }
 
-  const terminalNodeIds = params.workflow.nodes
-    .filter((node) => (params.workflow.downstreamByNode.get(node.id) ?? []).length === 0)
+  const terminalNodeIds = nodesToRun
+    .filter((node) => (params.workflow.downstreamByNode.get(node.id) ?? [])
+      .filter((nodeId) => selectedNodeIds.has(nodeId)).length === 0)
     .map((node) => node.id);
 
   return {
@@ -475,9 +787,7 @@ export async function handleRunSliceGraph(
   }
 ): Promise<object> {
   const { agent, meta } = await loadAgentAndMeta(sessionId);
-  const overrideSlices = meta.overrides?.slices_available;
-  const effectiveAgent: Agent =
-    overrideSlices !== undefined ? { ...agent, slices_available: overrideSlices } : agent;
+  const effectiveAgent = effectiveSwarmAgent(agent, meta);
   const workflow = buildOrderedWorkflow(effectiveAgent);
 
   if (!workflow) {
@@ -577,8 +887,9 @@ export async function handleDispatchCustomSlice(
   params: { spec: CustomSliceSpec; inputs?: Record<string, unknown> }
 ): Promise<object> {
   const { agent, meta } = await loadAgentAndMeta(sessionId);
+  const effectiveAgent = effectiveSwarmAgent(agent, meta);
 
-  if (!agent.can_create_custom_slices) {
+  if (!effectiveAgent.can_create_custom_slices) {
     return {
       status: "forbidden",
       error: "can_create_custom_slices is disabled",
@@ -587,7 +898,7 @@ export async function handleDispatchCustomSlice(
 
   const sandboxMode = params.spec.sandbox?.mode ?? "none";
   if (sandboxMode === "worktree") {
-    const allowedMutations = agent.allowed_mutations ?? [];
+    const allowedMutations = effectiveAgent.allowed_mutations ?? [];
     if (!allowedMutations.includes("writes-source")) {
       return {
         status: "forbidden",
@@ -596,7 +907,7 @@ export async function handleDispatchCustomSlice(
     }
   }
 
-  const limits = effectiveLimits(agent, meta.overrides?.budget);
+  const limits = effectiveLimits(effectiveAgent, meta.overrides?.budget);
   const gate = await gateForDispatch(sessionId, limits);
   if (gate.blocked) return gate.blocked;
 
@@ -606,10 +917,10 @@ export async function handleDispatchCustomSlice(
         sessionId,
         spec: params.spec,
         inputs: params.inputs,
-        cwdOverride: agent.cwd,
+        cwdOverride: effectiveAgent.cwd,
       });
     const first = await run();
-    const result = await applyFailurePolicy(sessionId, agent, first, run);
+    const result = await applyFailurePolicy(sessionId, effectiveAgent, first, run);
     const after = await checkBudget(sessionId, limits);
     return { ...result, remaining_budget: after.remaining };
   } finally {
@@ -621,7 +932,8 @@ export async function handleDispatchCustomSlice(
 
 export async function handleGetBudget(sessionId: string): Promise<object> {
   const { agent, meta } = await loadAgentAndMeta(sessionId);
-  const limits = effectiveLimits(agent, meta.overrides?.budget);
+  const effectiveAgent = effectiveSwarmAgent(agent, meta);
+  const limits = effectiveLimits(effectiveAgent, meta.overrides?.budget);
   const budget = await readBudget(sessionId);
   const check = await checkBudget(sessionId, limits);
   return {

@@ -19,6 +19,8 @@ export type SliceEntry = {
   sandbox_mode?: string;
   planned?: boolean;
   execution_order?: number;
+  upstream_node_ids?: string[];
+  downstream_node_ids?: string[];
 };
 
 type Props = {

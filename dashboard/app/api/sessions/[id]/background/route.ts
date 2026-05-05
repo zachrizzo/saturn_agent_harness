@@ -21,6 +21,13 @@ function completedTurnCutoff(meta: SessionMeta): number {
   return meta.turns.length;
 }
 
+function backgroundRunTitle(meta: SessionMeta, cutoff: number): string {
+  const runningTurn = meta.turns[cutoff] ?? meta.turns.at(-1);
+  const message = runningTurn?.user_message?.replace(/\s+/g, " ").trim();
+  if (!message) return "Background turn";
+  return message.length > 80 ? `${message.slice(0, 77)}...` : message;
+}
+
 async function carriedStreamForTurns(parentId: string, cutoff: number): Promise<string> {
   if (cutoff <= 0) return "";
   try {
@@ -91,6 +98,15 @@ export async function POST(
     status: carriedTurns.length > 0 ? "success" : "idle",
     turns: carriedTurns,
     forked_from: { session_id: parentId, at_turn: cutoff },
+    background_runs: [
+      ...(parentMeta.background_runs ?? []),
+      {
+        session_id: parentId,
+        title: backgroundRunTitle(parentMeta, cutoff),
+        started_at: parentMeta.turns[cutoff]?.started_at ?? parentMeta.turns.at(-1)?.started_at ?? parentMeta.started_at,
+        source_turn: cutoff,
+      },
+    ],
     read_at: now,
   };
 

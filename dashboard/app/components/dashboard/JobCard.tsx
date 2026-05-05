@@ -2,12 +2,12 @@
 
 import Link from "next/link";
 import { useState, useEffect, useRef } from "react";
-import ReactMarkdown from "react-markdown";
 import { toEvents } from "@/lib/events";
 import type { Job, RunMeta, CLI } from "@/lib/runs";
 import { Card, Chip } from "@/app/components/ui";
 import { PlayButton } from "@/app/components/PlayButton";
 import { JobSettingsModal } from "@/app/components/JobSettingsModal";
+import { GeneratedOutputView } from "@/app/components/generated-ui/GeneratedOutputView";
 import { RunSparkline } from "./RunSparkline";
 import { formatDuration, formatTokens, nextFireTime } from "@/lib/format";
 import {
@@ -228,15 +228,15 @@ function OutputSection({
       </button>
       {expanded ? (
         <div className="px-4 pb-4">
-          <article className="prose-dashboard text-[12px] leading-relaxed max-h-[320px] overflow-y-auto">
-            <ReactMarkdown>{trimmedOutput}</ReactMarkdown>
-          </article>
+          <div className="text-[12px] leading-relaxed max-h-[320px] overflow-y-auto">
+            <GeneratedOutputView markdown={trimmedOutput} />
+          </div>
         </div>
       ) : (
         <div className="px-4 pb-3">
-          <article className="prose-dashboard text-[12px] leading-relaxed text-muted line-clamp-3">
-            <ReactMarkdown>{outputPreview}</ReactMarkdown>
-          </article>
+          <div className="text-[12px] leading-relaxed text-muted line-clamp-3">
+            <GeneratedOutputView markdown={outputPreview} />
+          </div>
           {hasMoreOutput && (
             <button
               onClick={onExpand}

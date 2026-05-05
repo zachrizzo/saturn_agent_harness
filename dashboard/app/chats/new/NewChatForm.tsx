@@ -15,6 +15,16 @@ type Props = {
   initialAgentId?: string;
 };
 
+function parseOptionalPositiveInteger(value: string, label: string): number | string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed) || parsed < 1 || !/^\d+$/.test(trimmed)) {
+    return `${label} must be a whole number greater than 0`;
+  }
+  return parsed;
+}
+
 export function NewChatForm({ initialAgentId }: Props) {
   const router = useRouter();
   const composerRef = useRef<ComposerHandle>(null);
@@ -26,6 +36,7 @@ export function NewChatForm({ initialAgentId }: Props) {
 
   // Agent selector
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [agentsLoaded, setAgentsLoaded] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string>(initialAgentId ?? "");
 
   // Per-session overrides (orchestrator only)
@@ -34,12 +45,14 @@ export function NewChatForm({ initialAgentId }: Props) {
   const [overridePrompt, setOverridePrompt] = useState("");
   const [overrideMaxTokens, setOverrideMaxTokens] = useState("");
   const [overrideMaxCalls, setOverrideMaxCalls] = useState("");
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
 
   useEffect(() => {
     fetch("/api/agents")
       .then((r) => r.json())
       .then((data) => setAgents(data.agents ?? []))
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setAgentsLoaded(true));
   }, []);
 
   useEffect(() => {
@@ -53,7 +66,8 @@ export function NewChatForm({ initialAgentId }: Props) {
     fetch("/api/settings")
       .then((r) => r.json())
       .then((data) => setSettings(data.settings ?? null))
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setSettingsLoaded(true));
   }, []);
 
   const selectedAgent = agents.find((a) => a.id === selectedAgentId) ?? null;
@@ -100,8 +114,12 @@ export function NewChatForm({ initialAgentId }: Props) {
           if (overrideModel) overrides.model = overrideModel;
           if (overridePrompt) overrides.strategy_prompt = overridePrompt;
           const budget: Record<string, number> = {};
-          if (overrideMaxTokens) budget.max_total_tokens = parseInt(overrideMaxTokens, 10);
-          if (overrideMaxCalls) budget.max_slice_calls = parseInt(overrideMaxCalls, 10);
+          const maxTokens = parseOptionalPositiveInteger(overrideMaxTokens, "Max tokens");
+          const maxCalls = parseOptionalPositiveInteger(overrideMaxCalls, "Max slice calls");
+          if (typeof maxTokens === "string") throw new Error(maxTokens);
+          if (typeof maxCalls === "string") throw new Error(maxCalls);
+          if (maxTokens !== undefined) budget.max_total_tokens = maxTokens;
+          if (maxCalls !== undefined) budget.max_slice_calls = maxCalls;
           if (Object.keys(budget).length > 0) overrides.budget = budget;
         }
 
@@ -155,6 +173,14 @@ export function NewChatForm({ initialAgentId }: Props) {
       setStarting(false);
     }
   };
+
+  if (!agentsLoaded || !settingsLoaded) {
+    return (
+      <div className="w-[90%] mx-auto rounded-xl border border-border bg-bg-subtle px-4 py-3 text-[13px] text-muted">
+        Loading chat defaults...
+      </div>
+    );
+  }
 
   return (
     <div className="w-[90%] mx-auto space-y-3">

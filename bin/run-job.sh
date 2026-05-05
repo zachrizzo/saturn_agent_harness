@@ -22,12 +22,24 @@ if [[ $# -lt 1 ]]; then
   exit 2
 fi
 
+RETRY_ATTEMPT="${SATURN_JOB_RETRY_ATTEMPT:-0}"
+RETRY_OF="${SATURN_JOB_RETRY_OF:-}"
+RETRY_DELAY_SECONDS="${SATURN_JOB_RETRY_DELAY_SECONDS:-1800}"
+if [[ ! "$RETRY_ATTEMPT" =~ ^[0-9]+$ ]]; then
+  RETRY_ATTEMPT="0"
+fi
+if [[ ! "$RETRY_DELAY_SECONDS" =~ ^[0-9]+$ || "$RETRY_DELAY_SECONDS" -lt 1 ]]; then
+  RETRY_DELAY_SECONDS="1800"
+fi
+
 if [[ "$1" == "--agent" ]]; then
   if [[ $# -ne 2 ]]; then
     echo "usage: run-job.sh --agent <agent-id>" >&2
     exit 2
   fi
+  JOB_MODE="agent"
   AGENT_ID="$2"
+  saturn_validate_path_segment "$AGENT_ID" "agent id"
   JOB_NAME="agent-$AGENT_ID"
   AGENTS_FILE="$AUTOMATIONS_ROOT/agents.json"
   JOB_JSON="$(jq --arg id "$AGENT_ID" '.agents[]? | select(.id == $id)' "$AGENTS_FILE" 2>/dev/null)"
@@ -36,7 +48,9 @@ if [[ "$1" == "--agent" ]]; then
     exit 3
   fi
 else
+  JOB_MODE="job"
   JOB_NAME="$1"
+  saturn_validate_path_segment "$JOB_NAME" "job name"
   JOB_JSON="$(jq --arg n "$JOB_NAME" '.jobs[] | select(.name == $n)' "$JOBS_FILE")"
   if [[ -z "$JOB_JSON" || "$JOB_JSON" == "null" ]]; then
     echo "run-job: no job named '$JOB_NAME' in $JOBS_FILE" >&2
@@ -51,17 +65,42 @@ CRON_EXPR="$(jq -r '.cron // ""' <<<"$JOB_JSON")"
 MODEL="$(jq -r '.model // empty' <<<"$JOB_JSON")"
 REASONING_EFFORT="$(jq -r '.reasoningEffort // empty' <<<"$JOB_JSON")"
 CLI="$(normalize_cli_id "$(jq -r '.cli // "claude-bedrock"' <<<"$JOB_JSON")")"  # claude-bedrock | claude-personal | claude-local | codex
-
-# claude-local: run Claude Code through the LiteLLM proxy.
-if [[ "$CLI" == "claude-local" ]]; then
-  export CLAUDE_CODE_USE_BEDROCK="0"
-  export ANTHROPIC_BASE_URL="http://0.0.0.0:4000"
-  export ANTHROPIC_AUTH_TOKEN="sk-local-proxy-key"
-  export ANTHROPIC_SMALL_FAST_MODEL="nvidia/nemotron-3-nano"
-  [[ -z "$MODEL" ]] && MODEL="qwen/qwen3.6-27b"
-  export CLAUDE_LOCAL_SETTINGS="{\"env\":{\"CLAUDE_CODE_USE_BEDROCK\":\"0\",\"ANTHROPIC_BASE_URL\":\"http://0.0.0.0:4000\",\"ANTHROPIC_AUTH_TOKEN\":\"sk-local-proxy-key\",\"ANTHROPIC_SMALL_FAST_MODEL\":\"nvidia/nemotron-3-nano\"},\"model\":\"${MODEL}\"}"
-fi
 TIMEOUT_SECONDS="$(jq -r '.timeout_seconds // 1800' <<<"$JOB_JSON")"
+saturn_validate_timeout_seconds "$TIMEOUT_SECONDS" "timeout_seconds"
+
+JOB_UI_INSTRUCTIONS="$(cat <<'EOF'
+
+---
+
+Saturn job output can include a dynamic dashboard block. When the final answer contains structured status, counts, links, or records that would be clearer as UI, include one fenced `saturn-ui` JSON block in addition to any human-readable Markdown.
+
+Supported shape:
+```saturn-ui
+{
+  "title": "Short result title",
+  "summary": "One sentence summary.",
+  "metrics": [{"label": "Open items", "value": "4", "tone": "warn", "delta": "2 new"}],
+  "links": [{"label": "Open report", "href": "/runs/job/slug", "description": "Optional"}],
+  "charts": [{
+    "title": "Trend",
+    "type": "bar",
+    "xKey": "day",
+    "series": [{"key": "count", "label": "Count", "tone": "accent"}],
+    "data": [{"day": "Mon", "count": 3}, {"day": "Tue", "count": 7}]
+  }],
+  "sections": [{"title": "Notes", "items": ["First", "Second"]}],
+  "tables": [{
+    "title": "Items",
+    "columns": [{"key": "name", "label": "Name"}, {"key": "status", "label": "Status"}],
+    "rows": [{"name": "Example", "status": "Ready"}]
+  }]
+}
+```
+
+Use only data that belongs in the job result. Do not put secrets in this block.
+EOF
+)"
+PROMPT="${PROMPT}${JOB_UI_INSTRUCTIONS}"
 
 TS="$(date +%Y-%m-%dT%H-%M-%S)"
 RUN_DIR="$RUNS_ROOT/$JOB_NAME/$TS"
@@ -79,8 +118,39 @@ jq -n \
   --arg model "${MODEL:-}" \
   --arg reasoning_effort "${REASONING_EFFORT:-}" \
   --arg cli "${CLI:-claude-bedrock}" \
-  '{name: $name, slug: $slug, cron: $cron, started_at: $started_at, status: $status, model: (if $model == "" then null else $model end), reasoningEffort: (if $reasoning_effort == "" then null else $reasoning_effort end), cli: $cli}' \
+  --argjson retry_attempt "$RETRY_ATTEMPT" \
+  --arg retry_of "$RETRY_OF" \
+  '{
+    name: $name,
+    slug: $slug,
+    cron: $cron,
+    started_at: $started_at,
+    status: $status,
+    model: (if $model == "" then null else $model end),
+    reasoningEffort: (if $reasoning_effort == "" then null else $reasoning_effort end),
+    cli: $cli,
+    retry_attempt: $retry_attempt
+  } + (if $retry_of == "" then {} else {retry_of: $retry_of} end)' \
   > "$RUN_DIR/meta.json"
+
+schedule_failed_retry() {
+  local scheduled_epoch scheduled_at script
+  scheduled_epoch=$(( $(date +%s) + RETRY_DELAY_SECONDS ))
+  scheduled_at="$(date -u -r "$scheduled_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$scheduled_epoch" +%Y-%m-%dT%H:%M:%SZ)"
+  script="$AUTOMATIONS_ROOT/bin/run-job.sh"
+
+  if [[ "$JOB_MODE" == "agent" ]]; then
+    nohup env SATURN_JOB_RETRY_ATTEMPT=1 SATURN_JOB_RETRY_OF="$TS" \
+      bash -c 'sleep "$1"; shift; exec "$@"' retry-delay "$RETRY_DELAY_SECONDS" "$script" --agent "$AGENT_ID" \
+      >> "$RUNS_ROOT/cron.log" 2>&1 &
+  else
+    nohup env SATURN_JOB_RETRY_ATTEMPT=1 SATURN_JOB_RETRY_OF="$TS" \
+      bash -c 'sleep "$1"; shift; exec "$@"' retry-delay "$RETRY_DELAY_SECONDS" "$script" "$JOB_NAME" \
+      >> "$RUNS_ROOT/cron.log" 2>&1 &
+  fi
+
+  printf '%s' "$scheduled_at"
+}
 
 if [[ -n "$CWD" && -d "$CWD" ]]; then
   cd "$CWD"
@@ -165,6 +235,11 @@ fi
 STATUS="success"
 [[ "$EXIT_CODE" -ne 0 ]] && STATUS="failed"
 
+RETRY_SCHEDULED_AT=""
+if [[ "$STATUS" == "failed" && "$RETRY_ATTEMPT" -eq 0 ]]; then
+  RETRY_SCHEDULED_AT="$(schedule_failed_retry)"
+fi
+
 jq -n \
   --arg name "$JOB_NAME" \
   --arg slug "$TS" \
@@ -179,6 +254,10 @@ jq -n \
   --arg model "${MODEL:-}" \
   --arg reasoning_effort "${REASONING_EFFORT:-}" \
   --arg cli "${CLI:-claude-bedrock}" \
+  --argjson retry_attempt "$RETRY_ATTEMPT" \
+  --arg retry_of "$RETRY_OF" \
+  --arg retry_scheduled_at "$RETRY_SCHEDULED_AT" \
+  --argjson retry_after_seconds "$RETRY_DELAY_SECONDS" \
   '{
     name: $name,
     slug: $slug,
@@ -192,8 +271,11 @@ jq -n \
     num_turns: $num_turns,
     model: (if $model == "" then null else $model end),
     reasoningEffort: (if $reasoning_effort == "" then null else $reasoning_effort end),
-    cli: $cli
-  }' \
+    cli: $cli,
+    retry_attempt: $retry_attempt
+  }
+  + (if $retry_of == "" then {} else {retry_of: $retry_of} end)
+  + (if $retry_scheduled_at == "" then {} else {retry_scheduled_at: $retry_scheduled_at, retry_after_seconds: $retry_after_seconds} end)' \
   > "$RUN_DIR/meta.json"
 
 exit "$EXIT_CODE"

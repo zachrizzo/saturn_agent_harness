@@ -2,7 +2,7 @@
 
 Schedule Claude Code agent runs via native macOS cron and view results in a local Next.js dashboard.
 
-Saturn is cool because it turns agent work into a real local control plane: schedule recurring AI jobs, jump into chats, track tasks, compare Claude Personal, Bedrock, local, and Codex backends, and keep every run visible without handing your workflow to a cloud dashboard.
+Saturn is cool because it turns agent work into a real local control plane: schedule recurring AI jobs, jump into chats, track tasks, compare Claude Personal, Bedrock, local, and Codex backends, orchestrate specialist slice graphs, and keep every run visible without handing your workflow to a cloud dashboard.
 
 ---
 
@@ -230,6 +230,75 @@ Each server entry in `mcps.json` has a `targets` array controlling which CLIs re
 
 ---
 
+## Agents and Slice Graphs
+
+Saved agents can run either as direct chat agents or orchestrators. An orchestrator owns a visual slice workflow: the orchestrator node is the default root, specialist slices are graph nodes, and edges describe how data flows from upstream nodes into downstream nodes.
+
+The slice workflow editor supports:
+- A default orchestrator node for every orchestrator, so the graph reads as lineage from the controller into specialist work.
+- Parallel fan-out by connecting the orchestrator to multiple independent slices. Nodes with no dependency between them run in the same wave.
+- Dependency flow by connecting one specialist slice into another. Downstream slices receive completed upstream outputs as `upstream_results`.
+- An Arrange action that lays out the saved graph as a tree.
+- A collapsible slice palette and full-screen canvas for editing larger workflows.
+
+At runtime, orchestrator agents should use `run_slice_graph` for saved workflows. Saturn executes each ready wave with `Promise.all`, records the graph run under the session, and exposes progress through `get_slice_graph_run`. Terminal node results are returned to the orchestrator for final synthesis.
+
+---
+
+## Jobs and Generated Results
+
+Jobs are local scheduled runs backed by `jobs/jobs.json`, cron registration, and persisted run folders under `runs/<job>/<timestamp>/`. The dashboard Jobs page and each job detail page can run jobs on demand, edit schedules/runtime settings, and delete jobs. Deleting a job removes it from `jobs/jobs.json` and re-syncs the Saturn-managed crontab entries.
+
+Agents can manage jobs through the Saturn control plane:
+
+```bash
+saturn jobs list
+saturn jobs get daily-summary
+saturn jobs delete daily-summary
+```
+
+The orchestrator MCP server also exposes `list_jobs` and `delete_job`, so an agent can remove a scheduled job when the user asks.
+
+Failed jobs retry once, 30 minutes later. The retry is launched outside cron with `SATURN_JOB_RETRY_ATTEMPT=1`, records retry metadata in `meta.json`, and does not schedule a third run if the retry fails.
+
+Job final output can include a dynamic UI block. Add one fenced `saturn-ui` JSON block when the result has structured data that is clearer as UI:
+
+````markdown
+```saturn-ui
+{
+  "title": "Daily review",
+  "summary": "Two high-priority items need attention.",
+  "metrics": [
+    { "label": "Open items", "value": "2", "tone": "warn", "delta": "1 new" }
+  ],
+  "links": [
+    { "label": "Open run", "href": "/runs/daily-review/2026-05-05T09-00-00" }
+  ],
+  "charts": [
+    {
+      "title": "Findings by day",
+      "type": "bar",
+      "xKey": "day",
+      "series": [{ "key": "count", "label": "Findings", "tone": "accent" }],
+      "data": [{ "day": "Mon", "count": 3 }, { "day": "Tue", "count": 7 }]
+    }
+  ],
+  "tables": [
+    {
+      "title": "Items",
+      "columns": [{ "key": "name", "label": "Name" }, { "key": "status", "label": "Status" }],
+      "rows": [{ "name": "Auth follow-up", "status": "Open" }]
+    }
+  ],
+  "sections": [{ "title": "Notes", "items": ["Keep the block factual.", "Do not include secrets."] }]
+}
+```
+````
+
+`GeneratedOutputView` renders those blocks as metrics, links, sections, tables, and bar/line/area charts. The same renderer is used on job detail pages, run detail pages, older job cards, and the home page's latest job results panel, so job UI output is DRY and reusable for chat rendering later.
+
+---
+
 ## Telegram Dispatch
 
 `bin/telegram-dispatch.mjs` lets you message Saturn through a Telegram bot. It follows the OpenClaw-style pattern: a local gateway stays online, each chat maps to a persistent Saturn session, and users can keep texting naturally while work runs in the background.
@@ -324,6 +393,7 @@ saturn/
 │   ├── install-dashboard-service.sh
 │   ├── install-telegram-service.sh
 │   ├── run-job.sh        # cron wrapper — invokes the configured backend
+│   ├── saturn            # local control-plane CLI for tasks, agents, slices, jobs, memory, and sessions
 │   ├── sync-configs.sh   # propagate mcps.json + skills/ to each CLI
 │   └── register-job.sh   # sync jobs.json into crontab
 ├── jobs/jobs.example.json # template for local job registry
@@ -380,13 +450,14 @@ You can also edit `jobs/jobs.json` manually to append an object with `name`, `cr
 bin/register-job.sh
 ```
 
-## Testing a job manually
+## Running or deleting a job
 
 ```bash
 bin/run-job.sh my-job-name
+bin/saturn jobs delete my-job-name
 ```
 
-The run appears in `runs/my-job-name/<timestamp>/` and in the dashboard.
+Manual and scheduled runs appear in `runs/my-job-name/<timestamp>/` and in the dashboard. You can also run or delete jobs from the dashboard UI.
 
 ---
 

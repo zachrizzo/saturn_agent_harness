@@ -6,9 +6,10 @@ import { Button } from "./ui";
 
 type PlayButtonProps = {
   jobName: string;
+  label?: string;
 };
 
-export function PlayButton({ jobName }: PlayButtonProps) {
+export function PlayButton({ jobName, label }: PlayButtonProps) {
   const [isLoading, setIsLoading] = useState(false);
   const router = useRouter();
 
@@ -27,7 +28,7 @@ export function PlayButton({ jobName }: PlayButtonProps) {
         throw new Error(data.error || "Failed to trigger job");
       }
 
-      router.push(`/jobs/${jobName}`);
+      router.push(`/jobs/${encodeURIComponent(jobName)}`);
     } catch (err) {
       console.error(err);
       setIsLoading(false);
@@ -37,11 +38,11 @@ export function PlayButton({ jobName }: PlayButtonProps) {
   return (
     <Button
       variant="primary"
-      size="icon"
+      size={label ? "sm" : "icon"}
       onClick={handleRun}
       disabled={isLoading}
       title="Run job now"
-      aria-label="Run job now"
+      aria-label={`Run ${jobName} now`}
     >
       {isLoading ? (
         <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24">
@@ -53,6 +54,7 @@ export function PlayButton({ jobName }: PlayButtonProps) {
           <path d="M6.3 2.841A1.5 1.5 0 004 4.11V15.89a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z" />
         </svg>
       )}
+      {label ? <span>{isLoading ? "Running..." : label}</span> : null}
     </Button>
   );
 }

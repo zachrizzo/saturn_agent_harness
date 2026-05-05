@@ -45,6 +45,10 @@ if [[ -z "$SESSION_ID" || -z "$SLICE_RUN_ID" || -z "$SLICE_CLI" || -z "$SLICE_TI
   exit 2
 fi
 
+saturn_validate_path_segment "$SESSION_ID" "session id"
+saturn_validate_path_segment "$SLICE_RUN_ID" "slice run id"
+saturn_validate_timeout_seconds "$SLICE_TIMEOUT" "slice timeout"
+
 SLICE_CLI="$(normalize_cli_id "$SLICE_CLI")"
 SLICE_MODEL="${SLICE_MODEL:-}"
 SLICE_ALLOWED_TOOLS="${SLICE_ALLOWED_TOOLS:-}"

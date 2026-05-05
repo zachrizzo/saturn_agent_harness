@@ -3,7 +3,7 @@
 import Link from "next/link";
 import type { MouseEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   IconAgent,
   IconChat,
@@ -105,6 +105,7 @@ function handleDocumentChatClick(
   event: MouseEvent<HTMLAnchorElement>,
   href: string,
   beforeNavigate?: () => void,
+  navigate?: (href: string) => void,
 ): void {
   if (
     event.defaultPrevented ||
@@ -118,7 +119,11 @@ function handleDocumentChatClick(
   }
   event.preventDefault();
   beforeNavigate?.();
-  window.location.assign(href);
+  if (navigate) {
+    navigate(href);
+  } else {
+    window.location.assign(href);
+  }
 }
 
 const SEEN_KEY = "chat-seen-at";
@@ -275,6 +280,7 @@ export function Sidebar({
   showDesktopControls = false,
 }: SidebarProps): JSX.Element {
   const pathname = usePathname() || "/";
+  const router = useRouter();
   const { recents, removeRecent } = useShellRecents();
   const [seenMap, setSeenMap] = useState<Record<string, string>>({});
   const [collapsedProjectsLoaded, setCollapsedProjectsLoaded] = useState(false);
@@ -448,7 +454,10 @@ export function Sidebar({
             +
           </Link>
         </div>
-        <div className={["flex flex-col gap-2", recentsScrollable ? "overflow-y-auto" : "overflow-hidden"].join(" ")}>
+        <div className={[
+          "flex flex-1 min-h-0 flex-col gap-2",
+          recentsScrollable ? "overflow-y-auto overscroll-contain pr-1" : "overflow-hidden",
+        ].join(" ")}>
           {visibleRecents.length === 0 ? (
             <div className="px-2.5 py-1.5 text-[12px] text-subtle">No chats yet.</div>
           ) : (
@@ -501,7 +510,7 @@ export function Sidebar({
                           onClick={(event) => handleDocumentChatClick(event, href, () => {
                             recordSeen(r.id);
                             onNavigate?.();
-                          })}
+                          }, (nextHref) => router.push(nextHref))}
                           className={linkClass("flex flex-col gap-0.5 pr-7", active)}
                         >
                           <div className="flex items-center justify-between gap-2">

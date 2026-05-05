@@ -117,6 +117,7 @@ if [[ $# -ne 1 ]]; then
   exit 2
 fi
 SESSION_ID="$1"
+saturn_validate_path_segment "$SESSION_ID" "session id"
 SESSION_DIR="$SESSIONS_ROOT/$SESSION_ID"
 
 if [[ ! -d "$SESSION_DIR" ]]; then
@@ -197,6 +198,7 @@ AGENT_PROMPT="$(jq -r '.agent_snapshot.prompt // ""' "$META_FILE")"
 AGENT_CWD="$(jq -r '.agent_snapshot.cwd // ""' "$META_FILE")"
 AGENT_ALLOWED_TOOLS="$(jq -r '(.agent_snapshot.allowedTools // []) | join(",")' "$META_FILE")"
 TIMEOUT_SECONDS="$(jq -r '.agent_snapshot.timeout_seconds // 1800' "$META_FILE")"
+saturn_validate_timeout_seconds "$TIMEOUT_SECONDS" "timeout_seconds"
 
 # If the dashboard resolved and passed a merged allowlist, use it instead.
 # "ALL" is a sentinel meaning no restriction (omit --allowedTools entirely).
@@ -269,6 +271,7 @@ saturn slices create --json '{\"id\":\"repo-scan\",\"name\":\"Repo Scan\",\"prom
 saturn slices update repo-scan --json '{\"description\":\"...\"}'
 saturn jobs create --json '{\"name\":\"daily-summary\",\"cron\":\"0 9 * * *\",\"prompt\":\"Summarize the repo.\"}'
 saturn jobs update daily-summary --json '{\"cron\":\"30 9 * * *\"}'
+saturn jobs delete daily-summary
 
 # Prior chats
 saturn sessions list --q \"deployment\" --limit 5
@@ -322,10 +325,12 @@ if [[ "${SATURN_ORCHESTRATOR_TOOLS:-}" == "1" ]]; then
 
 ## Saturn Slice Workflow
 
-This saved agent can use the local \`orchestrator\` MCP server to coordinate specialist sub-agents.
+This chat can use the local \`orchestrator\` MCP server to coordinate saved swarms and specialist sub-agents.
 
-- Start by calling \`list_slices\`; it returns the available slice catalog and any saved \`workflow_graph\`.
-- If \`workflow_graph\` is present, prefer \`run_slice_graph\` for tasks that should follow the visual workflow. It starts the saved graph in dependency/top-to-bottom order and returns a \`graph_run_id\`; poll \`get_slice_graph_run\` with that id until status is \`success\` or \`failed\`. Connected downstream nodes receive completed upstream node outputs as \`upstream_results\`.
+- Use \`list_swarms\` to see saved swarm/orchestrator agents. Use \`dispatch_swarm\` when the user asks for an agent swarm or when a saved swarm is the right delegation unit. It starts a separate Saturn chat and returns its \`session_id\` and \`chat_url\`.
+- Use \`list_jobs\` to inspect scheduled jobs and \`delete_job\` when the user asks you to remove a scheduled job.
+- Use \`list_slices\` to see the available specialist slice catalog and any saved \`workflow_graph\`. In a saved workflow, each graph node is a specialist slice agent and each edge defines downstream flow.
+- If \`workflow_graph\` is present, prefer \`run_slice_graph\` for tasks that should follow the visual workflow. It starts the saved agent graph in dependency/top-to-bottom order and returns a \`graph_run_id\`; poll \`get_slice_graph_run\` with that id until status is \`success\` or \`failed\`. Connected downstream nodes receive completed upstream node outputs as \`upstream_results\`.
 - Use \`dispatch_slice\` for ad-hoc branches or one-off specialist calls outside the saved graph.
 - Synthesize the workflow results for the user instead of dumping raw tool JSON.
 
@@ -462,8 +467,9 @@ PY
         claude-bedrock) setup_bedrock_env ;;
         claude-personal) unset CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ;;
         claude-local)
+          mcp_cmd=("$(claude_local_bin)" mcp "${mcp_argv[@]}")
           export CLAUDE_CODE_USE_BEDROCK="0"
-          export ANTHROPIC_BASE_URL="http://0.0.0.0:4000"
+          export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-http://127.0.0.1:4000}"
           export ANTHROPIC_AUTH_TOKEN="sk-local-proxy-key"
           ;;
       esac

@@ -172,12 +172,21 @@ export async function deleteTask(id: string): Promise<void> {
 }
 
 const DEFAULT_TTL_MINUTES = 15;
+export const MAX_TASK_TTL_MINUTES = 24 * 60;
+
+function normalizedTtlMinutes(ttlMinutes: number): number {
+  if (!Number.isInteger(ttlMinutes) || ttlMinutes < 1 || ttlMinutes > MAX_TASK_TTL_MINUTES) {
+    throw new Error(`ttl_minutes must be an integer from 1 to ${MAX_TASK_TTL_MINUTES}`);
+  }
+  return ttlMinutes;
+}
 
 export async function claimTask(
   id: string,
   claimedBy: string,
   ttlMinutes = DEFAULT_TTL_MINUTES
 ): Promise<{ ok: true } | { ok: false; conflict: true; claimed_by: string; expires_at: string }> {
+  const ttl = normalizedTtlMinutes(ttlMinutes);
   await readMeta(id);
 
   const now = new Date();
@@ -191,7 +200,7 @@ export async function claimTask(
     await appendActivity(id, { ts: now.toISOString(), actor: "system", action: "released", detail: "stale lock expired" });
   }
 
-  const expiresAt = new Date(now.getTime() + ttlMinutes * 60 * 1000).toISOString();
+  const expiresAt = new Date(now.getTime() + ttl * 60 * 1000).toISOString();
   const claimData: TaskClaim = { claimed_by: claimedBy, claimed_at: now.toISOString(), expires_at: expiresAt };
 
   try {
@@ -231,12 +240,13 @@ export async function renewTaskClaim(
   claimedBy: string,
   ttlMinutes = DEFAULT_TTL_MINUTES
 ): Promise<{ ok: true; expires_at: string } | { ok: false; forbidden: true }> {
+  const ttl = normalizedTtlMinutes(ttlMinutes);
   await readMeta(id);
 
   const claim = await readClaim(id);
   if (!claim || claim.claimed_by !== claimedBy) return { ok: false, forbidden: true };
 
-  const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString();
+  const expiresAt = new Date(Date.now() + ttl * 60 * 1000).toISOString();
   const updated: TaskClaim = { ...claim, expires_at: expiresAt };
   await fs.writeFile(taskClaimPath(id), JSON.stringify(updated, null, 2), "utf8");
   await appendActivity(id, { ts: new Date().toISOString(), actor: claimedBy, action: "updated", detail: `renewed until ${expiresAt}` });

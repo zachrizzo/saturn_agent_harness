@@ -13,6 +13,7 @@ import {
 import type { SessionMeta } from "@/lib/runs";
 import { toInboxSessions } from "@/lib/chat-inbox";
 import type { RecentChatItem } from "./Sidebar";
+import { SIDEBAR_RECENT_CHAT_LIMIT } from "./recent-chat-limit";
 
 const RECENTS_POLL_MS = 5000;
 
@@ -44,7 +45,7 @@ function sessionsToRecentItems(sessions: SessionMeta[]): RecentChatItem[] {
   const active = sessions.filter(
     (s) => !s.archived && ((s.turns ?? []).length > 0 || s.status === "running"),
   );
-  return toInboxSessions(active).slice(0, 8).map((s) => ({
+  return toInboxSessions(active).slice(0, SIDEBAR_RECENT_CHAT_LIMIT).map((s) => ({
     id: s.id,
     title: s.title,
     agent: s.agent,

@@ -11,6 +11,7 @@ import { Header } from "@/app/components/shell/Header";
 import { DesktopSidebar } from "@/app/components/shell/DesktopSidebar";
 import { ShellRecentsProvider } from "@/app/components/shell/ShellRecentsProvider";
 import type { RecentChatItem } from "@/app/components/shell/Sidebar";
+import { SIDEBAR_RECENT_CHAT_LIMIT } from "@/app/components/shell/recent-chat-limit";
 import { RouteContainer } from "./RouteContainer";
 
 export const metadata: Metadata = {
@@ -23,12 +24,30 @@ export const metadata: Metadata = {
 
 export const dynamic = "force-dynamic";
 
+const uiPrefsScript = `
+(function () {
+  try {
+    var root = document.documentElement;
+    if (localStorage.getItem("saturn:sidebar-collapsed") === "1") {
+      root.setAttribute("data-sidebar-collapsed", "1");
+    }
+    if (localStorage.getItem("saturn.inspectorCollapsed") === "1") {
+      root.setAttribute("data-chat-inspector-collapsed", "1");
+    }
+    var width = Number(localStorage.getItem("saturn.inspectorWidth"));
+    if (Number.isFinite(width) && width >= 320 && width <= 1100) {
+      root.style.setProperty("--persisted-inspector-width", width + "px");
+    }
+  } catch (e) {}
+})();
+`;
+
 async function getRecents(): Promise<RecentChatItem[]> {
   const sessions = await listSessions({ compactMeta: true });
   const active = sessions.filter(
     (s) => !s.archived && ((s.turns ?? []).length > 0 || s.status === "running"),
   );
-  return toInboxSessions(active).slice(0, 8).map((s) => ({
+  return toInboxSessions(active).slice(0, SIDEBAR_RECENT_CHAT_LIMIT).map((s) => ({
     id: s.id,
     title: s.title,
     agent: s.agent,
@@ -55,6 +74,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           This is the pattern recommended by the Next.js docs and next-themes.
         */}
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+        <script dangerouslySetInnerHTML={{ __html: uiPrefsScript }} />
       </head>
       <body className="antialiased">
         <ThemeProvider>

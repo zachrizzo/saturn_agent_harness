@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { BundledLanguage } from "shiki";
 
 type Props = {
   filePath: string;
@@ -37,7 +36,7 @@ type FileContent = {
 type FileState =
   | { status: "loading" }
   | { status: "error"; message: string }
-  | { status: "ok"; data: FileContent; html?: string };
+  | { status: "ok"; data: FileContent };
 
 type DiffContent = {
   isGitRepo: boolean;
@@ -75,30 +74,11 @@ type ParsedDiff = {
   files: number;
 };
 
-const EXT_TO_LANG: Record<string, BundledLanguage> = {
-  ts: "typescript", tsx: "tsx", js: "javascript", jsx: "jsx",
-  mjs: "javascript", cjs: "javascript", mts: "typescript", cts: "typescript",
-  py: "python", rb: "ruby", go: "go", rs: "rust", java: "java",
-  c: "c", cpp: "cpp", cs: "csharp", php: "php", swift: "swift",
-  kt: "kotlin", scala: "scala", sh: "bash", zsh: "bash", bash: "bash",
-  fish: "fish", ps1: "powershell", json: "json", jsonc: "jsonc",
-  yaml: "yaml", yml: "yaml", toml: "toml", xml: "xml", html: "html",
-  css: "css", scss: "scss", sass: "sass", less: "less", sql: "sql",
-  graphql: "graphql", gql: "graphql", md: "markdown", mdx: "mdx",
-  vue: "vue", svelte: "svelte", r: "r", lua: "lua", ex: "elixir",
-  exs: "elixir", clj: "clojure", hs: "haskell", ml: "ocaml",
-  tf: "hcl", dockerfile: "dockerfile", prisma: "prisma",
-};
-
 function extOf(p: string): string {
   const base = p.split("/").pop() ?? p;
   if (base.toLowerCase() === "dockerfile") return "dockerfile";
   const dot = base.lastIndexOf(".");
   return dot >= 0 ? base.slice(dot + 1).toLowerCase() : "";
-}
-
-function langOf(p: string): BundledLanguage {
-  return EXT_TO_LANG[extOf(p)] ?? "plaintext";
 }
 
 function isHtmlFile(data: FileContent): boolean {
@@ -198,27 +178,16 @@ function parseUnifiedDiff(diff: string): ParsedDiff {
   return { rows, additions, deletions, files };
 }
 
-async function highlight(code: string, lang: BundledLanguage, theme: "dark" | "light"): Promise<string> {
-  const { codeToHtml } = await import("shiki");
-  // Shiki renders static pre/code/span markup — no user-controlled input reaches this call.
-  // The `code` string comes from reading a local file on the server, returned as JSON text.
-  return codeToHtml(code, {
-    lang,
-    theme: theme === "dark" ? "github-dark-dimmed" : "github-light",
-  });
-}
-
-function getTheme(): "dark" | "light" {
-  if (typeof document === "undefined") return "dark";
-  return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
-}
-
 export function FileViewer({ filePath, sessionId, refreshKey, onClose }: Props) {
   const [state, setState] = useState<FileState>({ status: "loading" });
   const [diffState, setDiffState] = useState<DiffState>({ status: "idle" });
   const [mode, setMode] = useState<ViewMode>("preview");
   const [expanded, setExpanded] = useState(false);
   const [activeSheetIndex, setActiveSheetIndex] = useState(0);
+  const loadSeqRef = useRef(0);
+  const diffSeqRef = useRef(0);
+  const loadAbortRef = useRef<AbortController | null>(null);
+  const diffAbortRef = useRef<AbortController | null>(null);
 
   const rawUrl = useMemo(
     () => `/api/sessions/${encodeURIComponent(sessionId)}/files?path=${encodeURIComponent(filePath)}`,
@@ -226,51 +195,78 @@ export function FileViewer({ filePath, sessionId, refreshKey, onClose }: Props) 
   );
 
   const load = useCallback(async () => {
+    const requestId = loadSeqRef.current + 1;
+    loadSeqRef.current = requestId;
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
+    const isCurrent = () => requestId === loadSeqRef.current && !controller.signal.aborted;
     setState({ status: "loading" });
     setMode("preview");
     setDiffState({ status: "idle" });
     try {
       const res = await fetch(
-        `/api/sessions/${encodeURIComponent(sessionId)}/file-content?path=${encodeURIComponent(filePath)}`
+        `/api/sessions/${encodeURIComponent(sessionId)}/file-content?path=${encodeURIComponent(filePath)}`,
+        { signal: controller.signal },
       );
+      if (!isCurrent()) return;
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: "failed" })) as { error?: string };
+        if (!isCurrent()) return;
         setState({ status: "error", message: err.error ?? `HTTP ${res.status}` });
         return;
       }
       const data = await res.json() as FileContent;
-      let html: string | undefined;
-      if (data.kind === "text" && typeof data.content === "string") {
-        const lang = langOf(filePath);
-        const theme = getTheme();
-        html = await highlight(data.content, lang, theme);
-      }
+      if (!isCurrent()) return;
       setActiveSheetIndex(0);
-      setState({ status: "ok", data, html });
+      setState({ status: "ok", data });
     } catch (e) {
+      if (controller.signal.aborted) return;
       setState({ status: "error", message: e instanceof Error ? e.message : "unknown error" });
+    } finally {
+      if (loadAbortRef.current === controller) loadAbortRef.current = null;
     }
   }, [filePath, refreshKey, sessionId]);
 
   const loadDiff = useCallback(async () => {
+    const requestId = diffSeqRef.current + 1;
+    diffSeqRef.current = requestId;
+    diffAbortRef.current?.abort();
+    const controller = new AbortController();
+    diffAbortRef.current = controller;
+    const isCurrent = () => requestId === diffSeqRef.current && !controller.signal.aborted;
     setDiffState({ status: "loading" });
     try {
       const res = await fetch(
-        `/api/sessions/${encodeURIComponent(sessionId)}/file-diff?path=${encodeURIComponent(filePath)}`
+        `/api/sessions/${encodeURIComponent(sessionId)}/file-diff?path=${encodeURIComponent(filePath)}`,
+        { signal: controller.signal },
       );
+      if (!isCurrent()) return;
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: "failed" })) as { error?: string };
+        if (!isCurrent()) return;
         setDiffState({ status: "error", message: err.error ?? `HTTP ${res.status}` });
         return;
       }
       const data = await res.json() as DiffContent;
+      if (!isCurrent()) return;
       setDiffState({ status: "ok", data });
     } catch (e) {
+      if (controller.signal.aborted) return;
       setDiffState({ status: "error", message: e instanceof Error ? e.message : "unknown error" });
+    } finally {
+      if (diffAbortRef.current === controller) diffAbortRef.current = null;
     }
   }, [filePath, refreshKey, sessionId]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    return () => {
+      loadAbortRef.current?.abort();
+      diffAbortRef.current?.abort();
+    };
+  }, []);
 
   useEffect(() => {
     if (mode === "diff" && diffState.status === "idle") loadDiff();
@@ -393,7 +389,6 @@ export function FileViewer({ filePath, sessionId, refreshKey, onClose }: Props) 
           ) : (
             <FilePreview
               data={state.data}
-              html={state.html}
               mode={mode}
               rawUrl={rawUrl}
               activeSheetIndex={activeSheetIndex}
@@ -508,14 +503,12 @@ function StructuredDiff({ parsed }: { parsed: ParsedDiff }) {
 function FilePreview({
   activeSheetIndex,
   data,
-  html,
   mode,
   rawUrl,
   setActiveSheetIndex,
 }: {
   activeSheetIndex: number;
   data: FileContent;
-  html?: string;
   mode: ViewMode;
   rawUrl: string;
   setActiveSheetIndex: (index: number) => void;
@@ -528,11 +521,13 @@ function FilePreview({
     return <HtmlPreview name={data.name} rawUrl={rawUrl} />;
   }
 
-  if (data.kind === "text" && html) {
+  if (data.kind === "text" && typeof data.content === "string") {
     return (
-      /* Shiki output: static pre/code/span with inline styles; no user script content. */
-      /* eslint-disable-next-line react/no-danger */
-      <div className="file-viewer-code" dangerouslySetInnerHTML={{ __html: html }} />
+      <div className="file-viewer-code">
+        <pre>
+          <code>{data.content}</code>
+        </pre>
+      </div>
     );
   }
 

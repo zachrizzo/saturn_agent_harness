@@ -11,6 +11,14 @@ const nextConfig = {
     // always present before Next's page-data collection step starts.
     webpackBuildWorker: false,
   },
+  webpack(config, { dev }) {
+    if (dev && Array.isArray(config.plugins)) {
+      config.plugins = config.plugins.filter((plugin) => (
+        plugin?.constructor?.name !== "MemoryWithGcCachePlugin"
+      ));
+    }
+    return config;
+  },
 };
 
 export default nextConfig;

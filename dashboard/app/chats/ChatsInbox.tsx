@@ -54,6 +54,7 @@ export function ChatsInbox({ initialSessions, counts }: Props) {
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
+  const [openingId, setOpeningId] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -108,7 +109,8 @@ export function ChatsInbox({ initialSessions, counts }: Props) {
   };
 
   const openChat = (id: string) => {
-    window.location.assign(`/chats/${encodeURIComponent(id)}`);
+    setOpeningId(id);
+    router.push(`/chats/${encodeURIComponent(id)}`);
   };
 
   const selectAll = () => {
@@ -209,8 +211,14 @@ export function ChatsInbox({ initialSessions, counts }: Props) {
         </div>
 
         {selected.size > 0 && (
-          <div className="bulk-bar">
+          <div className="bulk-bar" aria-busy={busy}>
             <span className="count">{selected.size} selected</span>
+            {busy && (
+              <span className="bulk-busy">
+                <span className="loading-spinner tiny" aria-hidden="true" />
+                Updating
+              </span>
+            )}
             <button
               type="button"
               className="bulk-action"
@@ -284,6 +292,7 @@ export function ChatsInbox({ initialSessions, counts }: Props) {
                     key={s.id}
                     s={s}
                     selected={selected.has(s.id)}
+                    opening={openingId === s.id}
                     onToggleSelect={toggleSelect}
                     onOpen={openChat}
                   />

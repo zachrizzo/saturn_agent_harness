@@ -25,25 +25,45 @@ type MessageRequest = {
   files: File[];
 };
 
+class BadRequestError extends Error {}
+
 async function readMessageRequest(req: NextRequest): Promise<MessageRequest> {
   const contentType = req.headers.get("content-type") ?? "";
   if (!contentType.toLowerCase().includes("multipart/form-data")) {
-    return { body: (await req.json()) as Body, files: [] };
+    try {
+      return { body: (await req.json()) as Body, files: [] };
+    } catch {
+      throw new BadRequestError("Invalid JSON");
+    }
   }
 
   const form = await req.formData();
   const payload = form.get("payload");
   if (typeof payload !== "string") {
-    throw new Error("multipart message requires a JSON payload field");
+    throw new BadRequestError("multipart message requires a JSON payload field");
   }
-  const parsed = JSON.parse(payload) as Body;
+  let parsed: Body;
+  try {
+    parsed = JSON.parse(payload) as Body;
+  } catch {
+    throw new BadRequestError("Invalid JSON payload");
+  }
   const files = form.getAll("files").filter((value): value is File => value instanceof File);
   return { body: parsed, files };
 }
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const { body, files } = await readMessageRequest(req);
+  let body: Body;
+  let files: File[];
+  try {
+    ({ body, files } = await readMessageRequest(req));
+  } catch (err) {
+    if (err instanceof BadRequestError) {
+      return NextResponse.json({ error: err.message }, { status: 400 });
+    }
+    throw err;
+  }
   const message = body.message?.trim();
   if (!message) return NextResponse.json({ error: "message is required" }, { status: 400 });
 

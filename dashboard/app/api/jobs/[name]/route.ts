@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import path from "node:path";
 import { spawn } from "child_process";
 import parser from "cron-parser";
-import { getJob, updateJob } from "@/lib/runs";
+import { deleteJob, getJob, updateJob } from "@/lib/runs";
 import { binDir } from "@/lib/paths";
 import { toClaudeAlias } from "@/lib/claude-models";
 import { isModelReasoningEffort, normalizeReasoningEffortForCli, type ModelReasoningEffort } from "@/lib/models";
@@ -137,6 +137,20 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ name
     const job = await updateJob(name, patch);
     if (patch.cron !== undefined && patch.cron !== existing.cron) syncCron(name);
     return NextResponse.json({ job });
+  } catch (err) {
+    return NextResponse.json({ error: err instanceof Error ? err.message : "Failed" }, { status: 500 });
+  }
+}
+
+export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ name: string }> }) {
+  const { name } = await params;
+  const existing = await getJob(name);
+  if (!existing) return NextResponse.json({ error: "Job not found" }, { status: 404 });
+
+  try {
+    const job = await deleteJob(name);
+    syncCron(name);
+    return NextResponse.json({ deleted: true, job });
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : "Failed" }, { status: 500 });
   }

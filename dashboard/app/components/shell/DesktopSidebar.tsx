@@ -16,6 +16,11 @@ function getStoredSidebarCollapsed(): boolean {
 function setStoredSidebarCollapsed(collapsed: boolean) {
   try {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0");
+    if (collapsed) {
+      document.documentElement.setAttribute("data-sidebar-collapsed", "1");
+    } else {
+      document.documentElement.removeAttribute("data-sidebar-collapsed");
+    }
   } catch {}
 }
 
@@ -42,6 +47,7 @@ export function DesktopSidebar(): JSX.Element {
       data-sidebar-collapsed={collapsed ? "true" : "false"}
     >
       <Sidebar
+        recentsScrollable
         sidebarCollapsed={collapsed}
         onSidebarCollapsedChange={setCollapsed}
         showDesktopControls

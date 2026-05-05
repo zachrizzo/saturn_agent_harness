@@ -54,6 +54,10 @@ function shortSliceId(id: string | undefined): string {
   return id.replace(/^slc_/, "").replace(/[-_]/g, " ");
 }
 
+function entryLabel(entry: SliceEntry): string {
+  return entry.label ?? shortSliceId(entry.slice_id);
+}
+
 export function SliceLanes({ slices, streaming, activeRunId, onSelect }: Props) {
   const sorted = useMemo(() => {
     return [...slices].sort((a, b) => {
@@ -65,6 +69,13 @@ export function SliceLanes({ slices, streaming, activeRunId, onSelect }: Props) 
       return aT - bT;
     });
   }, [slices]);
+  const graphEntries = useMemo(
+    () => sorted.filter((entry) => entry.graph_node_id),
+    [sorted],
+  );
+  const graphLabelById = useMemo(() => {
+    return new Map(graphEntries.map((entry) => [entry.graph_node_id!, entryLabel(entry)]));
+  }, [graphEntries]);
 
   // Compute a shared timeline window so bars show overlap.
   const { windowStart, windowEnd } = useMemo(() => {
@@ -149,6 +160,82 @@ export function SliceLanes({ slices, streaming, activeRunId, onSelect }: Props) 
           {completed.length} completed / {sorted.length} total
         </span>
       </div>
+
+      {graphEntries.length > 0 && (
+        <div
+          className="px-4 py-3"
+          style={{
+            borderBottom: "1px solid var(--border)",
+            background: "var(--bg)",
+          }}
+        >
+          <div className="mb-2 flex items-center gap-2">
+            <span className="eyebrow">Agent Graph</span>
+            <span className="text-[11px] text-subtle">
+              {graphEntries.length} node{graphEntries.length === 1 ? "" : "s"}
+            </span>
+          </div>
+          <div
+            className="grid gap-2"
+            style={{
+              gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
+            }}
+          >
+            {graphEntries.map((entry) => {
+              const upstream = entry.upstream_node_ids ?? [];
+              const downstream = entry.downstream_node_ids ?? [];
+              return (
+                <button
+                  key={entry.graph_node_id}
+                  type="button"
+                  onClick={() => !entry.planned && onSelect(entry)}
+                  disabled={entry.planned}
+                  className="text-left rounded-lg border px-3 py-2 transition-colors"
+                  style={{
+                    borderColor: entry.slice_run_id === activeRunId ? "var(--accent)" : "var(--border)",
+                    background: entry.slice_run_id === activeRunId ? "var(--accent-soft)" : "var(--bg-subtle)",
+                    opacity: entry.planned ? 0.74 : 1,
+                  }}
+                >
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`status-dot ${dotClass(entry.status)}`}
+                      style={{
+                        width: 8,
+                        height: 8,
+                        flexShrink: 0,
+                      }}
+                    />
+                    <span className="truncate text-[12.5px] font-semibold text-fg">
+                      {entryLabel(entry)}
+                    </span>
+                    <span className="ml-auto mono text-[10px] text-subtle">
+                      {entry.execution_order ? `#${entry.execution_order}` : ""}
+                    </span>
+                  </div>
+                  <div className="mt-1 truncate text-[10.5px] text-muted">
+                    {entry.slice_id ?? "custom slice"}
+                  </div>
+                  {(upstream.length > 0 || downstream.length > 0) && (
+                    <div className="mt-2 space-y-1 text-[10.5px] text-subtle">
+                      {upstream.length > 0 && (
+                        <div className="truncate">
+                          from {upstream.map((id) => graphLabelById.get(id) ?? id).join(" -> ")}
+                        </div>
+                      )}
+                      {downstream.length > 0 && (
+                        <div className="truncate">
+                          to {downstream.map((id) => graphLabelById.get(id) ?? id).join(" -> ")}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Lanes */}
       {sorted.length === 0 ? (

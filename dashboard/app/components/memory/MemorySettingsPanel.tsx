@@ -42,7 +42,6 @@ type Props = {
   className?: string;
 };
 
-const STATUS_POLL_MS = 5000;
 const PROVIDERS = ["disabled", "openai-compatible", "local-http", "bedrock"];
 const RETRIEVAL_MODES = ["hybrid", "semantic", "keyword"];
 const MASKED_SECRET = "••••••••••••";
@@ -120,6 +119,23 @@ function statusChipClass(status: EmbeddingStatus | null): string {
   return "chip-accent";
 }
 
+function embeddingStatusEqual(a: EmbeddingStatus | null, b: EmbeddingStatus | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.state === b.state
+    && (a.retrievalMode ?? "") === (b.retrievalMode ?? "")
+    && (a.indexedCount ?? -1) === (b.indexedCount ?? -1)
+    && (a.embeddedCount ?? -1) === (b.embeddedCount ?? -1)
+    && (a.pendingCount ?? -1) === (b.pendingCount ?? -1)
+    && (a.staleCount ?? -1) === (b.staleCount ?? -1)
+    && (a.totalCount ?? -1) === (b.totalCount ?? -1)
+    && (a.provider ?? "") === (b.provider ?? "")
+    && (a.model ?? "") === (b.model ?? "")
+    && (a.lastUpdated ?? "") === (b.lastUpdated ?? "")
+    && (a.lastError ?? "") === (b.lastError ?? "")
+    && a.rebuilding === b.rebuilding;
+}
+
 function field(settings: SettingsRecord | null, key: keyof MemoryEmbeddingSettings, fallback = ""): string {
   return stringValue(settings?.[key], fallback);
 }
@@ -180,8 +196,9 @@ export function MemorySettingsPanel({
       const res = await fetch("/api/memory/embeddings/status");
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `Status request failed: ${res.status}`);
-      setStatus(normalizeStatus(data));
-      setStatusError(null);
+      const nextStatus = normalizeStatus(data);
+      setStatus((current) => (embeddingStatusEqual(current, nextStatus) ? current : nextStatus));
+      setStatusError((current) => (current === null ? current : null));
     } catch (err) {
       setStatusError(err instanceof Error ? err.message : "Unable to load embedding status.");
     } finally {
@@ -191,16 +208,16 @@ export function MemorySettingsPanel({
 
   useEffect(() => {
     let stopped = false;
-    const poll = () => {
+    const refreshIfVisible = () => {
       if (!stopped && document.visibilityState === "visible") void refreshStatus(false);
     };
     void refreshStatus(true);
-    const interval = window.setInterval(poll, STATUS_POLL_MS);
-    document.addEventListener("visibilitychange", poll);
+    document.addEventListener("visibilitychange", refreshIfVisible);
+    window.addEventListener("focus", refreshIfVisible);
     return () => {
       stopped = true;
-      window.clearInterval(interval);
-      document.removeEventListener("visibilitychange", poll);
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+      window.removeEventListener("focus", refreshIfVisible);
     };
   }, [refreshStatus]);
 

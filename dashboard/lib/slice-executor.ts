@@ -26,6 +26,7 @@ export type SliceExecuteInput = {
   sessionId: string;
   sliceId: string;
   inputs: Record<string, unknown>;
+  executionContext?: SliceExecutionContext;
   /** Optional overrides from orchestrator (e.g., timeout cap from remaining budget). */
   budgetOverride?: { timeout_seconds?: number; max_tokens?: number };
   /** cwd override — typically the orchestrator session's cwd. */
@@ -67,7 +68,17 @@ export type CustomSliceExecuteInput = {
   spec: CustomSliceSpec;
   /** Only used for logging / the index entry. */
   inputs?: Record<string, unknown>;
+  executionContext?: SliceExecutionContext;
   cwdOverride?: string;
+};
+
+export type SliceExecutionContext = {
+  graph_run_id?: string;
+  graph_node_id?: string;
+  label?: string;
+  execution_order?: number;
+  upstream_node_ids?: string[];
+  downstream_node_ids?: string[];
 };
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -494,6 +505,7 @@ async function writeSliceResult(
     tokens: SliceExecuteTokens;
     duration_ms: number;
     raw_output: string;
+    executionContext?: SliceExecutionContext;
   },
 ): Promise<void> {
   const metaPath = path.join(sliceDir, "meta.json");
@@ -509,6 +521,11 @@ async function writeSliceResult(
   }
 
   if (result.slice_id) meta.slice_id = result.slice_id;
+  if (result.executionContext) {
+    for (const [key, value] of Object.entries(result.executionContext)) {
+      if (value !== undefined) meta[key] = value;
+    }
+  }
   meta.status = result.status;
   meta.output = result.output;
   meta.error = result.error ?? null;
@@ -584,6 +601,7 @@ ${JSON.stringify(req.inputs, null, 2)}
   const queuedAt = new Date().toISOString();
   await appendIndex(req.sessionId, {
     slice_run_id,
+    ...req.executionContext,
     slice_id: slice.id,
     status: "running",
     started_at: queuedAt,
@@ -655,10 +673,20 @@ ${JSON.stringify(req.inputs, null, 2)}
   );
   await cleanupWorktreeOnFailure(slice.sandbox.mode, sandbox, outcome.exitCode);
   await recordBudget(req.sessionId, tokens.total);
-  await writeSliceResult(sliceDir, { slice_id: slice.id, status, output, error, tokens, duration_ms, raw_output });
+  await writeSliceResult(sliceDir, {
+    slice_id: slice.id,
+    status,
+    output,
+    error,
+    tokens,
+    duration_ms,
+    raw_output,
+    executionContext: req.executionContext,
+  });
 
   await appendIndex(req.sessionId, {
     slice_run_id,
+    ...req.executionContext,
     slice_id: slice.id,
     status,
     started_at: outcome.startedAt,
@@ -707,6 +735,7 @@ export async function executeCustomSlice(
   const queuedAt = new Date().toISOString();
   await appendIndex(req.sessionId, {
     slice_run_id,
+    ...req.executionContext,
     slice_id: "__custom__",
     status: "running",
     started_at: queuedAt,
@@ -746,10 +775,20 @@ export async function executeCustomSlice(
   );
   await cleanupWorktreeOnFailure(sandboxSpec.mode, sandbox, outcome.exitCode);
   await recordBudget(req.sessionId, tokens.total);
-  await writeSliceResult(sliceDir, { slice_id: "__custom__", status, output: null, error, tokens, duration_ms, raw_output });
+  await writeSliceResult(sliceDir, {
+    slice_id: "__custom__",
+    status,
+    output: null,
+    error,
+    tokens,
+    duration_ms,
+    raw_output,
+    executionContext: req.executionContext,
+  });
 
   await appendIndex(req.sessionId, {
     slice_run_id,
+    ...req.executionContext,
     slice_id: "__custom__",
     status,
     started_at: outcome.startedAt,

@@ -54,7 +54,6 @@ If a slice fails, note it in the report and continue.`,
       allowed_mutations: ["read-only"],
       budget: {
         max_total_tokens: 300000,
-        max_wallclock_seconds: 900,
         max_slice_calls: 15,
         max_recursion_depth: 1,
       },
@@ -62,7 +61,6 @@ If a slice fails, note it in the report and continue.`,
       on_slice_failure: "continue",
       allowedTools: [],
       tags: ["code-review"],
-      timeout_seconds: 1200,
     },
     {
       id: "research-deep-dive",
@@ -91,7 +89,6 @@ STRATEGY:
       allowed_mutations: ["read-only"],
       budget: {
         max_total_tokens: 200000,
-        max_wallclock_seconds: 600,
         max_slice_calls: 10,
         max_recursion_depth: 1,
       },
@@ -99,7 +96,6 @@ STRATEGY:
       on_slice_failure: "continue",
       allowedTools: [],
       tags: ["research"],
-      timeout_seconds: 900,
     },
     {
       id: "feature-implementer",
@@ -132,7 +128,6 @@ IMPORTANT: code-writer-typescript uses worktree sandbox — changes are isolated
       allowed_mutations: ["read-only", "writes-source"],
       budget: {
         max_total_tokens: 500000,
-        max_wallclock_seconds: 1800,
         max_slice_calls: 30,
         max_recursion_depth: 2,
       },
@@ -140,7 +135,6 @@ IMPORTANT: code-writer-typescript uses worktree sandbox — changes are isolated
       on_slice_failure: "abort",
       allowedTools: [],
       tags: ["implementation"],
-      timeout_seconds: 2400,
     },
   ];
 

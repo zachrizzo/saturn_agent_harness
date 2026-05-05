@@ -70,6 +70,20 @@ type GraphData = {
   edges: GraphEdge[];
 };
 
+type LayoutNode = GraphNode & {
+  x: number;
+  y: number;
+  degree: number;
+  component: number;
+  radius: number;
+};
+
+type GraphViewport = {
+  x: number;
+  y: number;
+  k: number;
+};
+
 const MEMORY_TYPES = [
   "Entities",
   "Concepts",
@@ -91,7 +105,6 @@ const EMPTY_DRAFT: MemoryDraft = {
 
 const MARKDOWN_PLUGINS = [remarkGfm];
 const MEMORY_LIST_DEBOUNCE_MS = 180;
-const MEMORY_LIST_POLL_MS = 4000;
 const MEMORY_LIST_PAGE_SIZE = 50;
 
 type MemoryPageInfo = {
@@ -284,23 +297,25 @@ function mergeMemoryNote(existing: MemoryNote | undefined, next: MemoryNote): Me
   if (!existing) return next;
   const sameUpdatedAt = (existing.updatedAt ?? "") === (next.updatedAt ?? "");
   if (!sameUpdatedAt) return next;
-  return {
+  const merged = {
     ...next,
     content: existing.content.length > next.content.length ? existing.content : next.content,
     backlinks: existing.backlinks.length ? existing.backlinks : next.backlinks,
     related: existing.related.length ? existing.related : next.related,
     sourceSessions: existing.sourceSessions.length ? existing.sourceSessions : next.sourceSessions,
   };
+  return memoryNoteEqual(existing, merged) ? existing : merged;
 }
 
 function mergeMemoryList(current: MemoryNote[], next: MemoryNote[]): MemoryNote[] {
   if (!current.length) return next;
   const currentById = new Map(current.map((note) => [note.id, note]));
   const nextIds = new Set(next.map((note) => note.id));
-  return [
+  const merged = [
     ...next.map((note) => mergeMemoryNote(currentById.get(note.id), note)),
     ...current.filter((note) => !nextIds.has(note.id)),
   ];
+  return memoryListEqual(current, merged) ? current : merged;
 }
 
 function appendMemoryList(current: MemoryNote[], next: MemoryNote[]): MemoryNote[] {
@@ -316,7 +331,64 @@ function appendMemoryList(current: MemoryNote[], next: MemoryNote[]): MemoryNote
       merged[existingIndex] = mergeMemoryNote(merged[existingIndex], note);
     }
   }
-  return merged;
+  return memoryListEqual(current, merged) ? current : merged;
+}
+
+function stringListEqual(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+function sourceSessionsEqual(a: SourceSession[], b: SourceSession[]): boolean {
+  return a.length === b.length && a.every((session, index) => {
+    const next = b[index];
+    return Boolean(next)
+      && session.id === next.id
+      && session.title === next.title
+      && (session.href ?? "") === (next.href ?? "")
+      && (session.at ?? "") === (next.at ?? "");
+  });
+}
+
+function refsEqual(a: MemoryRef[], b: MemoryRef[]): boolean {
+  return a.length === b.length && a.every((ref, index) => {
+    const next = b[index];
+    return Boolean(next)
+      && ref.id === next.id
+      && ref.title === next.title
+      && (ref.type ?? "") === (next.type ?? "")
+      && (ref.scope ?? "") === (next.scope ?? "");
+  });
+}
+
+function memoryNoteEqual(a: MemoryNote, b: MemoryNote): boolean {
+  return a.id === b.id
+    && a.title === b.title
+    && a.content === b.content
+    && a.scope === b.scope
+    && a.scopeKind === b.scopeKind
+    && a.type === b.type
+    && (a.cwd ?? "") === (b.cwd ?? "")
+    && (a.createdAt ?? "") === (b.createdAt ?? "")
+    && (a.updatedAt ?? "") === (b.updatedAt ?? "")
+    && stringListEqual(a.tags, b.tags)
+    && stringListEqual(a.aliases, b.aliases)
+    && sourceSessionsEqual(a.sourceSessions, b.sourceSessions)
+    && refsEqual(a.backlinks, b.backlinks)
+    && refsEqual(a.related, b.related);
+}
+
+function memoryListEqual(a: MemoryNote[], b: MemoryNote[]): boolean {
+  return a.length === b.length && a.every((note, index) => {
+    const next = b[index];
+    return Boolean(next) && memoryNoteEqual(note, next);
+  });
+}
+
+function pageInfoEqual(a: MemoryPageInfo, b: MemoryPageInfo): boolean {
+  return a.limit === b.limit
+    && a.offset === b.offset
+    && a.nextOffset === b.nextOffset
+    && a.hasMore === b.hasMore;
 }
 
 function normalizeGraph(data: unknown, notes: MemoryNote[]): GraphData {
@@ -590,18 +662,19 @@ function useMemoryList(search: string, scope: string, type: string, defaultCwd?:
       setNotes((current) => {
         if (mode === "append") return appendMemoryList(current, next);
         if (mode === "refresh") return mergeMemoryList(current, next);
-        return next;
+        return memoryListEqual(current, next) ? current : next;
       });
-      setPageInfo((current) => (
-        mode === "refresh"
+      setPageInfo((current) => {
+        const updated = mode === "refresh"
           ? {
               ...current,
               hasMore: current.hasMore || nextPageInfo.hasMore,
             }
-          : nextPageInfo
-      ));
+          : nextPageInfo;
+        return pageInfoEqual(current, updated) ? current : updated;
+      });
       loadedRef.current = true;
-      setError(null);
+      setError((current) => (current === null ? current : null));
     } catch (err) {
       if (signal.aborted) return;
       if (!loadedRef.current || showLoading || mode === "append") {
@@ -629,21 +702,21 @@ function useMemoryList(search: string, scope: string, type: string, defaultCwd?:
     setLoading(true);
     setLoadingMore(false);
 
-    const pollIfVisible = () => {
+    const refreshIfVisible = () => {
       if (document.visibilityState === "visible" && loadedRef.current) void loadNotes(0, "refresh");
     };
 
     const timer = window.setTimeout(() => {
       if (!stopped) void loadNotes(0, "replace", true);
     }, MEMORY_LIST_DEBOUNCE_MS);
-    const interval = window.setInterval(pollIfVisible, MEMORY_LIST_POLL_MS);
-    document.addEventListener("visibilitychange", pollIfVisible);
+    document.addEventListener("visibilitychange", refreshIfVisible);
+    window.addEventListener("focus", refreshIfVisible);
 
     return () => {
       stopped = true;
       window.clearTimeout(timer);
-      window.clearInterval(interval);
-      document.removeEventListener("visibilitychange", pollIfVisible);
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+      window.removeEventListener("focus", refreshIfVisible);
       controllerRef.current?.abort();
     };
   }, [loadNotes]);
@@ -769,9 +842,16 @@ export function MemoryWorkspace({ defaultCwd = null }: MemoryWorkspaceProps) {
         if (!note) return;
         setNotes((current) => {
           const exists = current.some((item) => item.id === note.id);
-          return exists
-            ? current.map((item) => (item.id === note.id ? note : item))
-            : [note, ...current];
+          if (!exists) return [note, ...current];
+          let changed = false;
+          const updated = current.map((item) => {
+            if (item.id !== note.id) return item;
+            const merged = mergeMemoryNote(item, note);
+            if (memoryNoteEqual(item, merged)) return item;
+            changed = true;
+            return merged;
+          });
+          return changed ? updated : current;
         });
       })
       .catch(() => {
@@ -1038,7 +1118,6 @@ export function MemoryWorkspace({ defaultCwd = null }: MemoryWorkspaceProps) {
             onSelect={(id) => {
               const note = notes.find((item) => item.id === id);
               if (note) selectNote(note.id);
-              setMode("preview");
             }}
           />
         ) : mode === "edit" ? (
@@ -1275,62 +1354,272 @@ function MemoryGraph({
 }) {
   const width = 900;
   const height = 620;
-  const nodes = layoutNodes(graph.nodes, width, height);
-  const nodeMap = new Map(nodes.map((node) => [node.id, node]));
+  const graphKey = useMemo(() => graphSignature(graph), [graph]);
+  const world = useMemo(() => graphWorldSize(graph.nodes.length), [graph.nodes.length]);
+  const nodes = useMemo(() => layoutNodes(graph.nodes, graph.edges, world.width, world.height), [graph.edges, graph.nodes, world.height, world.width]);
+  const nodeMap = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
+  const adjacency = useMemo(() => graphAdjacency(nodes, graph.edges), [graph.edges, nodes]);
+  const selectedNode = selectedId ? nodeMap.get(selectedId) ?? null : null;
+  const [viewport, setViewport] = useState<GraphViewport>(() => fitGraphViewport(world.width, world.height, width, height));
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [listQuery, setListQuery] = useState("");
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const panRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    viewport: GraphViewport;
+    moved: boolean;
+  } | null>(null);
+  const panMovedRef = useRef(false);
+
+  useEffect(() => {
+    setViewport(fitGraphViewport(world.width, world.height, width, height));
+  }, [graphKey, world.height, world.width]);
+
+  const visibleRect = useMemo(() => viewportRect(viewport, width, height), [viewport]);
+  const focusPoint = selectedNode ?? {
+    x: visibleRect.x + visibleRect.width / 2,
+    y: visibleRect.y + visibleRect.height / 2,
+  };
+  const hoveredNode = hoveredId ? nodeMap.get(hoveredId) ?? null : null;
+  const visibleNodes = useMemo(
+    () => nodes.filter((node) => rectContainsNode(visibleRect, node, 96 / viewport.k)),
+    [nodes, viewport.k, visibleRect],
+  );
+  const visibleNodeIds = useMemo(() => new Set(visibleNodes.map((node) => node.id)), [visibleNodes]);
+  const visibleEdges = useMemo(
+    () => graph.edges.filter((edge) => visibleNodeIds.has(edge.source) || visibleNodeIds.has(edge.target)),
+    [graph.edges, visibleNodeIds],
+  );
+  const labelIds = useMemo(
+    () => foveatedLabelIds(visibleNodes, focusPoint, adjacency, selectedId, hoveredId, viewport.k),
+    [adjacency, focusPoint, hoveredId, selectedId, viewport.k, visibleNodes],
+  );
+  const filteredListNodes = useMemo(
+    () => filterGraphList(nodes, adjacency, listQuery, selectedId, hoveredId, focusPoint),
+    [adjacency, focusPoint, hoveredId, listQuery, nodes, selectedId],
+  );
+  const selectedNeighborIds = selectedId ? adjacency.get(selectedId) ?? new Set<string>() : new Set<string>();
 
   if (!nodes.length) {
     return <EmptyState title="No graph data" body="Memory graph links appear after notes are connected." />;
   }
 
+  function zoomAt(clientX: number, clientY: number, delta: number) {
+    const rect = svgPoint(clientX, clientY);
+    setViewport((current) => {
+      const worldX = (rect.x - current.x) / current.k;
+      const worldY = (rect.y - current.y) / current.k;
+      const nextK = clamp(current.k * delta, 0.26, 2.2);
+      return {
+        x: rect.x - worldX * nextK,
+        y: rect.y - worldY * nextK,
+        k: nextK,
+      };
+    });
+  }
+
+  function svgPoint(clientX: number, clientY: number) {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return { x: width / 2, y: height / 2 };
+    return {
+      x: ((clientX - rect.left) / rect.width) * width,
+      y: ((clientY - rect.top) / rect.height) * height,
+    };
+  }
+
+  function focusSelection() {
+    if (!selectedNode) {
+      setViewport(fitGraphViewport(world.width, world.height, width, height));
+      return;
+    }
+    setViewport(centerGraphViewport(selectedNode.x, selectedNode.y, width, height, 1.15));
+  }
+
   return (
     <div className="memory-graph-wrap">
       {loading && <div className="memory-graph-loading">Loading graph...</div>}
-      <svg className="memory-graph" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Memory graph">
-        <g className="memory-graph-edges">
-          {graph.edges.map((edge, index) => {
-            const source = nodeMap.get(edge.source);
-            const target = nodeMap.get(edge.target);
-            if (!source || !target) return null;
+      <div className="memory-graph-stage">
+        <div className="memory-graph-toolbar">
+          <button type="button" onClick={() => setViewport(fitGraphViewport(world.width, world.height, width, height))}>
+            Fit
+          </button>
+          <button type="button" onClick={focusSelection} disabled={!selectedNode}>
+            Focus
+          </button>
+          <button type="button" aria-label="Zoom out" onClick={() => setViewport((current) => ({ ...current, k: clamp(current.k * 0.82, 0.26, 2.2) }))}>
+            -
+          </button>
+          <input
+            type="range"
+            min="0.26"
+            max="2.2"
+            step="0.02"
+            value={viewport.k}
+            aria-label="Graph zoom"
+            onChange={(event) => {
+              const nextK = Number(event.target.value);
+              setViewport((current) => centerPreservingZoom(current, nextK, width, height));
+            }}
+          />
+          <button type="button" aria-label="Zoom in" onClick={() => setViewport((current) => ({ ...current, k: clamp(current.k * 1.18, 0.26, 2.2) }))}>
+            +
+          </button>
+          <span>{visibleNodes.length} / {nodes.length} visible</span>
+        </div>
+        <svg
+          ref={svgRef}
+          className="memory-graph"
+          viewBox={`0 0 ${width} ${height}`}
+          role="img"
+          aria-label="Memory graph"
+          onWheel={(event) => {
+            event.preventDefault();
+            zoomAt(event.clientX, event.clientY, event.deltaY > 0 ? 0.88 : 1.14);
+          }}
+          onPointerDown={(event) => {
+            if (event.button !== 0) return;
+            event.currentTarget.setPointerCapture(event.pointerId);
+            panRef.current = {
+              pointerId: event.pointerId,
+              startX: event.clientX,
+              startY: event.clientY,
+              viewport,
+              moved: false,
+            };
+            panMovedRef.current = false;
+          }}
+          onPointerMove={(event) => {
+            const pan = panRef.current;
+            if (!pan || pan.pointerId !== event.pointerId) return;
+            const rect = event.currentTarget.getBoundingClientRect();
+            const dx = ((event.clientX - pan.startX) / rect.width) * width;
+            const dy = ((event.clientY - pan.startY) / rect.height) * height;
+            if (Math.abs(dx) + Math.abs(dy) > 3) {
+              pan.moved = true;
+              panMovedRef.current = true;
+            }
+            setViewport({ ...pan.viewport, x: pan.viewport.x + dx, y: pan.viewport.y + dy });
+          }}
+          onPointerUp={(event) => {
+            if (panRef.current?.pointerId === event.pointerId) {
+              event.currentTarget.releasePointerCapture(event.pointerId);
+              panRef.current = null;
+            }
+          }}
+          onPointerCancel={(event) => {
+            if (panRef.current?.pointerId === event.pointerId) panRef.current = null;
+          }}
+        >
+          <g transform={`translate(${viewport.x} ${viewport.y}) scale(${viewport.k})`}>
+            <g className="memory-graph-edges">
+              {visibleEdges.map((edge, index) => {
+                const source = nodeMap.get(edge.source);
+                const target = nodeMap.get(edge.target);
+                if (!source || !target) return null;
+                const selectedEdge = Boolean(selectedId && (edge.source === selectedId || edge.target === selectedId));
+                return (
+                  <line
+                    key={`${edge.source}-${edge.target}-${index}`}
+                    className={selectedEdge ? "selected" : ""}
+                    x1={source.x}
+                    y1={source.y}
+                    x2={target.x}
+                    y2={target.y}
+                  />
+                );
+              })}
+            </g>
+            <g className="memory-graph-nodes">
+              {visibleNodes.map((node) => {
+                const labelLines = graphLabelLines(node);
+                const isSelected = node.id === selectedId;
+                const isHovered = node.id === hoveredId;
+                const isNeighbor = selectedNeighborIds.has(node.id);
+                const showLabel = labelIds.has(node.id);
+                return (
+                  <g
+                    key={node.id}
+                    className={[
+                      isSelected ? "selected" : "",
+                      isHovered ? "hovered" : "",
+                      isNeighbor ? "neighbor" : "",
+                      showLabel ? "labeled" : "dim-label",
+                    ].filter(Boolean).join(" ")}
+                    transform={`translate(${node.x} ${node.y})`}
+                    role="button"
+                    tabIndex={0}
+                    onMouseEnter={() => setHoveredId(node.id)}
+                    onMouseLeave={() => setHoveredId((current) => (current === node.id ? null : current))}
+                    onClick={() => {
+                      if (panMovedRef.current) return;
+                      onSelect(node.id);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") onSelect(node.id);
+                    }}
+                    aria-label={`Open ${node.title}`}
+                  >
+                    <title>{node.title}</title>
+                    <circle className={`memory-graph-node-${memoryTypeClass(node.type)}`} r={isSelected ? node.radius + 5 : node.radius} />
+                    {showLabel && (
+                      <text y={node.radius + 15}>
+                        {labelLines.map((line, index) => (
+                          <tspan key={`${node.id}-label-${index}`} x={0} dy={index === 0 ? 0 : 13 / viewport.k}>
+                            {line}
+                          </tspan>
+                        ))}
+                      </text>
+                    )}
+                  </g>
+                );
+              })}
+            </g>
+          </g>
+          {hoveredNode && (
+            <g className="memory-graph-focus-ring" transform={`translate(${viewport.x + hoveredNode.x * viewport.k} ${viewport.y + hoveredNode.y * viewport.k})`}>
+              <circle r={Math.max(34, 52 * viewport.k)} />
+            </g>
+          )}
+        </svg>
+      </div>
+      <aside className="memory-graph-data" aria-label="Memory graph data">
+        <div className="memory-graph-data-head">
+          <div>
+            <h3>Graph Data</h3>
+            <p>{graph.edges.length} relationships across {nodes.length} notes</p>
+          </div>
+        </div>
+        <Input
+          value={listQuery}
+          onChange={(event) => setListQuery(event.target.value)}
+          placeholder="Filter nodes..."
+          aria-label="Filter graph nodes"
+        />
+        <div className="memory-graph-data-list">
+          {filteredListNodes.map((node) => {
+            const isSelected = node.id === selectedId;
             return (
-              <line
-                key={`${edge.source}-${edge.target}-${index}`}
-                x1={source.x}
-                y1={source.y}
-                x2={target.x}
-                y2={target.y}
-              />
-            );
-          })}
-        </g>
-        <g className="memory-graph-nodes">
-          {nodes.map((node) => {
-            const labelLines = graphLabelLines(node);
-            return (
-              <g
-                key={node.id}
-                transform={`translate(${node.x} ${node.y})`}
-                role="button"
-                tabIndex={0}
+              <button
+                key={`graph-list-${node.id}`}
+                type="button"
+                className={`memory-graph-data-row ${isSelected ? "active" : ""}`}
+                onMouseEnter={() => setHoveredId(node.id)}
+                onMouseLeave={() => setHoveredId((current) => (current === node.id ? null : current))}
                 onClick={() => onSelect(node.id)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") onSelect(node.id);
-                }}
-                aria-label={`Open ${node.title}`}
               >
-                <title>{node.title}</title>
-                <circle className={node.id === selectedId ? "selected" : ""} r={node.id === selectedId ? 17 : 13} />
-                <text y={32}>
-                  {labelLines.map((line, index) => (
-                    <tspan key={`${node.id}-label-${index}`} x={0} dy={index === 0 ? 0 : 13}>
-                      {line}
-                    </tspan>
-                  ))}
-                </text>
-              </g>
+                <span className={`memory-graph-data-dot memory-graph-node-${memoryTypeClass(node.type)}`} />
+                <span className="memory-graph-data-main">
+                  <span>{node.title}</span>
+                  <small>{[node.scope, node.type].filter(Boolean).join(" / ") || "Memory"}</small>
+                </span>
+                <span className="memory-graph-degree">{node.degree}</span>
+              </button>
             );
           })}
-        </g>
-      </svg>
+        </div>
+      </aside>
     </div>
   );
 }
@@ -1382,20 +1671,290 @@ function truncateGraphLabel(value: string, maxLength: number): string {
   return `${trimmed.slice(0, Math.max(0, maxLength - 1)).trimEnd()}...`;
 }
 
-function layoutNodes(nodes: GraphNode[], width: number, height: number): Array<GraphNode & { x: number; y: number }> {
+function graphSignature(graph: GraphData): string {
+  return `${graph.nodes.map((node) => node.id).join("|")}::${graph.edges.map((edge) => `${edge.source}>${edge.target}`).join("|")}`;
+}
+
+function graphWorldSize(nodeCount: number) {
+  const scale = Math.sqrt(Math.max(1, nodeCount));
+  return {
+    width: Math.round(clamp(620 + scale * 180, 980, 2800)),
+    height: Math.round(clamp(440 + scale * 135, 700, 2000)),
+  };
+}
+
+function graphAdjacency(nodes: LayoutNode[], edges: GraphEdge[]): Map<string, Set<string>> {
+  const adjacency = new Map(nodes.map((node) => [node.id, new Set<string>()]));
+  for (const edge of edges) {
+    if (!adjacency.has(edge.source) || !adjacency.has(edge.target)) continue;
+    adjacency.get(edge.source)!.add(edge.target);
+    adjacency.get(edge.target)!.add(edge.source);
+  }
+  return adjacency;
+}
+
+function layoutNodes(nodes: GraphNode[], edges: GraphEdge[], width: number, height: number): LayoutNode[] {
+  const indexById = new Map(nodes.map((node, index) => [node.id, index]));
+  const degrees = new Map(nodes.map((node) => [node.id, 0]));
+  const linkedEdges = edges
+    .map((edge) => {
+      const source = indexById.get(edge.source);
+      const target = indexById.get(edge.target);
+      if (source === undefined || target === undefined || source === target) return null;
+      degrees.set(edge.source, (degrees.get(edge.source) ?? 0) + 1);
+      degrees.set(edge.target, (degrees.get(edge.target) ?? 0) + 1);
+      return { source, target };
+    })
+    .filter((edge): edge is { source: number; target: number } => Boolean(edge));
+  const components = connectedComponents(nodes, linkedEdges);
+  const anchors = componentAnchors(components.count, width, height);
   const centerX = width / 2;
   const centerY = height / 2;
-  const radius = Math.max(120, Math.min(width, height) * 0.36);
-  return nodes.map((node, index) => {
-    if (typeof node.x === "number" && typeof node.y === "number") {
-      return { ...node, x: node.x, y: node.y };
-    }
-    const angle = (index / Math.max(nodes.length, 1)) * Math.PI * 2 - Math.PI / 2;
-    const ring = nodes.length > 12 && index % 3 === 0 ? radius * 0.58 : radius;
+
+  const working = nodes.map((node, index) => {
+    const component = components.byIndex[index] ?? 0;
+    const anchor = anchors[component] ?? { x: centerX, y: centerY };
+    const hash = hashString(node.id || node.title || String(index));
+    const angle = ((hash % 360) / 360) * Math.PI * 2;
+    const spread = 52 + ((hash >>> 8) % 96);
+    const x = typeof node.x === "number" ? node.x : anchor.x + Math.cos(angle) * spread;
+    const y = typeof node.y === "number" ? node.y : anchor.y + Math.sin(angle) * spread;
+    const degree = degrees.get(node.id) ?? 0;
     return {
       ...node,
-      x: centerX + Math.cos(angle) * ring,
-      y: centerY + Math.sin(angle) * ring,
+      x: clamp(x, 48, width - 48),
+      y: clamp(y, 48, height - 48),
+      vx: 0,
+      vy: 0,
+      degree,
+      component,
+      radius: clamp(8 + Math.sqrt(degree + 1) * 2.2, 10, 19),
     };
   });
+
+  const iterations = nodes.length > 220 ? 110 : 170;
+  for (let tick = 0; tick < iterations; tick += 1) {
+    const alpha = 1 - tick / iterations;
+    for (let i = 0; i < working.length; i += 1) {
+      for (let j = i + 1; j < working.length; j += 1) {
+        const a = working[i]!;
+        const b = working[j]!;
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let distanceSq = dx * dx + dy * dy;
+        if (distanceSq < 0.01) {
+          dx = 0.1 + (hashString(`${a.id}:${b.id}`) % 17) / 17;
+          dy = 0.1 + (hashString(`${b.id}:${a.id}`) % 19) / 19;
+          distanceSq = dx * dx + dy * dy;
+        }
+        const distance = Math.sqrt(distanceSq);
+        const minDistance = a.radius + b.radius + 18;
+        const sameComponent = a.component === b.component;
+        const repulsion = (sameComponent ? 680 : 1080) * alpha / distanceSq;
+        const pushX = (dx / distance) * repulsion;
+        const pushY = (dy / distance) * repulsion;
+        a.vx -= pushX;
+        a.vy -= pushY;
+        b.vx += pushX;
+        b.vy += pushY;
+
+        if (distance < minDistance) {
+          const overlap = ((minDistance - distance) / distance) * 0.08;
+          a.vx -= dx * overlap;
+          a.vy -= dy * overlap;
+          b.vx += dx * overlap;
+          b.vy += dy * overlap;
+        }
+      }
+    }
+
+    for (const edge of linkedEdges) {
+      const source = working[edge.source]!;
+      const target = working[edge.target]!;
+      const dx = target.x - source.x;
+      const dy = target.y - source.y;
+      const distance = Math.max(1, Math.hypot(dx, dy));
+      const desired = 94 + Math.min(source.degree + target.degree, 10) * 8;
+      const pull = (distance - desired) * 0.018 * alpha;
+      const pullX = (dx / distance) * pull;
+      const pullY = (dy / distance) * pull;
+      source.vx += pullX;
+      source.vy += pullY;
+      target.vx -= pullX;
+      target.vy -= pullY;
+    }
+
+    for (const node of working) {
+      const anchor = anchors[node.component] ?? { x: centerX, y: centerY };
+      node.vx += (anchor.x - node.x) * 0.004 * alpha;
+      node.vy += (anchor.y - node.y) * 0.004 * alpha;
+      node.vx += (centerX - node.x) * 0.0008 * alpha;
+      node.vy += (centerY - node.y) * 0.0008 * alpha;
+      node.x = clamp(node.x + node.vx, 38, width - 38);
+      node.y = clamp(node.y + node.vy, 38, height - 38);
+      node.vx *= 0.78;
+      node.vy *= 0.78;
+    }
+  }
+
+  return working.map(({ vx: _vx, vy: _vy, ...node }) => node);
+}
+
+function connectedComponents(nodes: GraphNode[], edges: Array<{ source: number; target: number }>) {
+  const neighbors = nodes.map(() => [] as number[]);
+  for (const edge of edges) {
+    neighbors[edge.source]!.push(edge.target);
+    neighbors[edge.target]!.push(edge.source);
+  }
+  const byIndex = new Array<number>(nodes.length).fill(-1);
+  let count = 0;
+  for (let index = 0; index < nodes.length; index += 1) {
+    if (byIndex[index] !== -1) continue;
+    const stack = [index];
+    byIndex[index] = count;
+    while (stack.length) {
+      const current = stack.pop()!;
+      for (const next of neighbors[current] ?? []) {
+        if (byIndex[next] !== -1) continue;
+        byIndex[next] = count;
+        stack.push(next);
+      }
+    }
+    count += 1;
+  }
+  return { byIndex, count: Math.max(1, count) };
+}
+
+function componentAnchors(count: number, width: number, height: number) {
+  if (count <= 1) return [{ x: width / 2, y: height / 2 }];
+  const columns = Math.ceil(Math.sqrt(count * (width / height)));
+  const rows = Math.ceil(count / columns);
+  const cellW = width / columns;
+  const cellH = height / rows;
+  return Array.from({ length: count }, (_value, index) => ({
+    x: cellW * (index % columns) + cellW / 2,
+    y: cellH * Math.floor(index / columns) + cellH / 2,
+  }));
+}
+
+function viewportRect(viewport: GraphViewport, width: number, height: number) {
+  return {
+    x: -viewport.x / viewport.k,
+    y: -viewport.y / viewport.k,
+    width: width / viewport.k,
+    height: height / viewport.k,
+  };
+}
+
+function rectContainsNode(
+  rect: { x: number; y: number; width: number; height: number },
+  node: Pick<LayoutNode, "x" | "y" | "radius">,
+  margin: number,
+) {
+  return (
+    node.x >= rect.x - margin &&
+    node.x <= rect.x + rect.width + margin &&
+    node.y >= rect.y - margin &&
+    node.y <= rect.y + rect.height + margin
+  );
+}
+
+function fitGraphViewport(worldWidth: number, worldHeight: number, width: number, height: number): GraphViewport {
+  const k = clamp(Math.min((width - 64) / worldWidth, (height - 64) / worldHeight), 0.26, 1.2);
+  return {
+    x: (width - worldWidth * k) / 2,
+    y: (height - worldHeight * k) / 2,
+    k,
+  };
+}
+
+function centerGraphViewport(x: number, y: number, width: number, height: number, k: number): GraphViewport {
+  return {
+    x: width / 2 - x * k,
+    y: height / 2 - y * k,
+    k: clamp(k, 0.26, 2.2),
+  };
+}
+
+function centerPreservingZoom(viewport: GraphViewport, nextK: number, width: number, height: number): GraphViewport {
+  const worldX = (width / 2 - viewport.x) / viewport.k;
+  const worldY = (height / 2 - viewport.y) / viewport.k;
+  const k = clamp(nextK, 0.26, 2.2);
+  return {
+    x: width / 2 - worldX * k,
+    y: height / 2 - worldY * k,
+    k,
+  };
+}
+
+function foveatedLabelIds(
+  visibleNodes: LayoutNode[],
+  focusPoint: Pick<LayoutNode, "x" | "y">,
+  adjacency: Map<string, Set<string>>,
+  selectedId: string | null,
+  hoveredId: string | null,
+  zoom: number,
+) {
+  const selectedNeighbors = selectedId ? adjacency.get(selectedId) ?? new Set<string>() : new Set<string>();
+  const fovea = 150 / Math.max(0.6, zoom);
+  const limit = Math.max(10, Math.min(52, Math.round(18 + zoom * 22)));
+  const ranked = visibleNodes
+    .map((node) => {
+      const distance = Math.hypot(node.x - focusPoint.x, node.y - focusPoint.y);
+      const priority =
+        node.id === selectedId ? -10000 :
+        node.id === hoveredId ? -9000 :
+        selectedNeighbors.has(node.id) ? -5000 :
+        distance < fovea ? -1200 :
+        0;
+      return { node, score: priority + distance - node.degree * 9 };
+    })
+    .sort((a, b) => a.score - b.score)
+    .slice(0, limit);
+  return new Set(ranked.map((item) => item.node.id));
+}
+
+function filterGraphList(
+  nodes: LayoutNode[],
+  adjacency: Map<string, Set<string>>,
+  query: string,
+  selectedId: string | null,
+  hoveredId: string | null,
+  focusPoint: Pick<LayoutNode, "x" | "y">,
+) {
+  const normalizedQuery = query.trim().toLowerCase();
+  const selectedNeighbors = selectedId ? adjacency.get(selectedId) ?? new Set<string>() : new Set<string>();
+  return nodes
+    .filter((node) => {
+      if (!normalizedQuery) return true;
+      return [node.title, node.type, node.scope].filter(Boolean).some((value) => value!.toLowerCase().includes(normalizedQuery));
+    })
+    .map((node) => {
+      const priority =
+        node.id === selectedId ? -10000 :
+        node.id === hoveredId ? -9000 :
+        selectedNeighbors.has(node.id) ? -5000 :
+        0;
+      const distance = Math.hypot(node.x - focusPoint.x, node.y - focusPoint.y);
+      return { node, score: priority - node.degree * 20 + distance * 0.05 };
+    })
+    .sort((a, b) => a.score - b.score || a.node.title.localeCompare(b.node.title))
+    .map((item) => item.node);
+}
+
+function memoryTypeClass(type?: string): string {
+  return (type ?? "memory").toLowerCase().replace(/[^a-z0-9]+/g, "-") || "memory";
+}
+
+function hashString(value: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }

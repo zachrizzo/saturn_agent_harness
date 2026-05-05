@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { claimTask } from "@/lib/tasks";
+import { claimTask, MAX_TASK_TTL_MINUTES } from "@/lib/tasks";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -12,8 +12,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     : "saturn-cli";
   const ttlMinutes = body.ttl_minutes === undefined ? undefined : Number(body.ttl_minutes);
 
-  if (ttlMinutes !== undefined && (!Number.isFinite(ttlMinutes) || ttlMinutes <= 0)) {
-    return NextResponse.json({ error: "ttl_minutes must be a positive number" }, { status: 400 });
+  if (
+    ttlMinutes !== undefined &&
+    (!Number.isInteger(ttlMinutes) || ttlMinutes < 1 || ttlMinutes > MAX_TASK_TTL_MINUTES)
+  ) {
+    return NextResponse.json(
+      { error: `ttl_minutes must be an integer from 1 to ${MAX_TASK_TTL_MINUTES}` },
+      { status: 400 },
+    );
   }
 
   try {

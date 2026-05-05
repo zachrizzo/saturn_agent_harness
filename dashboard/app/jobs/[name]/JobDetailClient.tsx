@@ -2,9 +2,11 @@
 
 import Link from "next/link";
 import { useState, useMemo } from "react";
-import ReactMarkdown from "react-markdown";
 import type { Job, RunMeta } from "@/lib/runs";
+import { DeleteJobButton } from "@/app/components/DeleteJobButton";
+import { GeneratedOutputView } from "@/app/components/generated-ui/GeneratedOutputView";
 import { JobSettingsModal } from "@/app/components/JobSettingsModal";
+import { PlayButton } from "@/app/components/PlayButton";
 import { Button, Card, Chip } from "@/app/components/ui";
 import { statusVariant } from "@/lib/job-helpers";
 import { toClaudeAlias } from "@/lib/claude-models";
@@ -120,14 +122,18 @@ export function JobDetailClient({ job, runs, nextFire, avgDuration, avgTokens }:
             <p className="text-[13px] text-muted mt-2 max-w-3xl leading-relaxed">{job.description}</p>
           ) : null}
         </div>
-        <JobSettingsModal
-          jobName={job.name}
-          currentCron={job.cron}
-          currentModel={job.model}
-          currentCli={job.cli}
-          currentReasoningEffort={job.reasoningEffort}
-          currentCatchUpMissedRuns={job.catchUpMissedRuns}
-        />
+        <div className="flex items-center gap-2">
+          <PlayButton jobName={job.name} label="Run now" />
+          <JobSettingsModal
+            jobName={job.name}
+            currentCron={job.cron}
+            currentModel={job.model}
+            currentCli={job.cli}
+            currentReasoningEffort={job.reasoningEffort}
+            currentCatchUpMissedRuns={job.catchUpMissedRuns}
+          />
+          <DeleteJobButton jobName={job.name} redirectTo="/jobs" label="Delete job" />
+        </div>
       </header>
 
       {/* Summary KPIs */}
@@ -320,13 +326,13 @@ export function JobDetailClient({ job, runs, nextFire, avgDuration, avgTokens }:
                   </Link>
                 </div>
 
-                {isExpanded && hasOutput && (
-                  <div className="px-4 pb-4 border-t border-border bg-bg-subtle">
-                    <article className="prose-dashboard text-sm leading-relaxed pt-4 max-h-[500px] overflow-y-auto">
-                      <ReactMarkdown>{r.finalOutput}</ReactMarkdown>
-                    </article>
-                  </div>
-                )}
+	                {isExpanded && hasOutput && (
+	                  <div className="px-4 pb-4 border-t border-border bg-bg-subtle">
+	                    <div className="pt-4 max-h-[500px] overflow-y-auto">
+	                      <GeneratedOutputView markdown={r.finalOutput} />
+	                    </div>
+	                  </div>
+	                )}
               </div>
             );
           })}

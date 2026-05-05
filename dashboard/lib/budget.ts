@@ -25,7 +25,6 @@ export type Budget = {
 
 export type BudgetLimits = {
   max_total_tokens?: number;
-  max_wallclock_seconds?: number;
   max_slice_calls?: number;
   max_recursion_depth?: number;
 };
@@ -33,14 +32,13 @@ export type BudgetLimits = {
 export type BudgetRemaining = {
   tokens?: number;
   slice_calls?: number;
-  wallclock_seconds?: number;
 };
 
 export type BudgetCheckResult =
   | { ok: true; remaining: BudgetRemaining }
   | {
       ok: false;
-      reason: "tokens" | "slice_calls" | "wallclock" | "stop";
+      reason: "tokens" | "slice_calls" | "stop";
       remaining: BudgetRemaining;
     };
 
@@ -157,13 +155,6 @@ function computeRemaining(budget: Budget, limits: BudgetLimits): BudgetRemaining
   if (limits.max_slice_calls !== undefined) {
     out.slice_calls = Math.max(0, limits.max_slice_calls - budget.slice_calls);
   }
-  if (limits.max_wallclock_seconds !== undefined) {
-    const startedMs = Date.parse(budget.wallclock_started_at);
-    const elapsedSec = Number.isFinite(startedMs)
-      ? Math.max(0, Math.floor((Date.now() - startedMs) / 1000))
-      : 0;
-    out.wallclock_seconds = Math.max(0, limits.max_wallclock_seconds - elapsedSec);
-  }
   return out;
 }
 
@@ -186,13 +177,6 @@ export async function checkBudget(
     budget.slice_calls >= limits.max_slice_calls
   ) {
     return { ok: false, reason: "slice_calls", remaining };
-  }
-  if (
-    limits.max_wallclock_seconds !== undefined &&
-    remaining.wallclock_seconds !== undefined &&
-    remaining.wallclock_seconds <= 0
-  ) {
-    return { ok: false, reason: "wallclock", remaining };
   }
   return { ok: true, remaining };
 }

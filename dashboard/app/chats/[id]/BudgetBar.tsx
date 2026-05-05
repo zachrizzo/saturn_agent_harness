@@ -53,7 +53,6 @@ function sameLimits(a: BudgetLimits, b: BudgetLimits): boolean {
   return (
     a.max_total_tokens === b.max_total_tokens &&
     a.max_slice_calls === b.max_slice_calls &&
-    a.max_wallclock_seconds === b.max_wallclock_seconds &&
     a.max_recursion_depth === b.max_recursion_depth
   );
 }

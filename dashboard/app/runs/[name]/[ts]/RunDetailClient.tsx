@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { GeneratedOutputView } from "@/app/components/generated-ui/GeneratedOutputView";
 import type { RunMeta } from "@/lib/runs";
 import type { StreamEvent, TokenBreakdown, ToolCallSummary } from "@/lib/events";
 import { toEvents, getTokenBreakdown, getToolCallSummary } from "@/lib/events";
@@ -366,16 +367,14 @@ export function RunDetailClient({
       </Card>
 
       {/* Final Output */}
-      {finalMarkdown && (
-        <section>
-          <h2 className="text-base font-semibold mb-3">Final output</h2>
-          <Card className="p-6 max-h-[800px] overflow-y-auto">
-            <article className="prose-dashboard text-sm leading-relaxed">
-              <ReactMarkdown>{finalMarkdown}</ReactMarkdown>
-            </article>
-          </Card>
-        </section>
-      )}
+	      {finalMarkdown && (
+	        <section>
+	          <h2 className="text-base font-semibold mb-3">Final output</h2>
+	          <Card className="p-6 max-h-[800px] overflow-y-auto">
+	            <GeneratedOutputView markdown={finalMarkdown} />
+	          </Card>
+	        </section>
+	      )}
 
       {/* Timeline */}
       <section>

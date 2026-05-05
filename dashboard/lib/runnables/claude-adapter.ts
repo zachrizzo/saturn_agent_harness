@@ -216,7 +216,7 @@ async function providerOptions(cli: CLI, model?: string): Promise<Pick<Options, 
     settings = bedrockSettings(bedrockConfig.profile, bedrockConfig.region);
   } else if (isLocalClaudeCli(cli)) {
     env.CLAUDE_CODE_USE_BEDROCK = "0";
-    env.ANTHROPIC_BASE_URL = "http://0.0.0.0:4000";
+    env.ANTHROPIC_BASE_URL = "http://127.0.0.1:4000";
     env.ANTHROPIC_AUTH_TOKEN = "sk-local-proxy-key";
     env.ANTHROPIC_MODEL = model ?? "gemma4:26b-it-q4_K_M";
     env.ANTHROPIC_SMALL_FAST_MODEL = env.ANTHROPIC_SMALL_FAST_MODEL || "gemma4:4b";

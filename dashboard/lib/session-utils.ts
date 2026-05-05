@@ -29,6 +29,34 @@ export function agentModelForCli(agent: Agent, cli: CLI): string | undefined {
   return agent.models?.[normalized] ?? (normalized === agentDefaultCli(agent) ? agent.model : undefined);
 }
 
+/**
+ * Pick the display title for a session. Priority:
+ *   1. First user message, matching the inbox/sidebar chat naming.
+ *   2. Agent name if there are no turns yet.
+ *   3. "New chat" as a last-resort fallback.
+ */
+export function sessionTitle(s: SessionMeta, pendingMessage?: string): string {
+  const turns = s.turns ?? [];
+  for (const t of turns) {
+    const msg = t?.user_message?.replace(/\s+/g, " ").trim();
+    if (msg) return compactSessionTitle(msg);
+  }
+  const pending = pendingMessage?.replace(/\s+/g, " ").trim();
+  if (pending) return compactSessionTitle(pending);
+
+  const name = s.agent_snapshot?.name;
+  if (name && !isAdHocAgentName(name)) return name;
+  return "New chat";
+}
+
+function compactSessionTitle(value: string): string {
+  return value.length > 120 ? value.slice(0, 117) + "…" : value;
+}
+
+function isAdHocAgentName(value: string): boolean {
+  return ["adhoc", "adhocchat"].includes(value.toLowerCase().replace(/[^a-z0-9]/g, ""));
+}
+
 // ─── Swarm helpers ────────────────────────────────────────────────────────
 
 export function isOrchestrator(agent: Agent | undefined): boolean {

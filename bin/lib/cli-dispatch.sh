@@ -105,6 +105,36 @@ normalize_cli_id() {
   esac
 }
 
+saturn_validate_path_segment() {
+  local value="$1"
+  local label="${2:-id}"
+  if [[ ! "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+    echo "$label must match ^[A-Za-z0-9][A-Za-z0-9._-]*$" >&2
+    return 2
+  fi
+}
+
+saturn_validate_timeout_seconds() {
+  local value="$1"
+  local label="${2:-timeout_seconds}"
+  if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+    echo "$label must be a positive integer number of seconds" >&2
+    return 2
+  fi
+}
+
+claude_local_bin() {
+  local bin
+  bin="$(command -v claude-local 2>/dev/null || true)"
+  if [[ -n "$bin" ]]; then
+    printf '%s' "$bin"
+  elif [[ -x "$HOME/bin/claude-local" ]]; then
+    printf '%s' "$HOME/bin/claude-local"
+  else
+    printf '%s' "claude-local"
+  fi
+}
+
 claude_reasoning_efforts() {
   local line levels
   line="$(claude --help 2>&1 | awk '/--effort/{ print; exit }' || true)"
@@ -240,8 +270,9 @@ build_cli_args() {
       RUN_CMD="claude"
 
       if [[ "$cli" == "claude-local" ]]; then
+        RUN_CMD="$(claude_local_bin)"
         export CLAUDE_CODE_USE_BEDROCK="0"
-        export ANTHROPIC_BASE_URL="http://0.0.0.0:4000"
+        export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-http://127.0.0.1:4000}"
         export ANTHROPIC_AUTH_TOKEN="sk-local-proxy-key"
       elif [[ "$cli" == "claude-personal" ]]; then
         unset CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN
@@ -424,6 +455,8 @@ run_with_watchdog() {
   local stream_out="$2"
   local stderr_out="$3"
   local prompt="$4"
+
+  saturn_validate_timeout_seconds "$timeout_s" "timeout_seconds"
 
   local prompt_file
   prompt_file="$(mktemp -t cli-dispatch-prompt).txt"

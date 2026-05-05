@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useId } from "react";
 import { useRouter } from "next/navigation";
 import parser from "cron-parser";
 import type { Model } from "@/lib/models";
@@ -43,6 +43,8 @@ export function JobSettingsModal({
   currentCatchUpMissedRuns = false,
 }: Props) {
   const cronInputId = `job-cron-${jobName}`;
+  const modalTitleId = useId();
+  const cronInputRef = useRef<HTMLInputElement>(null);
   const [isOpen, setIsOpen] = useState(false);
   const [cron, setCron] = useState(currentCron);
   const [cli, setCli] = useState<CLI>(normalizeCli(currentCli));
@@ -57,6 +59,20 @@ export function JobSettingsModal({
   const router = useRouter();
 
   const fetchIdRef = useRef(0);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const previousActive = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !saving) setIsOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    window.setTimeout(() => cronInputRef.current?.focus(), 0);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      previousActive?.focus();
+    };
+  }, [isOpen, saving]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -154,9 +170,15 @@ export function JobSettingsModal({
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
             onClick={() => !saving && setIsOpen(false)}
           >
-            <Card className="w-full max-w-lg shadow-lg" onClick={(e) => e.stopPropagation()}>
+            <Card
+              className="w-full max-w-lg shadow-lg"
+              onClick={(e) => e.stopPropagation()}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby={modalTitleId}
+            >
               <div className="p-5 border-b border-border">
-                <h2 className="text-base font-semibold">Job settings</h2>
+                <h2 id={modalTitleId} className="text-base font-semibold">Job settings</h2>
                 <div className="text-xs text-muted mt-0.5 mono">{jobName}</div>
               </div>
 
@@ -171,6 +193,7 @@ export function JobSettingsModal({
                   <label htmlFor={cronInputId} className="label block mb-2">Schedule</label>
                   <Input
                     id={cronInputId}
+                    ref={cronInputRef}
                     value={cron}
                     onChange={(e) => {
                       setCron(e.target.value);

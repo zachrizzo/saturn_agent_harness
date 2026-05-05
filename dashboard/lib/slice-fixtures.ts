@@ -23,6 +23,21 @@ export type SliceFixture = {
   updated_at?: string;
 };
 
+const FIXTURE_NAME_PATTERN = /^[a-z0-9_\-.]+$/i;
+
+function fixturePath(sliceId: string, name: string): string {
+  if (!FIXTURE_NAME_PATTERN.test(name)) {
+    throw new Error("fixture name must match /^[a-z0-9_\\-.]+$/i");
+  }
+  const dir = path.resolve(sliceFixturesDir(sliceId));
+  const filePath = path.resolve(dir, `${name}.json`);
+  const relative = path.relative(dir, filePath);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error("fixture path escapes fixture directory");
+  }
+  return filePath;
+}
+
 export async function listFixtures(sliceId: string): Promise<SliceFixture[]> {
   const dir = sliceFixturesDir(sliceId);
   let files: string[];
@@ -45,7 +60,12 @@ export async function listFixtures(sliceId: string): Promise<SliceFixture[]> {
 }
 
 export async function getFixture(sliceId: string, name: string): Promise<SliceFixture | null> {
-  const p = path.join(sliceFixturesDir(sliceId), `${name}.json`);
+  let p: string;
+  try {
+    p = fixturePath(sliceId, name);
+  } catch {
+    return null;
+  }
   try {
     const raw = await fs.readFile(p, "utf8");
     return JSON.parse(raw) as SliceFixture;
@@ -55,11 +75,9 @@ export async function getFixture(sliceId: string, name: string): Promise<SliceFi
 }
 
 export async function saveFixture(sliceId: string, fixture: SliceFixture): Promise<void> {
-  if (!/^[a-z0-9_\-.]+$/i.test(fixture.name)) {
-    throw new Error("fixture name must match /^[a-z0-9_\\-.]+$/i");
-  }
   const dir = sliceFixturesDir(sliceId);
   await fs.mkdir(dir, { recursive: true });
+  const p = fixturePath(sliceId, fixture.name);
   const now = new Date().toISOString();
   const toWrite: SliceFixture = {
     ...fixture,
@@ -67,14 +85,19 @@ export async function saveFixture(sliceId: string, fixture: SliceFixture): Promi
     created_at: fixture.created_at ?? now,
   };
   await fs.writeFile(
-    path.join(dir, `${fixture.name}.json`),
+    p,
     JSON.stringify(toWrite, null, 2),
     "utf8",
   );
 }
 
 export async function deleteFixture(sliceId: string, name: string): Promise<void> {
-  const p = path.join(sliceFixturesDir(sliceId), `${name}.json`);
+  let p: string;
+  try {
+    p = fixturePath(sliceId, name);
+  } catch {
+    return;
+  }
   await fs.unlink(p).catch(() => { /* already gone */ });
 }
 

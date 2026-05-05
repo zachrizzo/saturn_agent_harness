@@ -31,9 +31,8 @@ function getSecret(): string {
   return `local-dev-${os.hostname()}`;
 }
 
-export function mintToken(sessionId: string, wallclockSeconds?: number): string {
-  const desired = wallclockSeconds ? wallclockSeconds * 1000 : MIN_TTL_MS;
-  const ttl = Math.min(MAX_TTL_MS, Math.max(MIN_TTL_MS, desired));
+export function mintToken(sessionId: string): string {
+  const ttl = MAX_TTL_MS;
   const expiry = Date.now() + ttl;
   const payload = `${sessionId}.${expiry}`;
   const sig = createHmac("sha256", getSecret()).update(payload).digest("base64url");

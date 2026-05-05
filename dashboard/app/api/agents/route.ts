@@ -2,18 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   listAgents,
   createAgent,
-  type CLI,
   type Agent,
   type MutationTier,
 } from "@/lib/runs";
-import { toClaudeAlias } from "@/lib/claude-models";
-import { DEFAULT_CLI, normalizeCli } from "@/lib/clis";
+import { isPlainObject, normalizeAgentCliFields, normalizeAgentModelFields } from "@/lib/agent-request";
 
 export const dynamic = "force-dynamic";
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /**
  * Apply orchestrator-specific defaults + validation in place. Returns an error
@@ -21,7 +15,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
  */
 function applyOrchestratorDefaults(body: Partial<Agent>): string | null {
   if (body.kind !== "orchestrator") return null;
-  if (!isObject(body.budget)) {
+  if (!isPlainObject(body.budget)) {
     return "budget must be an object when kind is 'orchestrator'";
   }
   if (body.can_create_custom_slices === undefined) {
@@ -45,7 +39,10 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  const body = (await req.json()) as Partial<Agent>;
+  const body = (await req.json().catch(() => null)) as Partial<Agent> | null;
+  if (!body || !isPlainObject(body)) {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
   const { id, name, prompt } = body;
 
   if (!id || !name || !prompt) {
@@ -55,23 +52,19 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "id must be alphanumeric with - or _" }, { status: 400 });
   }
 
-  // Support both old (cli) and new (supportedClis/defaultCli) schema
-  const supportedClis = (body.supportedClis ?? (body.cli ? [body.cli] : [DEFAULT_CLI]))
-    .map((cli) => normalizeCli(cli));
-  const defaultCli: CLI = normalizeCli(body.defaultCli ?? body.cli ?? DEFAULT_CLI);
+  const cliFields = normalizeAgentCliFields(body as Partial<Agent> & Record<string, unknown>);
+  if (!cliFields.ok) {
+    return NextResponse.json({ error: cliFields.error }, { status: 400 });
+  }
 
   const orchestratorError = applyOrchestratorDefaults(body);
   if (orchestratorError) {
     return NextResponse.json({ error: orchestratorError }, { status: 400 });
   }
 
-  // Normalize Bedrock IDs to short aliases before writing to agents.json so
-  // stored values are always `claude-sonnet-4-6` not `global.anthropic.claude-sonnet-4-6`.
-  if (body.model) body.model = toClaudeAlias(body.model) ?? body.model;
-  if (body.models) {
-    body.models = Object.fromEntries(
-      Object.entries(body.models).map(([cli, m]) => [normalizeCli(cli), m ? (toClaudeAlias(m) ?? m) : m])
-    ) as typeof body.models;
+  const modelError = normalizeAgentModelFields(body as Partial<Agent> & Record<string, unknown>);
+  if (modelError) {
+    return NextResponse.json({ error: modelError }, { status: 400 });
   }
 
   try {
@@ -80,10 +73,10 @@ export async function POST(req: NextRequest) {
       id,
       name,
       prompt,
-      supportedClis,
-      defaultCli,
+      supportedClis: cliFields.supportedClis,
+      defaultCli: cliFields.defaultCli,
       // Keep legacy cli field for backward compat
-      cli: defaultCli,
+      cli: cliFields.defaultCli,
     } as Omit<Agent, "created_at">);
     return NextResponse.json({ agent });
   } catch (err) {

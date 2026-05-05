@@ -16,8 +16,12 @@ import { readBedrockConfig } from "./bedrock-auth";
 import { readAppSettings, type AppSettings } from "./settings";
 import { markSessionIfRunnerExited, markSessionRunnerFailed } from "./session-lifecycle";
 
-// MCP tools added to allowedTools for orchestrator sessions
+// MCP tools added to allowedTools when a session has an explicit tool allow-list.
 const ORCHESTRATOR_MCP_TOOLS = [
+  "mcp__orchestrator__list_swarms",
+  "mcp__orchestrator__dispatch_swarm",
+  "mcp__orchestrator__list_jobs",
+  "mcp__orchestrator__delete_job",
   "mcp__orchestrator__list_slices",
   "mcp__orchestrator__dispatch_slice",
   "mcp__orchestrator__run_slice_graph",
@@ -208,7 +212,7 @@ export async function spawnTurn(
 
   const localProxyEnv = {
     CLAUDE_CODE_USE_BEDROCK: "0",
-    ANTHROPIC_BASE_URL: "http://0.0.0.0:4000",
+    ANTHROPIC_BASE_URL: "http://127.0.0.1:4000",
     ANTHROPIC_AUTH_TOKEN: "sk-local-proxy-key",
     ANTHROPIC_MODEL: localModel,
     ANTHROPIC_SMALL_FAST_MODEL: localSmallModel,
@@ -250,11 +254,11 @@ export async function spawnTurn(
 
   const port = process.env.PORT ?? "3737";
 
-  // For orchestrator sessions: expose the local MCP server so agents can run
-  // saved slice workflows and dispatch specialist sub-agents.
-  if (isOrchestrator(agentSnapshot)) {
-    const wallclock = agentSnapshot?.budget?.max_wallclock_seconds;
-    const token = mintToken(sessionId, wallclock);
+  // Expose the local orchestrator MCP to every chat. Swarm agents use it for
+  // saved slice workflows; ordinary chat agents can use it to call saved swarms
+  // or dispatch specialist slices when the conversation calls for delegation.
+  if (agentSnapshot) {
+    const token = mintToken(sessionId);
     const orchestratorUrl = `http://127.0.0.1:${port}/api/mcp/orchestrator/${sessionId}?token=${token}`;
     extraEnv.SATURN_ORCHESTRATOR_TOOLS = "1";
 
@@ -262,7 +266,7 @@ export async function spawnTurn(
       extraEnv.CODEX_HOME = await createCodexHomeWithMcp(sessionId, orchestratorUrl);
     }
 
-    if (isBedrock || isPersonal) {
+    if (isBedrock || isPersonal || isLocal) {
       const mcpConfig = {
         mcpServers: {
           orchestrator: {
@@ -276,9 +280,23 @@ export async function spawnTurn(
       await fs.writeFile(mcpConfigPath, JSON.stringify(mcpConfig, null, 2), "utf8");
 
       extraEnv.MCP_CONFIG_PATH = mcpConfigPath;
-      // Merge MCP tool names so the orchestrator is allowed to call them
-      const allTools = [...new Set([...baseTools, ...ORCHESTRATOR_MCP_TOOLS])];
-      extraEnv.ALLOWED_TOOLS_OVERRIDE = allTools.join(",");
+      if (isLocal && mcpTools !== true) {
+        extraEnv.STRICT_MCP = "1";
+        extraEnv.CLAUDE_LOCAL_SETTINGS = JSON.stringify({
+          model: localModel,
+          alwaysThinkingEnabled: Boolean(effectiveReasoningEffort),
+          effortLevel: effectiveReasoningEffort ?? "low",
+          enabledPlugins: {},
+          env: localProxyEnv,
+        });
+      }
+      // If the saved agent already constrains tools, merge in the swarm tools.
+      // Saved orchestrators use allowedTools: [] to mean "only the MCP swarm
+      // surface"; ordinary chats without a tool allow-list keep the CLI default.
+      if (baseTools.length > 0 || isOrchestrator(agentSnapshot)) {
+        const allTools = [...new Set([...baseTools, ...ORCHESTRATOR_MCP_TOOLS])];
+        extraEnv.ALLOWED_TOOLS_OVERRIDE = allTools.join(",");
+      }
     }
   } else if (isLocal && baseTools.length === 0) {
     if (mcpTools === true) {

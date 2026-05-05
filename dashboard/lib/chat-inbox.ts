@@ -1,5 +1,5 @@
 import type { CLI, SessionMeta, TurnRecord } from "./runs";
-import { isMultiCli } from "./session-utils";
+import { isMultiCli, sessionTitle } from "./session-utils";
 import { normalizeCli } from "./clis";
 
 export type InboxCli = CLI | "mixed" | "unknown";
@@ -13,8 +13,8 @@ export type InboxTag = {
 
 export type InboxSession = {
   id: string;
-  /** Headline used everywhere the session is listed — the first user message
-   *  for ad-hoc chats, the agent name for saved agents. Never "Ad-hoc chat". */
+  /** Headline used everywhere the session is listed — usually the first user
+   *  message, never "Ad-hoc chat". */
   title: string;
   /** Underlying agent name (e.g. "Code Review Swarm" or "Ad-hoc"). Kept so we
    *  can still show the agent badge next to the title. */
@@ -151,26 +151,6 @@ function deriveTags(
     tags.push({ kind: "default", label });
   }
   return tags;
-}
-
-/**
- * Pick the display title for a session. Priority:
- *   1. First user message (trimmed, single-lined, ~120 chars) — works for both
- *      ad-hoc and saved-agent sessions, matches what most chat UIs do.
- *   2. Agent name — if there are no turns yet (session just created).
- *   3. "New chat" — last-resort fallback.
- */
-export function sessionTitle(s: SessionMeta): string {
-  const turns = s.turns ?? [];
-  for (const t of turns) {
-    const msg = t?.user_message?.replace(/\s+/g, " ").trim();
-    if (msg) {
-      return msg.length > 120 ? msg.slice(0, 117) + "…" : msg;
-    }
-  }
-  const name = s.agent_snapshot?.name;
-  if (name && name !== "Ad-hoc chat") return name;
-  return "New chat";
 }
 
 function isUnread(s: SessionMeta, last: TurnRecord | undefined): boolean {

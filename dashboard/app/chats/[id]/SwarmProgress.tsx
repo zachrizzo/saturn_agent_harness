@@ -13,7 +13,7 @@ type Props = {
   onAbort?: () => void;
 };
 
-type Clock = { elapsed: string; remaining: string | null };
+type Clock = { elapsed: string };
 
 function fmtClock(totalSec: number): string {
   const s = Math.max(0, Math.floor(totalSec));
@@ -22,18 +22,13 @@ function fmtClock(totalSec: number): string {
   return `${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
 }
 
-function deriveClock(startedAt: string | undefined, limits: BudgetLimits): Clock {
-  if (!startedAt) return { elapsed: "00:00", remaining: null };
+function deriveClock(startedAt: string | undefined): Clock {
+  if (!startedAt) return { elapsed: "00:00" };
   const startedMs = Date.parse(startedAt);
-  if (!Number.isFinite(startedMs)) return { elapsed: "00:00", remaining: null };
+  if (!Number.isFinite(startedMs)) return { elapsed: "00:00" };
   const elapsedSec = Math.max(0, (Date.now() - startedMs) / 1000);
-  const rem =
-    limits.max_wallclock_seconds !== undefined
-      ? Math.max(0, limits.max_wallclock_seconds - elapsedSec)
-      : null;
   return {
     elapsed: fmtClock(elapsedSec),
-    remaining: rem !== null ? fmtClock(rem) : null,
   };
 }
 
@@ -71,7 +66,6 @@ function sameLimits(a: BudgetLimits, b: BudgetLimits): boolean {
   return (
     a.max_total_tokens === b.max_total_tokens &&
     a.max_slice_calls === b.max_slice_calls &&
-    a.max_wallclock_seconds === b.max_wallclock_seconds &&
     a.max_recursion_depth === b.max_recursion_depth
   );
 }
@@ -80,7 +74,7 @@ export function SwarmProgress({ sessionId, streaming, slices, runStartedAt, onAb
   const pageVisible = useDocumentVisible();
   const [budget, setBudget] = useState<Budget | null>(null);
   const [limits, setLimits] = useState<BudgetLimits>({});
-  const [clock, setClock] = useState<Clock>({ elapsed: "00:00", remaining: null });
+  const [clock, setClock] = useState<Clock>({ elapsed: "00:00" });
   const [aborting, setAborting] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -134,11 +128,11 @@ export function SwarmProgress({ sessionId, streaming, slices, runStartedAt, onAb
   useEffect(() => {
     const startedAt = runStartedAt ?? budget?.wallclock_started_at;
     if (!startedAt || !pageVisible) return;
-    setClock(deriveClock(startedAt, limits));
+    setClock(deriveClock(startedAt));
     if (!streaming) return;
-    const t = setInterval(() => setClock(deriveClock(startedAt, limits)), 1000);
+    const t = setInterval(() => setClock(deriveClock(startedAt)), 1000);
     return () => clearInterval(t);
-  }, [budget?.wallclock_started_at, limits, pageVisible, runStartedAt, streaming]);
+  }, [budget?.wallclock_started_at, pageVisible, runStartedAt, streaming]);
 
   const handleAbort = async () => {
     setAborting(true);
@@ -303,11 +297,6 @@ export function SwarmProgress({ sessionId, streaming, slices, runStartedAt, onAb
           <span className="accent-line" />
           <div className="kpi-label">Elapsed</div>
           <div className="kpi-value mono">{clock.elapsed}</div>
-          {clock.remaining !== null && (
-            <div className="kpi-delta mono">
-              {clock.remaining} remaining
-            </div>
-          )}
         </div>
       </div>
     </section>

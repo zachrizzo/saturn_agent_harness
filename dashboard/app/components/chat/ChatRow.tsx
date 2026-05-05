@@ -9,6 +9,7 @@ import { IconArchive, IconCheck, IconClock, IconPin } from "@/app/components/she
 type Props = {
   s: InboxSession;
   selected: boolean;
+  opening?: boolean;
   onToggleSelect: (id: string) => void;
   onOpen: (id: string) => void;
 };
@@ -28,7 +29,7 @@ async function patchSession(id: string, patch: Record<string, unknown>) {
   });
 }
 
-export function ChatRow({ s, selected, onToggleSelect, onOpen }: Props) {
+export function ChatRow({ s, selected, opening = false, onToggleSelect, onOpen }: Props) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
 
@@ -46,7 +47,8 @@ export function ChatRow({ s, selected, onToggleSelect, onOpen }: Props) {
     <div
       role="button"
       tabIndex={0}
-      className={`chat-row ${s.unread ? "unread" : ""} ${selected ? "selected" : ""}`.trim()}
+      className={`chat-row ${s.unread ? "unread" : ""} ${selected ? "selected" : ""} ${opening ? "opening" : ""}`.trim()}
+      aria-busy={opening || busy}
       onClick={() => onOpen(s.id)}
       onKeyDown={(e) => {
         if (e.key === "Enter") onOpen(s.id);
@@ -65,7 +67,7 @@ export function ChatRow({ s, selected, onToggleSelect, onOpen }: Props) {
       </button>
 
       <span className={`cli-glyph ${s.cli}`}>{cliGlyph(s.cli)}</span>
-      <span className={`status-dot ${s.status}`} aria-label={s.status} />
+      <span className={`status-dot ${opening ? "loading" : s.status}`} aria-label={opening ? "opening chat" : s.status} />
 
       <div className="agent">
         <span className="name">{s.title}</span>
@@ -92,6 +94,7 @@ export function ChatRow({ s, selected, onToggleSelect, onOpen }: Props) {
       </div>
 
       <div className="meta-right">
+        {opening && <span className="row-loading-label">Opening</span>}
         {s.turns > 0 && <span className="turns">{s.turns}t</span>}
         <span className="time">{s.relTime}</span>
       </div>

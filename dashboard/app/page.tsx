@@ -4,6 +4,7 @@ import {
   listRunTokenSummaries,
   listSessions,
   listSessionTokenSummaries,
+  readFinalMarkdown,
   type RunMeta,
   type TokenUsageSummary,
 } from "@/lib/runs";
@@ -17,6 +18,7 @@ import { KpiRow } from "./components/dashboard/KpiRow";
 import { RecentChatsRail } from "./components/dashboard/RecentChatsRail";
 import { IssuesCallout } from "./components/dashboard/IssuesCallout";
 import { JobsTable } from "./components/dashboard/JobsTable";
+import { LatestJobResults, type LatestJobResult } from "./components/dashboard/LatestJobResults";
 import { TokensChart } from "./components/dashboard/TokensChart";
 import { TasksWidget } from "./components/dashboard/TasksWidget";
 
@@ -106,6 +108,15 @@ export default async function DashboardPage() {
   const openTaskCount = tasks.filter(
     (t) => t.status !== "done" && t.status !== "cancelled",
   ).length;
+  const latestResultRuns = allRuns
+    .filter((run) => run.status !== "running")
+    .slice(0, 8);
+  const latestJobResults: LatestJobResult[] = (await Promise.all(
+    latestResultRuns.map(async (run) => {
+      const output = await readFinalMarkdown(run.name, run.slug);
+      return output.trim() ? { run, output } : null;
+    }),
+  )).filter((result): result is LatestJobResult => result !== null);
 
   return (
     <div className="space-y-[18px]">
@@ -135,6 +146,14 @@ export default async function DashboardPage() {
       />
 
       <IssuesCallout stale={issues.stale} failing={issues.failing} />
+
+      <section>
+        <div className="sect-head">
+          <h2>Latest job results</h2>
+          <span className="right">one-click generated UI</span>
+        </div>
+        <LatestJobResults results={latestJobResults} />
+      </section>
 
       <section>
         <div className="sect-head">

@@ -6,15 +6,17 @@ import Link from "next/link";
 import type { SessionMeta, CLI } from "@/lib/runs";
 import type { ModelReasoningEffort } from "@/lib/models";
 import type { StreamEvent } from "@/lib/events";
-import { toEvents } from "@/lib/events";
+import { getTokenBreakdown, toEvents } from "@/lib/events";
 import { toClaudeAlias } from "@/lib/claude-models";
 import { Button, Chip } from "@/app/components/ui";
 import { MessageBubble } from "@/app/components/chat/MessageBubble";
 import { Composer, type ComposerHandle } from "@/app/components/chat/Composer";
+import { Inspector, type InspectorTool } from "@/app/components/chat/Inspector";
+import { ToolSelectionProvider } from "@/app/components/chat/tool-selection";
 import type { SliceEntry } from "./SliceLane";
 import { SliceLanes } from "./SliceLanes";
-import { SliceInspector } from "./SliceInspector";
 import { CLI_SHORT_LABELS, DEFAULT_CLI, normalizeCli } from "@/lib/clis";
+import { sessionTitle } from "@/lib/session-utils";
 import { SwarmProgress } from "./SwarmProgress";
 import { buildTurnChunks } from "./turn-chunks";
 
@@ -26,6 +28,18 @@ type Props = {
 };
 
 const STREAM_EVENT_FLUSH_MS = 250;
+const INSPECTOR_WIDTH_KEY = "saturn.inspectorWidth";
+const INSPECTOR_COLLAPSED_KEY = "saturn.inspectorCollapsed";
+const MOBILE_INSPECTOR_OPEN_KEY = "saturn.mobileInspectorOpen";
+
+function setDocumentInspectorCollapsed(collapsed: boolean) {
+  if (typeof document === "undefined") return;
+  if (collapsed) {
+    document.documentElement.setAttribute("data-chat-inspector-collapsed", "1");
+  } else {
+    document.documentElement.removeAttribute("data-chat-inspector-collapsed");
+  }
+}
 
 type PendingSwarmEvents = {
   key: string;
@@ -49,6 +63,52 @@ function useDocumentVisible(): boolean {
   return visible;
 }
 
+function buildInspectorTools(events: StreamEvent[]): InspectorTool[] {
+  const results = new Map<string, { content: unknown; isError: boolean }>();
+  const toolIndexesById = new Map<string, number[]>();
+  const tools: InspectorTool[] = [];
+
+  for (const ev of events) {
+    if (ev.kind === "tool_use") {
+      const result = results.get(ev.id);
+      const index = tools.length;
+      tools.push({
+        id: ev.id,
+        name: ev.name,
+        input: ev.input,
+        result: result?.content,
+        status: !result ? "run" : result.isError ? "err" : "ok",
+      });
+      const indexes = toolIndexesById.get(ev.id);
+      if (indexes) indexes.push(index);
+      else toolIndexesById.set(ev.id, [index]);
+    } else if (ev.kind === "tool_result") {
+      const result = { content: ev.content, isError: ev.isError };
+      results.set(ev.toolUseId, result);
+      const indexes = toolIndexesById.get(ev.toolUseId);
+      if (!indexes) continue;
+      for (const index of indexes) {
+        const tool = tools[index];
+        tools[index] = {
+          ...tool,
+          result: result.content,
+          status: result.isError ? "err" : "ok",
+        };
+      }
+    }
+  }
+
+  return tools;
+}
+
+function latestResultEvent(events: StreamEvent[]): StreamEvent | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (event.kind === "result") return event;
+  }
+  return null;
+}
+
 export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImageServers }: Props) {
   const pageVisible = useDocumentVisible();
   const [meta, setMeta] = useState<SessionMeta>(initialMeta);
@@ -69,12 +129,49 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
   const sliceRunsKeyRef = useRef(JSON.stringify([]));
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
+  const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
+  const [inspectorWidth, setInspectorWidth] = useState(420);
+  const [compactInspectorLayout, setCompactInspectorLayout] = useState(false);
+  const [activeToolId, setActiveToolId] = useState<string | null>(null);
+  const [referencedFiles, setReferencedFiles] = useState<string[]>([]);
+  const [fileOpenRequest, setFileOpenRequest] = useState<{ path: string; requestId: number } | null>(null);
+  const fileOpenRequestId = useRef(0);
 
   useEffect(() => {
     mountedRef.current = true;
+    const stored = Number(window.localStorage.getItem(INSPECTOR_WIDTH_KEY));
+    if (Number.isFinite(stored) && stored >= 320 && stored <= 1100) {
+      setInspectorWidth(stored);
+    }
+    const collapsed = window.localStorage.getItem(INSPECTOR_COLLAPSED_KEY) === "1";
+    setInspectorCollapsed(collapsed);
+    setDocumentInspectorCollapsed(collapsed);
+    setMobileInspectorOpen(window.localStorage.getItem(MOBILE_INSPECTOR_OPEN_KEY) === "1");
     return () => {
       mountedRef.current = false;
     };
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(INSPECTOR_WIDTH_KEY, String(inspectorWidth));
+    document.documentElement.style.setProperty("--persisted-inspector-width", `${inspectorWidth}px`);
+  }, [inspectorWidth]);
+
+  useEffect(() => {
+    window.localStorage.setItem(INSPECTOR_COLLAPSED_KEY, inspectorCollapsed ? "1" : "0");
+    setDocumentInspectorCollapsed(inspectorCollapsed);
+  }, [inspectorCollapsed]);
+
+  useEffect(() => {
+    window.localStorage.setItem(MOBILE_INSPECTOR_OPEN_KEY, mobileInspectorOpen ? "1" : "0");
+  }, [mobileInspectorOpen]);
+
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 1100px)");
+    const sync = () => setCompactInspectorLayout(query.matches);
+    sync();
+    query.addEventListener("change", sync);
+    return () => query.removeEventListener("change", sync);
   }, []);
 
   // Keep metaRef in sync for use inside SSE callbacks
@@ -357,6 +454,41 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
     () => buildTurnChunks({ turns: meta.turns, status: meta.status }, events),
     [events, meta.turns, meta.status],
   );
+  const tools = useMemo<InspectorTool[]>(() => buildInspectorTools(events), [events]);
+  const activeTool = useMemo(
+    () => activeToolId ? tools.find((tool) => tool.id === activeToolId) ?? null : null,
+    [activeToolId, tools],
+  );
+  const latestResult = useMemo(() => latestResultEvent(events), [events]);
+  const tokens = useMemo(
+    () => getTokenBreakdown(latestResult ? [latestResult] : []),
+    [latestResult],
+  );
+
+  const selectInspectorTool = useCallback((tool: InspectorTool) => {
+    setActiveToolId(tool.id);
+    setInspectorCollapsed(false);
+    setMobileInspectorOpen(true);
+  }, []);
+
+  const toolSelection = useMemo(() => ({
+    activeId: activeToolId,
+    select: selectInspectorTool,
+  }), [activeToolId, selectInspectorTool]);
+
+  const openFileInInspector = useCallback((path: string) => {
+    const cleaned = path.trim();
+    if (!cleaned) return;
+    setReferencedFiles((current) => current.includes(cleaned) ? current : [cleaned, ...current]);
+    fileOpenRequestId.current += 1;
+    setFileOpenRequest({ path: cleaned, requestId: fileOpenRequestId.current });
+    setInspectorCollapsed(false);
+    setMobileInspectorOpen(true);
+  }, []);
+
+  const insertIntoComposer = useCallback((text: string) => {
+    composerRef.current?.insertText(text);
+  }, []);
 
   const sendMessage = useCallback(async (
     message: string,
@@ -418,16 +550,6 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
     setMeta((m) => ({ ...m, status: "failed" }));
   }, []);
 
-  const handleSliceRerun = useCallback((newRunId?: string) => {
-    if (newRunId) setActiveRunId(newRunId);
-    fetch(`/api/sessions/${encodeURIComponent(sessionId)}/slices`, {
-      cache: "no-store",
-    })
-      .then((r) => r.json())
-      .then((data) => applySliceRuns(Array.isArray(data.slices) ? data.slices : []))
-      .catch(() => {});
-  }, [applySliceRuns, sessionId]);
-
   const handleSliceSelect = useCallback((entry: SliceEntry) => {
     setActiveRunId((current) =>
       current === entry.slice_run_id ? null : entry.slice_run_id
@@ -449,31 +571,42 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
   const currentReasoningEffort =
     lastTurn?.reasoningEffort ?? snap?.reasoningEfforts?.[currentCli] ?? snap?.reasoningEffort;
   const agentName = snap?.name ?? "Orchestrator";
+  const title = sessionTitle(meta);
   const agentId = snap?.id ?? meta.agent_id;
   const agentCliModels = snap?.models;
   const agentCliReasoningEfforts = snap?.reasoningEfforts;
   const headerDetails = [
+    title !== agentName ? agentName : undefined,
     meta.agent_snapshot?.description,
     `Session ${sessionId}`,
   ].filter(Boolean).join(" · ");
 
-  const activeSlice =
-    sliceRuns.find((s) => s.slice_run_id === activeRunId) ?? null;
   const runStartedAt =
     lastTurn?.started_at ??
     (meta as SessionMeta & { last_turn_started_at?: string }).last_turn_started_at ??
     meta.started_at;
 
+  const toggleInspectorPanel = useCallback(() => {
+    if (compactInspectorLayout) {
+      setMobileInspectorOpen(true);
+      return;
+    }
+    setInspectorCollapsed((current) => !current);
+  }, [compactInspectorLayout]);
+  const inspectorToggleLabel = compactInspectorLayout || inspectorCollapsed ? "Info panel" : "Hide info panel";
+  const inspectorToggleTitle = compactInspectorLayout || inspectorCollapsed ? "Show right panel" : "Hide right panel";
+
   return (
-    <div
-      className={`chat-shell ${mobileInspectorOpen ? "inspector-open" : ""}`}
-      style={{ "--inspector-width": "360px" } as CSSProperties}
-    >
-      <div className="chat-main">
+    <ToolSelectionProvider value={toolSelection}>
+      <div
+        className={`chat-shell ${mobileInspectorOpen ? "inspector-open" : ""} ${inspectorCollapsed ? "inspector-collapsed" : ""}`.trim()}
+        style={{ "--inspector-width": `var(--persisted-inspector-width, ${inspectorWidth}px)` } as CSSProperties}
+      >
+        <div className="chat-main">
         {/* Header */}
         <header className="chat-header" title={headerDetails || sessionId}>
           <div className="chat-title-row">
-            <h1 className="truncate">{agentName}</h1>
+            <h1 className="truncate">{title}</h1>
             <Chip variant="accent">orchestrator</Chip>
             <Chip variant="accent">{CLI_SHORT_LABELS[currentCli]}</Chip>
             {currentModel && (
@@ -499,9 +632,10 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
               size="sm"
               variant="ghost"
               className="chat-inspector-toggle"
-              onClick={() => setMobileInspectorOpen(true)}
+              onClick={toggleInspectorPanel}
+              title={inspectorToggleTitle}
             >
-              Panel
+              {inspectorToggleLabel}
             </Button>
           </div>
         </header>
@@ -566,11 +700,12 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
                 <MessageBubble
                   kind="assistant"
                   events={chunk.events}
-                  streaming={chunk.streaming}
-                  sessionId={sessionId}
-                  hiddenMcpImageServers={hiddenMcpImageServers}
-                />
-              </div>
+                    streaming={chunk.streaming}
+                    sessionId={sessionId}
+                    hiddenMcpImageServers={hiddenMcpImageServers}
+                    onOpenFile={openFileInInspector}
+                  />
+                </div>
             );
           })}
           <div ref={bottomRef} />
@@ -600,19 +735,20 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
         aria-label="Close inspector panel"
       />
 
-      {/* Right inspector — reuses the .inspector shell from globals.css */}
-      <SliceInspector
-        sessionId={sessionId}
-        entry={activeSlice}
-        onRerun={handleSliceRerun}
-        onClose={
-          activeSlice
-            ? () => setActiveRunId(null)
-            : mobileInspectorOpen
-            ? () => setMobileInspectorOpen(false)
-            : undefined
-        }
+      <Inspector
+        session={meta}
+        activeTool={activeTool}
+        tools={tools}
+        tokens={tokens}
+        events={events}
+        width={inspectorWidth}
+        onWidthChange={setInspectorWidth}
+        referencedFiles={referencedFiles}
+        fileOpenRequest={fileOpenRequest}
+        onInsertIntoComposer={insertIntoComposer}
+        onClose={() => setMobileInspectorOpen(false)}
       />
     </div>
+    </ToolSelectionProvider>
   );
 }

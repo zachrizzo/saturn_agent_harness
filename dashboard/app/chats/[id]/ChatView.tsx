@@ -17,6 +17,7 @@ import { ToolSelectionProvider } from "@/app/components/chat/tool-selection";
 import { buildTurnChunks } from "./turn-chunks";
 import type { TurnChunk } from "./turn-chunks";
 import { CLI_SHORT_LABELS, DEFAULT_CLI, normalizeCli } from "@/lib/clis";
+import { sessionTitle } from "@/lib/session-utils";
 
 type Props = {
   sessionId: string;
@@ -55,9 +56,35 @@ type BackgroundSubAgentRow = BackgroundSubAgent & {
   status: "run" | "ok" | "err" | "stop";
 };
 
+type BackgroundRunSnapshot = {
+  status: SessionMeta["status"];
+  finished_at?: string;
+  latestTurnStatus?: SessionMeta["turns"][number]["status"];
+};
+
+type BackgroundActivityRow = {
+  id: string;
+  title: string;
+  status: BackgroundSubAgentRow["status"];
+  kind: "session" | "agent";
+};
+
 const STREAM_EVENT_FLUSH_MS = 250;
 const INITIAL_VISIBLE_TURNS = 4;
 const VISIBLE_TURN_INCREMENT = 8;
+const INSPECTOR_WIDTH_KEY = "saturn.inspectorWidth";
+const INSPECTOR_COLLAPSED_KEY = "saturn.inspectorCollapsed";
+const MOBILE_INSPECTOR_OPEN_KEY = "saturn.mobileInspectorOpen";
+const DISMISSED_BACKGROUND_ACTIVITY_KEY_PREFIX = "saturn.dismissedBackgroundActivity";
+
+function setDocumentInspectorCollapsed(collapsed: boolean) {
+  if (typeof document === "undefined") return;
+  if (collapsed) {
+    document.documentElement.setAttribute("data-chat-inspector-collapsed", "1");
+  } else {
+    document.documentElement.removeAttribute("data-chat-inspector-collapsed");
+  }
+}
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? value as Record<string, unknown> : {};
@@ -334,6 +361,24 @@ function backgroundAgentStatus(
   return result.isError ? "err" : "ok";
 }
 
+function backgroundRunStatus(
+  status: SessionMeta["status"] | undefined,
+  latestTurnStatus?: SessionMeta["turns"][number]["status"],
+): BackgroundSubAgentRow["status"] {
+  if (latestTurnStatus === "aborted") return "stop";
+  if (status === "success" || status === "idle") return "ok";
+  if (status === "failed") return "err";
+  return "run";
+}
+
+function backgroundActivityDismissKey(row: Pick<BackgroundActivityRow, "id" | "kind">): string {
+  return `${row.kind}:${row.id}`;
+}
+
+function dismissedBackgroundStorageKey(sessionId: string): string {
+  return `${DISMISSED_BACKGROUND_ACTIVITY_KEY_PREFIX}:${sessionId}`;
+}
+
 function backgroundSubAgentRows(
   agents: Record<string, BackgroundSubAgent>,
   events: StreamEvent[],
@@ -419,6 +464,7 @@ export function ChatView({
   const eventSourceRef = useRef<EventSource | null>(null);
   const sseStartOverrideRef = useRef<SseStartOverride | null>(null);
   const sseActiveRef = useRef(false);
+  const suppressSseUntilSendStartsRef = useRef(false);
   const mountedRef = useRef(false);
   const snapshotGenerationRef = useRef(0);
   const latestSnapshotRequestRef = useRef(0);
@@ -428,15 +474,20 @@ export function ChatView({
   const activeActionAbortRef = useRef<AbortController | null>(null);
   const activeActionSeqRef = useRef(0);
   const [streaming, setStreaming] = useState(initialMeta.status === "running");
+  const [sseStartNonce, setSseStartNonce] = useState(0);
   const [autoScroll, setAutoScroll] = useState(true);
   const [atBottom, setAtBottom] = useState(true);
   const atBottomRef = useRef(true);
   const [historyLoading, setHistoryLoading] = useState(false);
   const composerRef = useRef<ComposerHandle>(null);
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
   const scrollFrameRef = useRef<number | null>(null);
   const scrollTimerRef = useRef<number | null>(null);
   const didInitialBottomPinRef = useRef(false);
+  const initialBottomPinSessionRef = useRef(sessionId);
+  const initialBottomReadySessionRef = useRef<string | null>(null);
+  const [, bumpInitialBottomPinRender] = useState(0);
   const preserveScrollRef = useRef<{ top: number; height: number } | null>(null);
   const initialFreshenSessionRef = useRef<string | null>(null);
   const [editingTurnIndex, setEditingTurnIndex] = useState<number | null>(null);
@@ -452,6 +503,10 @@ export function ChatView({
   const [visibleTurnCount, setVisibleTurnCount] = useState(INITIAL_VISIBLE_TURNS);
   const [backgroundSubAgents, setBackgroundSubAgents] = useState<Record<string, BackgroundSubAgent>>({});
   const [stoppingBackgroundAgents, setStoppingBackgroundAgents] = useState<Set<string>>(() => new Set());
+  const [backgroundRunSnapshots, setBackgroundRunSnapshots] = useState<Record<string, BackgroundRunSnapshot>>({});
+  const [stoppingBackgroundRuns, setStoppingBackgroundRuns] = useState<Set<string>>(() => new Set());
+  const [backgroundingCurrentTurn, setBackgroundingCurrentTurn] = useState(false);
+  const [dismissedBackgroundActivity, setDismissedBackgroundActivity] = useState<Set<string>>(() => new Set());
 
   // Tool selection — drives Inspector content.
   const [activeToolId, setActiveToolId] = useState<string | null>(null);
@@ -500,20 +555,29 @@ export function ChatView({
   }, [sessionId]);
 
   useEffect(() => {
-    const stored = Number(window.localStorage.getItem("saturn.inspectorWidth"));
+    const stored = Number(window.localStorage.getItem(INSPECTOR_WIDTH_KEY));
     if (Number.isFinite(stored) && stored >= 320 && stored <= 1100) {
       setInspectorWidth(stored);
     }
-    setInspectorCollapsed(window.localStorage.getItem("saturn.inspectorCollapsed") === "1");
+    const collapsed = window.localStorage.getItem(INSPECTOR_COLLAPSED_KEY) === "1";
+    setInspectorCollapsed(collapsed);
+    setDocumentInspectorCollapsed(collapsed);
+    setMobileInspectorOpen(window.localStorage.getItem(MOBILE_INSPECTOR_OPEN_KEY) === "1");
   }, []);
 
   useEffect(() => {
-    window.localStorage.setItem("saturn.inspectorWidth", String(inspectorWidth));
+    window.localStorage.setItem(INSPECTOR_WIDTH_KEY, String(inspectorWidth));
+    document.documentElement.style.setProperty("--persisted-inspector-width", `${inspectorWidth}px`);
   }, [inspectorWidth]);
 
   useEffect(() => {
-    window.localStorage.setItem("saturn.inspectorCollapsed", inspectorCollapsed ? "1" : "0");
+    window.localStorage.setItem(INSPECTOR_COLLAPSED_KEY, inspectorCollapsed ? "1" : "0");
+    setDocumentInspectorCollapsed(inspectorCollapsed);
   }, [inspectorCollapsed]);
+
+  useEffect(() => {
+    window.localStorage.setItem(MOBILE_INSPECTOR_OPEN_KEY, mobileInspectorOpen ? "1" : "0");
+  }, [mobileInspectorOpen]);
 
   useEffect(() => {
     const query = window.matchMedia("(max-width: 1100px)");
@@ -633,9 +697,9 @@ export function ChatView({
     });
   }, [flushPendingEvents]);
 
-  const refreshSessionSnapshot = useCallback(async () => {
+  const refreshSessionSnapshot = useCallback(async (options?: { force?: boolean }) => {
     if (!mountedRef.current) return;
-    if (sseActiveRef.current && metaRef.current.status === "running") return;
+    if (!options?.force && sseActiveRef.current && metaRef.current.status === "running") return;
     const requestId = latestSnapshotRequestRef.current + 1;
     latestSnapshotRequestRef.current = requestId;
     const generation = snapshotGenerationRef.current;
@@ -689,9 +753,54 @@ export function ChatView({
     };
   }, [meta.status, refreshSessionSnapshot, streaming]);
 
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(dismissedBackgroundStorageKey(sessionId));
+      const parsed = raw ? JSON.parse(raw) : [];
+      setDismissedBackgroundActivity(new Set(Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string") : []));
+    } catch {
+      setDismissedBackgroundActivity(new Set());
+    }
+  }, [sessionId]);
+
+  useEffect(() => {
+    const backgroundRuns = meta.background_runs ?? [];
+    if (backgroundRuns.length === 0) {
+      setBackgroundRunSnapshots({});
+      return;
+    }
+
+    let cancelled = false;
+    const load = async () => {
+      const snapshots = await Promise.all(backgroundRuns.map(async (run) => {
+        const res = await fetch(`/api/sessions/${encodeURIComponent(run.session_id)}?events=recent&compact=1&meta=full`, {
+          cache: "no-store",
+        }).catch(() => null);
+        if (!res?.ok) return null;
+        const data = await res.json().catch(() => null) as { meta?: SessionMeta } | null;
+        if (!data?.meta) return null;
+        return [run.session_id, {
+          status: data.meta.status,
+          finished_at: data.meta.finished_at,
+          latestTurnStatus: data.meta.turns.at(-1)?.status,
+        }] as const;
+      }));
+      if (cancelled || !mountedRef.current) return;
+      setBackgroundRunSnapshots(Object.fromEntries(snapshots.filter(Boolean) as Array<readonly [string, BackgroundRunSnapshot]>));
+    };
+
+    void load();
+    const interval = window.setInterval(() => { void load(); }, 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [meta.background_runs]);
+
   // Connect SSE whenever status transitions to running
   useEffect(() => {
     if (meta.status !== "running") return;
+    if (suppressSseUntilSendStartsRef.current) return;
     const params = new URLSearchParams();
     const override = sseStartOverrideRef.current;
     sseStartOverrideRef.current = null;
@@ -729,7 +838,16 @@ export function ChatView({
         const incoming = (obj as { meta: SessionMeta }).meta;
         // Stale-read guard: if the server snapshot has fewer turns than our
         // optimistic state, run-turn.sh hasn't written the new turn yet.
-        if (incoming.turns.length < metaRef.current.turns.length) return;
+        if (incoming.turns.length < metaRef.current.turns.length) {
+          closedByTerminalMeta = true;
+          sseActiveRef.current = false;
+          es.close();
+          if (eventSourceRef.current === es) eventSourceRef.current = null;
+          window.setTimeout(() => {
+            if (mountedRef.current) void refreshSessionSnapshot({ force: true });
+          }, 250);
+          return;
+        }
         closedByTerminalMeta = true;
         sseActiveRef.current = false;
         flushPendingEvents();
@@ -775,14 +893,25 @@ export function ChatView({
       if (eventSourceRef.current === es) eventSourceRef.current = null;
       cancelPendingEventFlush();
     };
-  }, [cancelPendingEventFlush, clearTerminalRefreshTimer, flushPendingEvents, refreshSessionSnapshot, router, scheduleEventFlush, sessionId, meta.status, meta.turns.length]);
+  }, [cancelPendingEventFlush, clearTerminalRefreshTimer, flushPendingEvents, refreshSessionSnapshot, router, scheduleEventFlush, sessionId, meta.status, meta.turns.length, sseStartNonce]);
+
+  const pinScrollElementToBottom = useCallback((scrollEl: Element | HTMLElement) => {
+    scrollEl.scrollTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+  }, []);
 
   const getChatScrollElement = useCallback(() => (
-    chatBottomRef.current?.closest<HTMLElement>('[data-shell="chat-scroll"]')
+    chatScrollRef.current
+      ?? chatBottomRef.current?.closest<HTMLElement>('[data-shell="chat-scroll"]')
       ?? chatBottomRef.current?.closest<HTMLElement>('[data-shell="main-scroll"]')
       ?? document.scrollingElement
       ?? document.documentElement
   ), []);
+
+  const setChatScrollElement = useCallback((node: HTMLDivElement | null) => {
+    chatScrollRef.current = node;
+    if (!node || initialBottomReadySessionRef.current === sessionId) return;
+    pinScrollElementToBottom(node);
+  }, [pinScrollElementToBottom, sessionId]);
 
   const scrollToEnd = useCallback((behavior: ScrollBehavior = "auto") => {
     const scrollEl = getChatScrollElement();
@@ -803,6 +932,8 @@ export function ChatView({
   }, [getChatScrollElement]);
 
   const turnCount = meta.turns.length;
+  const chatStreamInitializing = (turnCount > 0 || Boolean(pendingMessage))
+    && initialBottomReadySessionRef.current !== sessionId;
   const hiddenTurnCount = Math.max(0, turnCount - visibleTurnCount);
   const visibleChunks = useMemo<TurnChunk[]>(() => {
     return buildTurnChunks(meta, renderedEvents, { startTurnIndex: hiddenTurnCount });
@@ -822,6 +953,14 @@ export function ChatView({
     : hiddenTurnCount > 0
     ? `${hiddenTurnCount.toLocaleString()} older turn${hiddenTurnCount === 1 ? "" : "s"} hidden`
     : "Full reply details are loaded";
+
+  useLayoutEffect(() => {
+    if (initialBottomPinSessionRef.current === sessionId) return;
+    initialBottomPinSessionRef.current = sessionId;
+    didInitialBottomPinRef.current = false;
+    initialBottomReadySessionRef.current = null;
+    bumpInitialBottomPinRender((version) => version + 1);
+  }, [sessionId, turnCount, pendingMessage]);
 
   useEffect(() => {
     if (!visibleEventsPartial || meta.status === "running" || foregroundStreaming) return;
@@ -956,23 +1095,33 @@ export function ChatView({
   // pinned to the latest turn until the bottom sentinel has settled.
   useLayoutEffect(() => {
     if (didInitialBottomPinRef.current) return;
-    if (turnCount === 0 && !pendingMessage) return;
+    if (turnCount === 0 && !pendingMessage) {
+      return;
+    }
     didInitialBottomPinRef.current = true;
     setAutoScroll(true);
     setAtBottom(true);
     scrollToEnd("auto");
 
+    const revealAtBottom = () => {
+      scrollToEnd("auto");
+      initialBottomReadySessionRef.current = sessionId;
+      bumpInitialBottomPinRender((version) => version + 1);
+    };
+
     const rafOne = window.requestAnimationFrame(() => scrollToEnd("auto"));
     const rafTwo = window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => scrollToEnd("auto"));
     });
-    const timers = [80, 240, 700].map((delay) => window.setTimeout(() => scrollToEnd("auto"), delay));
+    const revealTimer = window.setTimeout(revealAtBottom, 80);
+    const timers = [240, 700].map((delay) => window.setTimeout(() => scrollToEnd("auto"), delay));
     return () => {
       window.cancelAnimationFrame(rafOne);
       window.cancelAnimationFrame(rafTwo);
+      window.clearTimeout(revealTimer);
       timers.forEach(window.clearTimeout);
     };
-  }, [turnCount, pendingMessage, scrollToEnd]);
+  }, [sessionId, turnCount, pendingMessage, scrollToEnd]);
 
   // Auto-scroll when new events arrive (while streaming AND user hasn't scrolled up)
   useEffect(() => {
@@ -1387,12 +1536,35 @@ export function ChatView({
     }
   }, [beginExclusiveAction, beginMutation, finishExclusiveAction, isCurrentAction, refreshSessionSnapshot, sessionId]);
 
-  const runSubAgentInBackground = useCallback((id: string, title: string) => {
+  const runSubAgentInBackground = useCallback(async (id: string, title: string) => {
     setBackgroundSubAgents((current) => ({
       ...current,
       [id]: { id, title },
     }));
-  }, []);
+    setBackgroundingCurrentTurn(true);
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/background`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const failure = await apiFailure(res, "Background agent failed");
+        alert(failure.message);
+        setBackgroundingCurrentTurn(false);
+        return;
+      }
+      const data = await res.json() as { session_id?: string };
+      if (!data.session_id) {
+        alert("Background agent failed: response did not include a continuation session");
+        setBackgroundingCurrentTurn(false);
+        return;
+      }
+      pauseLiveUpdatesForNavigation();
+      window.location.href = `/chats/${encodeURIComponent(data.session_id)}`;
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Failed to background agent");
+      setBackgroundingCurrentTurn(false);
+    }
+  }, [pauseLiveUpdatesForNavigation, sessionId]);
 
   const showBackgroundSubAgent = useCallback((id: string) => {
     const tool = tools.find((item) => item.id === id);
@@ -1424,6 +1596,56 @@ export function ChatView({
     }
   }, [refreshSessionSnapshot, sessionId]);
 
+  const stopBackgroundRun = useCallback(async (id: string) => {
+    setStoppingBackgroundRuns((current) => new Set(current).add(id));
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/abort`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const failure = await apiFailure(res, "Stop background run failed");
+        alert(failure.message);
+      }
+      const snapshotRes = await fetch(`/api/sessions/${encodeURIComponent(id)}?events=recent&compact=1&meta=full`, {
+        cache: "no-store",
+      }).catch(() => null);
+      if (snapshotRes?.ok) {
+        const data = await snapshotRes.json().catch(() => null) as { meta?: SessionMeta } | null;
+        if (data?.meta) {
+          setBackgroundRunSnapshots((current) => ({
+            ...current,
+            [id]: {
+              status: data.meta!.status,
+              finished_at: data.meta!.finished_at,
+              latestTurnStatus: data.meta!.turns.at(-1)?.status,
+            },
+          }));
+        }
+      }
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Failed to stop background run");
+    } finally {
+      setStoppingBackgroundRuns((current) => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
+    }
+  }, []);
+
+  const dismissBackgroundActivity = useCallback((row: BackgroundActivityRow) => {
+    const key = backgroundActivityDismissKey(row);
+    setDismissedBackgroundActivity((current) => {
+      if (current.has(key)) return current;
+      const next = new Set(current);
+      next.add(key);
+      try {
+        window.localStorage.setItem(dismissedBackgroundStorageKey(sessionId), JSON.stringify(Array.from(next)));
+      } catch {}
+      return next;
+    });
+  }, [sessionId]);
+
   const sendMessage = useCallback(async (
     message: string,
     cli: CLI,
@@ -1434,6 +1656,7 @@ export function ChatView({
   ) => {
     const { controller, seq } = beginExclusiveAction();
     beginMutation();
+    suppressSseUntilSendStartsRef.current = true;
     const previousTurnId = turnIdFromMetaTurn(metaRef.current.turns.at(-1));
     sseStartOverrideRef.current = previousTurnId
       ? { mode: "afterTurnId", turnId: previousTurnId }
@@ -1478,13 +1701,22 @@ export function ChatView({
         }));
         setStreaming(false);
         sseStartOverrideRef.current = null;
+        suppressSseUntilSendStartsRef.current = false;
         showApiFailure(failure, message);
         return;
       }
       setBedrockAuthPrompt(null);
+      suppressSseUntilSendStartsRef.current = false;
+      setSseStartNonce((current) => current + 1);
+      for (const delay of [250, 900, 2200]) {
+        window.setTimeout(() => {
+          if (mountedRef.current) void refreshSessionSnapshot({ force: true });
+        }, delay);
+      }
     } catch (e) {
       if (controller.signal.aborted || !isCurrentAction(seq, controller)) return;
       sseStartOverrideRef.current = null;
+      suppressSseUntilSendStartsRef.current = false;
       setMeta((m) => ({
         ...m,
         status: "failed",
@@ -1495,7 +1727,7 @@ export function ChatView({
     } finally {
       finishExclusiveAction(seq, controller);
     }
-  }, [beginExclusiveAction, beginMutation, finishExclusiveAction, isCurrentAction, sessionId, showApiFailure]);
+  }, [beginExclusiveAction, beginMutation, finishExclusiveAction, isCurrentAction, refreshSessionSnapshot, sessionId, showApiFailure]);
 
   const approvePlan = () => {
     void sendMessage(
@@ -1523,10 +1755,12 @@ export function ChatView({
   const currentReasoningEffort =
     lastTurn?.reasoningEffort ?? snap?.reasoningEfforts?.[currentCli] ?? snap?.reasoningEffort;
   const agentName = snap?.name ?? "Ad-hoc";
+  const title = sessionTitle(meta, pendingMessage);
   const agentId = snap?.id ?? meta.agent_id;
   const agentCliModels = snap?.models;
   const agentCliReasoningEfforts = snap?.reasoningEfforts;
   const headerDetails = [
+    title !== agentName ? agentName : undefined,
     meta.agent_snapshot?.description,
     meta.agent_snapshot?.cwd,
     sessionId,
@@ -1545,9 +1779,30 @@ export function ChatView({
     () => backgroundSubAgentRows(backgroundSubAgents, renderedEvents),
     [backgroundSubAgents, renderedEvents],
   );
+  const backgroundRunRows = useMemo<BackgroundActivityRow[]>(() => (
+    (meta.background_runs ?? []).map((run) => {
+      const snapshot = backgroundRunSnapshots[run.session_id];
+      return {
+        id: run.session_id,
+        title: run.title,
+        kind: "session" as const,
+        status: backgroundRunStatus(snapshot?.status, snapshot?.latestTurnStatus),
+      };
+    })
+  ), [backgroundRunSnapshots, meta.background_runs]);
+  const backgroundActivityRows = useMemo<BackgroundActivityRow[]>(() => [
+    ...backgroundRunRows,
+    ...backgroundRows.map((row) => ({ ...row, kind: "agent" as const })),
+  ], [backgroundRows, backgroundRunRows]);
+  const visibleBackgroundActivityRows = useMemo(
+    () => backgroundActivityRows.filter((row) => (
+      row.status === "run" || !dismissedBackgroundActivity.has(backgroundActivityDismissKey(row))
+    )),
+    [backgroundActivityRows, dismissedBackgroundActivity],
+  );
   const activeBackgroundRows = useMemo(
-    () => backgroundRows.filter((row) => row.status === "run"),
-    [backgroundRows],
+    () => visibleBackgroundActivityRows.filter((row) => row.status === "run"),
+    [visibleBackgroundActivityRows],
   );
   const backgroundSubAgentIds = useMemo(
     () => new Set(backgroundRows.map((row) => row.id)),
@@ -1571,12 +1826,12 @@ export function ChatView({
           mobileInspectorOpen ? "inspector-open" : "",
           inspectorCollapsed ? "inspector-collapsed" : "",
         ].filter(Boolean).join(" ")}
-        style={{ "--inspector-width": `${inspectorWidth}px` } as CSSProperties}
+        style={{ "--inspector-width": `var(--persisted-inspector-width, ${inspectorWidth}px)` } as CSSProperties}
       >
         <div className="chat-main">
           <header className="chat-header" title={headerDetails || sessionId}>
             <div className="chat-title-row">
-              <h1 className="truncate">{agentName}</h1>
+              <h1 className="truncate">{title}</h1>
               <Chip variant="accent">{CLI_SHORT_LABELS[currentCli]}</Chip>
               {currentModel && (
                 <Chip className="chat-model-chip">
@@ -1629,42 +1884,65 @@ export function ChatView({
             </div>
           </header>
 
-          {activeBackgroundRows.length > 0 && (
+          {visibleBackgroundActivityRows.length > 0 && (
             <div className="background-agents-tray" aria-label="Background agents">
               <div className="background-agents-tray-copy">
-                <div className="background-agents-tray-title">Background agents</div>
+                <div className="background-agents-tray-title">Background activity</div>
                 <div className="background-agents-tray-subtitle">
-                  These sub-agents are still running for this chat.
+                  {activeBackgroundRows.length > 0
+                    ? "You can keep chatting while these runs finish."
+                    : "Background runs have finished."}
                 </div>
               </div>
               <div className="background-agents-list">
-                {activeBackgroundRows.map((agent) => (
+                {visibleBackgroundActivityRows.map((agent) => (
                   <div
-                    key={agent.id}
+                    key={`${agent.kind}-${agent.id}`}
                     className="background-agent-chip"
                     title={agent.title}
                   >
-                    <button
-                      type="button"
-                      className="background-agent-main"
-                      onClick={() => showBackgroundSubAgent(agent.id)}
-                    >
-                      <span className={`background-agent-dot ${agent.status}`} aria-hidden="true" />
-                      <span className="background-agent-name">{agent.title}</span>
-                      <span className={`background-agent-status ${agent.status}`}>
-                        {agent.status === "run" ? "running" : agent.status === "ok" ? "done" : agent.status === "stop" ? "stopped" : "failed"}
-                      </span>
-                    </button>
+                    {agent.kind === "session" ? (
+                      <Link className="background-agent-main" href={`/chats/${encodeURIComponent(agent.id)}`}>
+                        <span className={`background-agent-dot ${agent.status}`} aria-hidden="true" />
+                        <span className="background-agent-name">{agent.title}</span>
+                        <span className={`background-agent-status ${agent.status}`}>
+                          {agent.status === "run" ? "running" : agent.status === "ok" ? "done" : agent.status === "stop" ? "stopped" : "failed"}
+                        </span>
+                      </Link>
+                    ) : (
+                      <button
+                        type="button"
+                        className="background-agent-main"
+                        onClick={() => showBackgroundSubAgent(agent.id)}
+                      >
+                        <span className={`background-agent-dot ${agent.status}`} aria-hidden="true" />
+                        <span className="background-agent-name">{agent.title}</span>
+                        <span className={`background-agent-status ${agent.status}`}>
+                          {agent.status === "run" ? "running" : agent.status === "ok" ? "done" : agent.status === "stop" ? "stopped" : "failed"}
+                        </span>
+                      </button>
+                    )}
                     {agent.status === "run" && (
                       <button
                         type="button"
                         className="background-agent-stop"
-                        disabled={stoppingBackgroundAgents.has(agent.id)}
-                        onClick={() => stopBackgroundSubAgent(agent.id)}
-                        title="Kill background agent"
-                        aria-label={`Kill background agent ${agent.title}`}
+                        disabled={agent.kind === "session" ? stoppingBackgroundRuns.has(agent.id) : stoppingBackgroundAgents.has(agent.id)}
+                        onClick={() => agent.kind === "session" ? stopBackgroundRun(agent.id) : stopBackgroundSubAgent(agent.id)}
+                        title={agent.kind === "session" ? "Stop background run" : "Stop background agent"}
+                        aria-label={`Stop background ${agent.kind === "session" ? "run" : "agent"} ${agent.title}`}
                       >
-                        {stoppingBackgroundAgents.has(agent.id) ? "..." : "Stop"}
+                        {(agent.kind === "session" ? stoppingBackgroundRuns.has(agent.id) : stoppingBackgroundAgents.has(agent.id)) ? "..." : "Stop"}
+                      </button>
+                    )}
+                    {agent.status !== "run" && (
+                      <button
+                        type="button"
+                        className="background-agent-dismiss"
+                        onClick={() => dismissBackgroundActivity(agent)}
+                        title="Dismiss background activity"
+                        aria-label={`Dismiss background ${agent.kind === "session" ? "run" : "agent"} ${agent.title}`}
+                      >
+                        &times;
                       </button>
                     )}
                   </div>
@@ -1673,7 +1951,11 @@ export function ChatView({
             </div>
           )}
 
-          <div className="chat-stream" data-shell="chat-scroll">
+          <div
+            ref={setChatScrollElement}
+            className={`chat-stream ${chatStreamInitializing ? "chat-stream-initializing" : ""}`.trim()}
+            data-shell="chat-scroll"
+          >
             {turnCount === 0 && (
               <div className="card p-10 text-center text-muted text-[13px]">
                 Send a message to start the conversation.
@@ -1734,7 +2016,7 @@ export function ChatView({
                     sessionId={sessionId}
                     hiddenMcpImageServers={hiddenMcpImageServers}
                     onOpenFile={openFileInInspector}
-                    onRunSubAgentInBackground={chunk.streaming ? runSubAgentInBackground : undefined}
+                    onRunSubAgentInBackground={chunk.streaming && !backgroundingCurrentTurn ? runSubAgentInBackground : undefined}
                     backgroundSubAgentIds={backgroundSubAgentIds}
                     onBedrockAuthReady={recoverAfterBedrockAuthReady}
                   />

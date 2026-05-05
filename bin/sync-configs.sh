@@ -28,10 +28,12 @@ fi
 
 echo "→ syncing MCP servers from $MCPS_FILE"
 
-python3 - <<PY
+python3 - "$MCPS_FILE" "$CLAUDE_CONFIG" "$CODEX_CONFIG" <<'PY'
 import json, sys, os, re
 
-with open("$MCPS_FILE") as f:
+mcps_file, claude_config, codex_config = sys.argv[1:4]
+
+with open(mcps_file) as f:
     cfg = json.load(f)
 servers = cfg.get("servers", {})
 
@@ -39,7 +41,6 @@ def for_target(target):
     return {k: v for k, v in servers.items() if target in v.get("targets", [])}
 
 # ─── Claude Code (~/.claude.json .mcpServers) ─────
-claude_config = "$CLAUDE_CONFIG"
 if os.path.exists(claude_config):
     with open(claude_config) as f:
         cc = json.load(f)
@@ -64,7 +65,6 @@ else:
     print(f"  ⚠ Claude config not found at {claude_config}, skipping")
 
 # ─── Codex (~/.codex/config.toml [mcp_servers.*]) ─────
-codex_config = "$CODEX_CONFIG"
 if os.path.exists(codex_config):
     # Line-based removal of any [mcp_servers.*] or [mcp_servers.*.env] section.
     # A new section header starts with '[' at column 0.

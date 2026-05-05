@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -83,6 +83,7 @@ const INSPECTOR_TABS = [
 ] as const;
 type TabKey = typeof INSPECTOR_TABS[number]["key"];
 type FilesFilter = "all" | "changes" | "files";
+type FileDiscoveryStatus = "idle" | "loading" | "ready";
 
 type WebAnnotation = {
   id: number;
@@ -112,6 +113,8 @@ const INSPECTOR_TOP_OFFSET = 48;
 const INSPECTOR_TAB_BAR_HEIGHT = 40;
 const RUNNING_TOOL_LIST_LIMIT = 160;
 const TERMINAL_TRANSCRIPT_MAX_CHARS = 250_000;
+const FILE_DISCOVERY_IDLE_TIMEOUT_MS = 300;
+const EMPTY_STRING_ARRAY: string[] = [];
 
 function normalizeFileSearch(value: string): string {
   return value.trim().toLowerCase();
@@ -576,6 +579,16 @@ function collectInspectableFiles(
   return paths
     .filter((file) => priorityFiles.has(file) || !(isBareFilename(file) && basenamesWithContext.has(file)))
     .slice(0, 240);
+}
+
+function collectReferencedFilePaths(referencedFiles: string[]): string[] {
+  const files = new Set<string>();
+  for (const file of referencedFiles) addPath(files, file);
+  return Array.from(files).slice(0, 240);
+}
+
+function sameStringArray(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
 const STATUS_COLOR: Record<InspectorTool["status"], string> = {
@@ -1064,6 +1077,8 @@ export const Inspector = memo(function Inspector({
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set());
   const [gitChanges, setGitChanges] = useState<GitChangesState>({ status: "loading" });
+  const [fileDiscoveryStatus, setFileDiscoveryStatus] = useState<FileDiscoveryStatus>("idle");
+  const [discoveredFiles, setDiscoveredFiles] = useState<string[]>(() => collectReferencedFilePaths(referencedFiles));
   const [sessionTerminals, setSessionTerminals] = useState<TerminalRecord[]>([]);
   const [selectedTerminalId, setSelectedTerminalId] = useState<string | null>(null);
   const [terminalTranscript, setTerminalTranscript] = useState("");
@@ -1091,6 +1106,8 @@ export const Inspector = memo(function Inspector({
   const latestTurnStartedAt = latestTurn?.started_at ?? "";
   const latestTurnFinishedAt = latestTurn?.finished_at ?? "";
   const sessionCwd = session.agent_snapshot?.cwd?.trim() || null;
+  const referencedOnlyFiles = useMemo(() => collectReferencedFilePaths(referencedFiles), [referencedFiles]);
+  const shouldDiscoverFiles = tab === "files" || Boolean(fileOpenRequest?.path);
   const firstToolId = tools[0]?.id ?? null;
   const lastToolId = tools[tools.length - 1]?.id ?? null;
   const fileRefreshKey = `${tab === "files" ? events.length : 0}:${session.status}:${latestTurnFinishedAt}`;
@@ -1566,28 +1583,69 @@ export const Inspector = memo(function Inspector({
     return () => source.close();
   }, [selectedTerminal?.id, selectedTerminal?.source]);
 
-  const files = useMemo(
-    () => {
-      if (session.status === "running" && tab !== "files") return referencedFiles;
-      return collectInspectableFiles(tools, events, session, referencedFiles);
-    },
-    [tools, events, session, referencedFiles, tab],
-  );
+  useEffect(() => {
+    if (shouldDiscoverFiles) return;
+    if (fileDiscoveryStatus !== "idle") return;
+    setDiscoveredFiles((current) => sameStringArray(current, referencedOnlyFiles) ? current : referencedOnlyFiles);
+  }, [fileDiscoveryStatus, referencedOnlyFiles, shouldDiscoverFiles]);
+
+  useEffect(() => {
+    if (!shouldDiscoverFiles) return;
+
+    let cancelled = false;
+    let idleId: number | null = null;
+
+    setFileDiscoveryStatus("loading");
+    setDiscoveredFiles((current) => current.length > 0 ? current : referencedOnlyFiles);
+
+    const discover = () => {
+      const nextFiles = collectInspectableFiles(tools, events, session, referencedFiles);
+      if (cancelled) return;
+      startTransition(() => {
+        setDiscoveredFiles((current) => sameStringArray(current, nextFiles) ? current : nextFiles);
+        setFileDiscoveryStatus("ready");
+      });
+    };
+
+    idleId = window.requestIdleCallback(discover, { timeout: FILE_DISCOVERY_IDLE_TIMEOUT_MS });
+
+    return () => {
+      cancelled = true;
+      if (idleId !== null) window.cancelIdleCallback(idleId);
+    };
+  }, [events, referencedFiles, referencedOnlyFiles, session, shouldDiscoverFiles, tools]);
+
+  useEffect(() => {
+    setFileDiscoveryStatus("idle");
+    setDiscoveredFiles(referencedOnlyFiles);
+  }, [referencedOnlyFiles, session.session_id]);
+
+  const files = fileDiscoveryStatus === "ready" || shouldDiscoverFiles
+    ? discoveredFiles
+    : referencedOnlyFiles;
   const gitFiles = gitChanges.status === "ok" ? gitChanges.files : [];
   const fileSearchQuery = useMemo(() => normalizeFileSearch(fileSearch), [fileSearch]);
   const searchedFiles = useMemo(
-    () => files.filter((file) => matchesFileSearch(file, fileSearchQuery)),
-    [files, fileSearchQuery],
+    () => tab === "files" ? files.filter((file) => matchesFileSearch(file, fileSearchQuery)) : EMPTY_STRING_ARRAY,
+    [files, fileSearchQuery, tab],
   );
-  const searchedGitFiles = useMemo(
-    () => gitFiles.filter((file) => (
-      matchesFileSearch(file.path, fileSearchQuery)
-      || matchesFileSearch(file.absolutePath, fileSearchQuery)
-    )),
-    [gitFiles, fileSearchQuery],
+  const searchedGitFiles = useMemo<GitChange[]>(
+    () => tab === "files"
+      ? gitFiles.filter((file) => (
+        matchesFileSearch(file.path, fileSearchQuery)
+        || matchesFileSearch(file.absolutePath, fileSearchQuery)
+      ))
+      : [],
+    [gitFiles, fileSearchQuery, tab],
   );
-  const { root: fileTreeRoot } = useMemo(() => buildFilePathTree(searchedFiles), [searchedFiles]);
-  const gitTreeRoot = useMemo(() => buildGitTree(searchedGitFiles), [searchedGitFiles]);
+  const { root: fileTreeRoot } = useMemo<{ root: PathTreeNode; prefix: string }>(
+    () => tab === "files" ? buildFilePathTree(searchedFiles) : { root: { name: "", fullPath: "", isDir: true, children: [] }, prefix: "" },
+    [searchedFiles, tab],
+  );
+  const gitTreeRoot = useMemo<PathTreeNode>(
+    () => tab === "files" ? buildGitTree(searchedGitFiles) : { name: "", fullPath: "", isDir: true, children: [] },
+    [searchedGitFiles, tab],
+  );
   const selectableFilePaths = useMemo(
     () => new Set([
       ...files,
@@ -1596,8 +1654,8 @@ export const Inspector = memo(function Inspector({
     [files, gitFiles],
   );
   useEffect(() => {
-    if (selectedFile && !selectableFilePaths.has(selectedFile)) setSelectedFile(null);
-  }, [selectableFilePaths, selectedFile]);
+    if (selectedFile && fileDiscoveryStatus !== "loading" && !selectableFilePaths.has(selectedFile)) setSelectedFile(null);
+  }, [fileDiscoveryStatus, selectableFilePaths, selectedFile]);
 
   useEffect(() => {
     if (!fileOpenRequest?.path) return;
@@ -1938,7 +1996,9 @@ export const Inspector = memo(function Inspector({
             )}
             {showFiles && (
               <Section title="Files">
-                {files.length === 0 ? (
+                {fileDiscoveryStatus === "loading" && files.length === 0 ? (
+                  <div className="insp-file-muted">Finding files...</div>
+                ) : files.length === 0 ? (
                   <div className="insp-empty">
                     <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mb-2 opacity-30">
                       <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>

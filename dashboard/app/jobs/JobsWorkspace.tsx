@@ -9,6 +9,7 @@ import { formatDuration, formatTokens, nextFireTime } from "@/lib/format";
 import { rateColorVar, statusVariant, successRate, relativeTime } from "@/lib/job-helpers";
 import { JobSettingsModal } from "@/app/components/JobSettingsModal";
 import { PlayButton } from "@/app/components/PlayButton";
+import { DeleteJobButton } from "@/app/components/DeleteJobButton";
 import { RunSparkline } from "@/app/components/dashboard/RunSparkline";
 import { Card, Chip, Input } from "@/app/components/ui";
 import { toClaudeAlias } from "@/lib/claude-models";
@@ -338,7 +339,8 @@ function JobRow({ job, runs, latest, rate, health }: JobRowProps): JSX.Element {
           currentReasoningEffort={job.reasoningEffort}
           currentCatchUpMissedRuns={job.catchUpMissedRuns}
         />
-        <PlayButton jobName={job.name} />
+        <PlayButton jobName={job.name} label="Run" />
+        <DeleteJobButton jobName={job.name} />
       </div>
     </div>
   );

@@ -28,7 +28,6 @@ export type PlanModeState = {
 
 export type OrchestratorBudget = {
   max_total_tokens?: number;
-  max_wallclock_seconds?: number;
   max_slice_calls?: number;
   max_recursion_depth?: number;
 };
@@ -103,7 +102,6 @@ export type Agent = {
   allowedTools?: string[];
   tags?: string[];
   cron?: string | null;
-  timeout_seconds?: number;
   created_at: string;
   updated_at?: string;
   // Swarm/orchestrator extensions. All optional — agents without `kind` behave as `kind: "chat"`.
@@ -135,6 +133,13 @@ export type TurnRecord = {
   final_text?: string;
 };
 
+export type BackgroundRunRecord = {
+  session_id: string;
+  title: string;
+  started_at: string;
+  source_turn?: number;
+};
+
 export type SessionMeta = {
   session_id: string;
   agent_id?: string;           // null for ad-hoc chats
@@ -155,6 +160,9 @@ export type SessionMeta = {
     session_id: string;
     at_turn: number;
   };
+  // Running sessions that were moved out of the foreground so this session can
+  // continue from the last completed turn.
+  background_runs?: BackgroundRunRecord[];
   plan_mode?: PlanModeState;
   // Inbox-triage state. All optional — sessions written before this existed
   // just read back as undefined and default to "not pinned / not archived".
@@ -204,6 +212,10 @@ export type RunMeta = {
   model?: string;
   reasoningEffort?: ModelReasoningEffort;
   cli?: CLI;
+  retry_attempt?: number;
+  retry_of?: string | null;
+  retry_scheduled_at?: string;
+  retry_after_seconds?: number;
 };
 
 export type TokenUsageSummary = {
@@ -692,6 +704,16 @@ export async function updateJob(
   parsed.jobs[idx] = job;
   await writeJobsFile(parsed);
   return { ...job, cli: normalizeCli(job.cli) };
+}
+
+export async function deleteJob(name: string): Promise<Job> {
+  const parsed = await readJobsFile();
+  const idx = parsed.jobs.findIndex((j) => j.name === name);
+  if (idx < 0) throw new Error(`Job not found: ${name}`);
+
+  const [deleted] = parsed.jobs.splice(idx, 1);
+  await writeJobsFile(parsed);
+  return { ...deleted, cli: normalizeCli(deleted.cli) };
 }
 
 async function listSubdirs(p: string): Promise<string[]> {

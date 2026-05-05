@@ -37,7 +37,6 @@ type CreateSessionBody = {
     prompt?: string;
     cwd?: string;
     allowedTools?: string[];
-    timeout_seconds?: number;
   };
   overrides?: SessionMeta["overrides"];
 };
@@ -46,6 +45,8 @@ type CreateSessionRequest = {
   body: CreateSessionBody;
   files: File[];
 };
+
+class BadRequestError extends Error {}
 
 function adhocAgent(config: CreateSessionBody["adhoc_config"]): Agent {
   const cli = normalizeCli(config?.cli ?? DEFAULT_CLI);
@@ -63,7 +64,6 @@ function adhocAgent(config: CreateSessionBody["adhoc_config"]): Agent {
     reasoningEffort: config?.reasoningEffort,
     reasoningEfforts: config?.reasoningEffort ? { [cli]: config.reasoningEffort } : undefined,
     allowedTools: config?.allowedTools,
-    timeout_seconds: config?.timeout_seconds,
     created_at: now,
     updated_at: now,
   };
@@ -90,7 +90,6 @@ function validateSessionOverrides(overrides: CreateSessionBody["overrides"]): st
   if (!budget) return null;
   return (
     validatePositiveInteger(budget.max_total_tokens, "overrides.budget.max_total_tokens") ??
-    validatePositiveInteger(budget.max_wallclock_seconds, "overrides.budget.max_wallclock_seconds") ??
     validatePositiveInteger(budget.max_slice_calls, "overrides.budget.max_slice_calls") ??
     validatePositiveInteger(budget.max_recursion_depth, "overrides.budget.max_recursion_depth")
   );
@@ -99,15 +98,24 @@ function validateSessionOverrides(overrides: CreateSessionBody["overrides"]): st
 async function readCreateSessionRequest(req: NextRequest): Promise<CreateSessionRequest> {
   const contentType = req.headers.get("content-type") ?? "";
   if (!contentType.toLowerCase().includes("multipart/form-data")) {
-    return { body: (await req.json()) as CreateSessionBody, files: [] };
+    try {
+      return { body: (await req.json()) as CreateSessionBody, files: [] };
+    } catch {
+      throw new BadRequestError("Invalid JSON");
+    }
   }
 
   const form = await req.formData();
   const payload = form.get("payload");
   if (typeof payload !== "string") {
-    throw new Error("multipart session create requires a JSON payload field");
+    throw new BadRequestError("multipart session create requires a JSON payload field");
   }
-  const parsed = JSON.parse(payload) as CreateSessionBody;
+  let parsed: CreateSessionBody;
+  try {
+    parsed = JSON.parse(payload) as CreateSessionBody;
+  } catch {
+    throw new BadRequestError("Invalid JSON payload");
+  }
   const files = form.getAll("files").filter((value): value is File => value instanceof File);
   return { body: parsed, files };
 }
@@ -154,7 +162,16 @@ function sessionSearchText(session: SessionMeta): string {
 }
 
 export async function POST(req: NextRequest) {
-  const { body, files } = await readCreateSessionRequest(req);
+  let body: CreateSessionBody;
+  let files: File[];
+  try {
+    ({ body, files } = await readCreateSessionRequest(req));
+  } catch (err) {
+    if (err instanceof BadRequestError) {
+      return NextResponse.json({ error: err.message }, { status: 400 });
+    }
+    throw err;
+  }
   const message = body.message?.trim();
   if (!message) {
     return NextResponse.json({ error: "message is required" }, { status: 400 });
@@ -184,10 +201,6 @@ export async function POST(req: NextRequest) {
   const overrideError = validateSessionOverrides(body.overrides);
   if (overrideError) {
     return NextResponse.json({ error: overrideError }, { status: 400 });
-  }
-  const timeoutError = validatePositiveInteger(body.adhoc_config?.timeout_seconds, "adhoc_config.timeout_seconds");
-  if (timeoutError) {
-    return NextResponse.json({ error: timeoutError }, { status: 400 });
   }
   const allowedToolsError = validateStringArray(body.adhoc_config?.allowedTools, "adhoc_config.allowedTools");
   if (allowedToolsError) {

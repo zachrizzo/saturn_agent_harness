@@ -63,6 +63,8 @@ type QueuedMessage = {
   reasoningEffort?: ModelReasoningEffort;
 };
 
+const EMPTY_MODELS: Model[] = [];
+
 function modelIdForCli(cli: CLI, modelId: string | undefined): string | undefined {
   if (!modelId) return undefined;
   return isBedrockCli(cli) ? toBedrockId(modelId) : modelId;
@@ -113,7 +115,9 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
     currentReasoningEffort ?? ""
   );
   const [mcpTools, setMcpTools] = useState<boolean>(currentMcpTools ?? false);
-  const [models, setModels] = useState<Model[]>([]);
+  const [modelOptions, setModelOptions] = useState<Model[]>([]);
+  const [modelOptionsCli, setModelOptionsCli] = useState<CLI>(normalizeCli(currentCli));
+  const [modelOptionsLoading, setModelOptionsLoading] = useState(false);
   const [commands, setCommands] = useState<SlashCommand[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [slashOpen, setSlashOpen] = useState(false);
@@ -149,7 +153,18 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
   const [waveformBars, setWaveformBars] = useState<number[]>(() => Array(20).fill(2));
   const recordingNonceRef = useRef(0);
   const didUserChoose = useRef(false);
+  const cliRef = useRef(cli);
+  const modelRequestSeqRef = useRef(0);
+  const sessionIdRef = useRef(sessionId);
+  const sessionVersionRef = useRef(0);
+  const activeUploadControllersRef = useRef(new Set<AbortController>());
   const selectableClis = availableClis?.length ? availableClis : CLI_VALUES;
+  const activeModelOptions = modelOptionsCli === cli ? modelOptions : EMPTY_MODELS;
+  sessionIdRef.current = sessionId;
+
+  useEffect(() => {
+    cliRef.current = cli;
+  }, [cli]);
 
   useEffect(() => {
     setSttSupported("SpeechRecognition" in window || "webkitSpeechRecognition" in window);
@@ -178,6 +193,10 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
   useEffect(() => {
     if (prevSessionIdRef.current === sessionId) return;
     prevSessionIdRef.current = sessionId;
+    sessionIdRef.current = sessionId;
+    sessionVersionRef.current += 1;
+    activeUploadControllersRef.current.forEach((controller) => controller.abort());
+    activeUploadControllersRef.current.clear();
     attachmentsRef.current.forEach((a) => a.previewUrl && URL.revokeObjectURL(a.previewUrl));
     setQueued([]);
     setMessage("");
@@ -237,6 +256,8 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
   // Revoke object URLs when attachments unmount
   useEffect(() => {
     return () => {
+      activeUploadControllersRef.current.forEach((controller) => controller.abort());
+      activeUploadControllersRef.current.clear();
       attachmentsRef.current.forEach((a) => a.previewUrl && URL.revokeObjectURL(a.previewUrl));
     };
   }, []);
@@ -273,15 +294,26 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
 
     const form = new FormData();
     files.forEach((f) => form.append("files", f));
+    const uploadSessionId = sessionId;
+    const uploadSessionVersion = sessionVersionRef.current;
+    const controller = new AbortController();
+    activeUploadControllersRef.current.add(controller);
+    const isCurrentUpload = () =>
+      sessionIdRef.current === uploadSessionId &&
+      sessionVersionRef.current === uploadSessionVersion &&
+      !controller.signal.aborted;
     try {
-      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/uploads`, {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(uploadSessionId)}/uploads`, {
         method: "POST",
         body: form,
+        signal: controller.signal,
       });
       const data = await res.json();
+      if (!isCurrentUpload()) return;
       if (!res.ok) throw new Error(data.error ?? "upload failed");
       const saved: { name: string; path: string; size: number; type: string }[] = data.files ?? [];
       setAttachments((prev) => {
+        if (!isCurrentUpload()) return prev;
         // Match each draft (in order) to the saved paths
         const draftIds = draftAttachments.map((d) => d.localId);
         return prev.map((a) => {
@@ -291,6 +323,7 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
         });
       });
     } catch (e) {
+      if (!isCurrentUpload()) return;
       const msg = e instanceof Error ? e.message : "upload failed";
       setAttachments((prev) =>
         prev.map((a) =>
@@ -299,6 +332,8 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
             : a
         )
       );
+    } finally {
+      activeUploadControllersRef.current.delete(controller);
     }
   }, [sessionId]);
 
@@ -352,25 +387,39 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
 
   // Fetch models when CLI changes; auto-select first if current model isn't in list
   useEffect(() => {
-    let cancelled = false;
-    fetch(`/api/models?cli=${cli}`)
+    const requestCli = cli;
+    const requestId = modelRequestSeqRef.current + 1;
+    modelRequestSeqRef.current = requestId;
+    const controller = new AbortController();
+
+    setModelOptionsCli(requestCli);
+    setModelOptions([]);
+    setModelOptionsLoading(true);
+
+    fetch(`/api/models?cli=${encodeURIComponent(requestCli)}`, { signal: controller.signal })
       .then((r) => r.json())
       .then((data) => {
-        if (cancelled) return;
+        if (controller.signal.aborted || requestId !== modelRequestSeqRef.current || cliRef.current !== requestCli) return;
         const list: Model[] = data.models ?? [];
-        setModels(list);
+        setModelOptionsCli(requestCli);
+        setModelOptions(list);
+        setModelOptionsLoading(false);
         if (list.length > 0) {
-          const selected = findSelectedModel(list, cli, model);
-          if (selected && selected.id !== model) {
-            setModel(selected.id);
-          } else if (!model || !selected) {
-            setModel(list[0].id);
-          }
+          setModel((current) => {
+            const selected = findSelectedModel(list, requestCli, current);
+            return selected?.id ?? list[0].id;
+          });
         }
       })
-      .catch(() => {});
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+      .catch((err) => {
+        if (controller.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
+        if (requestId !== modelRequestSeqRef.current || cliRef.current !== requestCli) return;
+        setModelOptions([]);
+        setModelOptionsLoading(false);
+      });
+    return () => {
+      controller.abort();
+    };
   }, [cli]);
 
   // Fetch slash commands when CLI changes
@@ -382,22 +431,22 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
   }, [cli]);
 
   useEffect(() => {
-    if (!model || models.length === 0) return;
-    const selected = findSelectedModel(models, cli, model);
+    if (!model || activeModelOptions.length === 0) return;
+    const selected = findSelectedModel(activeModelOptions, cli, model);
     if (selected && selected.id !== model) setModel(selected.id);
-  }, [cli, model, models]);
+  }, [activeModelOptions, cli, model]);
 
   useEffect(() => {
     if (!reasoningEffort) return;
-    if (models.length === 0) return;
-    const selected = findSelectedModel(models, cli, model);
+    if (activeModelOptions.length === 0) return;
+    const selected = findSelectedModel(activeModelOptions, cli, model);
     if (!selected) return;
     const normalized = normalizeReasoningEffortForCli(cli, reasoningEffort);
     const available = reasoningEffortOptionsForCli(cli, selected).map((option) => option.value);
     if (!normalized || normalized !== reasoningEffort || !available.includes(normalized)) {
       setReasoningEffort("");
     }
-  }, [cli, model, models, reasoningEffort]);
+  }, [activeModelOptions, cli, model, reasoningEffort]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -700,7 +749,7 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
 
   const readyAttachmentCount = attachments.filter((a) => (a.path || a.file) && !a.error).length;
   const canSend = (!!message.trim() || readyAttachmentCount > 0) && !anyUploading;
-  const selectedModel = findSelectedModel(models, cli, model);
+  const selectedModel = findSelectedModel(activeModelOptions, cli, model);
   const effortOptions = reasoningEffortOptionsForCli(cli, selectedModel);
 
   const inner = (
@@ -906,7 +955,13 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
               disabled={disabled}
               className="appearance-none bg-transparent text-[11px] text-muted hover:text-fg cursor-pointer pr-4 py-1 rounded transition-colors focus:outline-none disabled:opacity-40 truncate max-w-full"
             >
-              {models.map((m) => (
+              {modelOptionsLoading && (
+                <option value={model}>{model ? "Loading models..." : "Loading..."}</option>
+              )}
+              {!modelOptionsLoading && activeModelOptions.length === 0 && (
+                <option value={model}>{model || "No models"}</option>
+              )}
+              {activeModelOptions.map((m) => (
                 <option key={m.id} value={m.id}>
                   {formatModelOption(m)}
                 </option>
