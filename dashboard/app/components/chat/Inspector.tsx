@@ -113,6 +113,15 @@ const INSPECTOR_TAB_BAR_HEIGHT = 40;
 const RUNNING_TOOL_LIST_LIMIT = 160;
 const TERMINAL_TRANSCRIPT_MAX_CHARS = 250_000;
 
+function normalizeFileSearch(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function matchesFileSearch(pathValue: string, query: string): boolean {
+  if (!query) return true;
+  return pathValue.toLowerCase().includes(query);
+}
+
 function terminalDetailMaxHeight(): number {
   if (typeof window === "undefined") return 520;
   return Math.max(
@@ -395,15 +404,15 @@ function collectPathsFromText(text: string, files: Set<string>) {
   for (const match of markdownLinks) addPath(files, match[1], true);
 
   const absoluteRe = new RegExp(
-    "(?:file:\\/\\/)?(?:\\/|~\\/|\\$HOME\\/|\\$CODEX_HOME\\/|\\.{1,2}\\/)(?:(?![\\r\\n\"'<>]).)+?\\.(" +
+    "(?:^|[\\s([{\"'`<])((?:file:\\/\\/)?(?:\\/|~\\/|\\$HOME\\/|\\$CODEX_HOME\\/|\\.{1,2}\\/)(?:(?![\\r\\n\\s\"'<>`]).)+?\\.(" +
       INSPECTABLE_EXTENSION_PATTERN +
-      ")\\b",
+      ")\\b)",
     "gi",
   );
-  for (const match of text.matchAll(absoluteRe)) addPath(files, match[0], true);
+  for (const match of text.matchAll(absoluteRe)) addPath(files, match[1], true);
 
   const relativeRe = new RegExp(
-    "(?:^|[\\s([])((?:[A-Za-z0-9_.-]+\\/)+(?:[^\\/\\r\\n\"'<>`)]+)\\.(" +
+    "(?:^|[\\s([{\"'`<])((?:[A-Za-z0-9_.-]+\\/)+(?:[^\\/\\s\\r\\n\"'<>`)]+)\\.(" +
       INSPECTABLE_EXTENSION_PATTERN +
       ")\\b)",
     "gi",
@@ -484,7 +493,9 @@ function buildFilePathTree(filePaths: string[]): { root: PathTreeNode; prefix: s
   const prefix = commonPathPrefix(filePaths);
   const root: PathTreeNode = { name: "", fullPath: "", isDir: true, children: [] };
   for (const p of filePaths) {
-    const rel = prefix ? p.slice(prefix.length + 1) : p.replace(/^\//, "");
+    const rel = prefix && (p === prefix || p.startsWith(`${prefix}/`))
+      ? p.slice(prefix.length + 1)
+      : p.replace(/^\//, "");
     const parts = rel.split("/").filter(Boolean);
     if (parts.length) insertPath(root, parts, p);
   }
@@ -912,17 +923,18 @@ function GitStatusBadge({ change }: { change: GitChange }) {
 }
 
 const FileTreeNode = memo(function FileTreeNode({
-  node, depth, nodeKey, collapsedDirs, onToggleDir, onSelect, selectedFile,
+  node, depth, nodeKey, collapsedDirs, forceExpanded, onToggleDir, onSelect, selectedFile,
 }: {
   node: PathTreeNode;
   depth: number;
   nodeKey: string;
   collapsedDirs: Set<string>;
+  forceExpanded?: boolean;
   onToggleDir: (key: string) => void;
   onSelect: (path: string) => void;
   selectedFile: string | null;
 }) {
-  const open = !collapsedDirs.has(nodeKey);
+  const open = forceExpanded || !collapsedDirs.has(nodeKey);
   const indent = depth * 12;
 
   if (node.isDir) {
@@ -944,6 +956,7 @@ const FileTreeNode = memo(function FileTreeNode({
             depth={depth + 1}
             nodeKey={`${nodeKey}/${child.name}`}
             collapsedDirs={collapsedDirs}
+            forceExpanded={forceExpanded}
             onToggleDir={onToggleDir}
             onSelect={onSelect}
             selectedFile={selectedFile}
@@ -980,6 +993,7 @@ const FileTreeNode = memo(function FileTreeNode({
     || prev.depth !== next.depth
     || prev.nodeKey !== next.nodeKey
     || prev.collapsedDirs !== next.collapsedDirs
+    || prev.forceExpanded !== next.forceExpanded
     || prev.onToggleDir !== next.onToggleDir
     || prev.onSelect !== next.onSelect
   ) {
@@ -997,6 +1011,7 @@ function FileTree({
   root,
   treeId,
   collapsedDirs,
+  forceExpanded,
   onToggleDir,
   onSelect,
   selectedFile,
@@ -1004,6 +1019,7 @@ function FileTree({
   root: PathTreeNode;
   treeId: string;
   collapsedDirs: Set<string>;
+  forceExpanded?: boolean;
   onToggleDir: (key: string) => void;
   onSelect: (path: string) => void;
   selectedFile: string | null;
@@ -1018,6 +1034,7 @@ function FileTree({
           depth={0}
           nodeKey={`${treeId}:${child.name}`}
           collapsedDirs={collapsedDirs}
+          forceExpanded={forceExpanded}
           onToggleDir={onToggleDir}
           onSelect={onSelect}
           selectedFile={selectedFile}
@@ -1042,6 +1059,7 @@ export const Inspector = memo(function Inspector({
 }: Props) {
   const [tab, setTab] = useState<TabKey>("tool");
   const [filesFilter, setFilesFilter] = useState<FilesFilter>("all");
+  const [fileSearch, setFileSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set());
@@ -1556,8 +1574,20 @@ export const Inspector = memo(function Inspector({
     [tools, events, session, referencedFiles, tab],
   );
   const gitFiles = gitChanges.status === "ok" ? gitChanges.files : [];
-  const { root: fileTreeRoot } = useMemo(() => buildFilePathTree(files), [files]);
-  const gitTreeRoot = useMemo(() => buildGitTree(gitFiles), [gitFiles]);
+  const fileSearchQuery = useMemo(() => normalizeFileSearch(fileSearch), [fileSearch]);
+  const searchedFiles = useMemo(
+    () => files.filter((file) => matchesFileSearch(file, fileSearchQuery)),
+    [files, fileSearchQuery],
+  );
+  const searchedGitFiles = useMemo(
+    () => gitFiles.filter((file) => (
+      matchesFileSearch(file.path, fileSearchQuery)
+      || matchesFileSearch(file.absolutePath, fileSearchQuery)
+    )),
+    [gitFiles, fileSearchQuery],
+  );
+  const { root: fileTreeRoot } = useMemo(() => buildFilePathTree(searchedFiles), [searchedFiles]);
+  const gitTreeRoot = useMemo(() => buildGitTree(searchedGitFiles), [searchedGitFiles]);
   const selectableFilePaths = useMemo(
     () => new Set([
       ...files,
@@ -1619,6 +1649,7 @@ export const Inspector = memo(function Inspector({
   const hasExpandableDirs = visibleDirKeys.length > 0;
   const allVisibleExpanded = hasExpandableDirs && visibleDirKeys.every((key) => !collapsedDirs.has(key));
   const allVisibleCollapsed = hasExpandableDirs && visibleDirKeys.every((key) => collapsedDirs.has(key));
+  const visibleSearchResultCount = (showGitChanges ? searchedGitFiles.length : 0) + (showFiles ? searchedFiles.length : 0);
   const toggleDir = useCallback((key: string) => {
     setCollapsedDirs((current) => {
       const next = new Set(current);
@@ -1831,6 +1862,22 @@ export const Inspector = memo(function Inspector({
         ) : (
           <div className="flex-1 overflow-y-auto min-h-0">
             <div className="insp-file-toolbar">
+              <div className="insp-file-search">
+                <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                  <path d="m14.5 14.5 3 3M8.75 15.5a6.75 6.75 0 1 1 0-13.5 6.75 6.75 0 0 1 0 13.5Z" strokeLinecap="round" />
+                </svg>
+                <input
+                  value={fileSearch}
+                  onChange={(event) => setFileSearch(event.target.value)}
+                  placeholder="Search files"
+                  aria-label="Search files"
+                />
+                {fileSearch ? (
+                  <button type="button" onClick={() => setFileSearch("")} aria-label="Clear file search">
+                    Clear
+                  </button>
+                ) : null}
+              </div>
               <div className="insp-file-filter" role="tablist" aria-label="Files filter">
                 {([
                   ["all", "All", fileTabCount],
@@ -1848,6 +1895,11 @@ export const Inspector = memo(function Inspector({
                   </button>
                 ))}
               </div>
+              {fileSearchQuery ? (
+                <div className="insp-file-search-count">
+                  {visibleSearchResultCount} {visibleSearchResultCount === 1 ? "match" : "matches"}
+                </div>
+              ) : null}
               {hasExpandableDirs && (
                 <div className="insp-file-tree-actions" aria-label="File tree controls">
                   <button type="button" onClick={expandVisibleDirs} disabled={allVisibleExpanded}>
@@ -1869,11 +1921,14 @@ export const Inspector = memo(function Inspector({
                   <div className="insp-file-muted">{gitChanges.message ?? "No Git repository found."}</div>
                 ) : gitChanges.files.length === 0 ? (
                   <div className="insp-file-muted">No local Git changes.</div>
+                ) : searchedGitFiles.length === 0 ? (
+                  <div className="insp-file-muted">No Git changes match your search.</div>
                 ) : (
                   <FileTree
                     root={gitTreeRoot}
                     treeId="git"
                     collapsedDirs={collapsedDirs}
+                    forceExpanded={Boolean(fileSearchQuery)}
                     onToggleDir={toggleDir}
                     onSelect={setSelectedFile}
                     selectedFile={selectedFile}
@@ -1894,11 +1949,20 @@ export const Inspector = memo(function Inspector({
                     </svg>
                     No files found yet.
                   </div>
+                ) : searchedFiles.length === 0 ? (
+                  <div className="insp-empty">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mb-2 opacity-30">
+                      <path d="m21 21-4.35-4.35" />
+                      <circle cx="11" cy="11" r="7" />
+                    </svg>
+                    No files match your search.
+                  </div>
                 ) : (
                   <FileTree
                     root={fileTreeRoot}
                     treeId="files"
                     collapsedDirs={collapsedDirs}
+                    forceExpanded={Boolean(fileSearchQuery)}
                     onToggleDir={toggleDir}
                     onSelect={setSelectedFile}
                     selectedFile={selectedFile}

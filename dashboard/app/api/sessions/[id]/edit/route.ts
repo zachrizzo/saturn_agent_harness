@@ -11,7 +11,7 @@ import { acquireSessionTurnLock } from "@/lib/session-turn-lock";
 import type { CLI, SessionMeta } from "@/lib/runs";
 import { DEFAULT_CLI, isBedrockCli, normalizeCli } from "@/lib/clis";
 import type { ModelReasoningEffort } from "@/lib/models";
-import { assertBedrockReady, isBedrockNotReadyError } from "@/lib/bedrock-auth";
+import { assertBedrockSsoReady, isBedrockNotReadyError } from "@/lib/bedrock-auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -41,8 +41,10 @@ export async function POST(
 
   const metaFile = path.join(sessionsRoot(), id, "meta.json");
   let meta: SessionMeta;
+  let originalMetaRaw: string;
   try {
-    meta = JSON.parse(await fs.readFile(metaFile, "utf8")) as SessionMeta;
+    originalMetaRaw = await fs.readFile(metaFile, "utf8");
+    meta = JSON.parse(originalMetaRaw) as SessionMeta;
   } catch {
     return NextResponse.json({ error: `session not found: ${id}` }, { status: 404 });
   }
@@ -50,7 +52,6 @@ export async function POST(
   if (meta.status === "running") {
     return NextResponse.json({ error: "previous turn still running" }, { status: 409 });
   }
-
   const lock = await acquireSessionTurnLock(id);
   if (!lock.ok) {
     return NextResponse.json({ error: "previous turn still running" }, { status: 409 });
@@ -74,7 +75,7 @@ export async function POST(
 
   if (isBedrockCli(cli)) {
     try {
-      await assertBedrockReady();
+      await assertBedrockSsoReady();
     } catch (err) {
       await lock.release();
       if (isBedrockNotReadyError(err)) {
@@ -91,8 +92,9 @@ export async function POST(
 
   // Truncate stream.jsonl to only include events for the first `cutoff` completed turns
   const streamFile = path.join(sessionsRoot(), id, "stream.jsonl");
+  const originalStreamRaw = await fs.readFile(streamFile, "utf8").catch(() => null);
   try {
-    const existing = await fs.readFile(streamFile, "utf8");
+    const existing = originalStreamRaw ?? "";
     if (cutoff === 0) {
       await fs.writeFile(streamFile, "", "utf8");
     } else {
@@ -116,6 +118,12 @@ export async function POST(
   try {
     await spawnTurn(id, cli, model, message, snap, body.mcpTools, reasoningEffort);
   } catch (err) {
+    await fs.writeFile(metaFile, originalMetaRaw, "utf8").catch(() => {});
+    if (originalStreamRaw === null) {
+      await fs.rm(streamFile, { force: true }).catch(() => {});
+    } else {
+      await fs.writeFile(streamFile, originalStreamRaw, "utf8").catch(() => {});
+    }
     await lock.release();
     throw err;
   }

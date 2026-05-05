@@ -210,6 +210,8 @@ async function providerOptions(cli: CLI, model?: string): Promise<Pick<Options, 
     env.CLAUDE_CODE_USE_BEDROCK = env.CLAUDE_CODE_USE_BEDROCK || "1";
     env.AWS_PROFILE = bedrockConfig.profile;
     env.AWS_REGION = bedrockConfig.region;
+    env.AWS_DEFAULT_REGION = bedrockConfig.region;
+    env.AWS_SDK_LOAD_CONFIG = "1";
     effectiveModel = toBedrockId(model);
     settings = bedrockSettings(bedrockConfig.profile, bedrockConfig.region);
   } else if (isLocalClaudeCli(cli)) {

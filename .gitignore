@@ -47,3 +47,5 @@ dashboard/tsconfig.tsbuildinfo
 .vercel/
 .turbo/
 coverage/
+__pycache__/
+*.py[cod]

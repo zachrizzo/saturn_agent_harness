@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import os from "node:os";
 import { promisify } from "node:util";
 import { NextRequest, NextResponse } from "next/server";
-import { assertBedrockReady, readBedrockConfig } from "@/lib/bedrock-auth";
+import { assertBedrockSsoReady, readBedrockConfig } from "@/lib/bedrock-auth";
 import type { BedrockConfig } from "@/lib/bedrock-config";
 
 export const dynamic = "force-dynamic";
@@ -40,7 +40,7 @@ async function configFromRequest(req: NextRequest): Promise<BedrockConfig> {
 
 async function statusFor(config: BedrockConfig) {
   try {
-    await assertBedrockReady(config);
+    await assertBedrockSsoReady(config);
     return { ready: true, profile: config.profile, region: config.region };
   } catch (err) {
     return {
@@ -58,6 +58,8 @@ function loginCommand(config: BedrockConfig): string {
     `export HOME=${shellQuote(process.env.HOME || os.homedir())}`,
     `export AWS_PROFILE=${shellQuote(config.profile)}`,
     `export AWS_REGION=${shellQuote(config.region)}`,
+    `export AWS_DEFAULT_REGION=${shellQuote(config.region)}`,
+    "export AWS_SDK_LOAD_CONFIG=1",
     `aws sso login --profile ${shellQuote(config.profile)}`,
     "status=$?",
     "printf '\\nAWS SSO login exited with status %s.\\n' \"$status\"",

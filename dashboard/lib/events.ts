@@ -162,7 +162,7 @@ export function toEvents(obj: Record<string, unknown>): StreamEvent[] {
     }
     case "system":
     case "thread.started":
-      return [{ kind: "system", raw: obj }];
+      return parseSystemEvent(obj);
     case "turn.failed":
       return [{ kind: "other", type: "error", raw: obj }];
     case "turn.completed": {
@@ -218,6 +218,64 @@ export function toEvents(obj: Record<string, unknown>): StreamEvent[] {
     default:
       return [{ kind: "other", type, raw: obj }];
   }
+}
+
+function parseSystemEvent(obj: Record<string, unknown>): StreamEvent[] {
+  const subtype = stringValue(obj.subtype);
+  const taskId = stringValue(obj.task_id);
+  const taskType = stringValue(obj.task_type);
+
+  if (subtype === "task_started" && taskId && taskType === "local_agent") {
+    return [{
+      kind: "tool_use",
+      id: taskId,
+      name: "Agent",
+      input: {
+        description: stringValue(obj.description) ?? "Background agent",
+        prompt: stringValue(obj.prompt),
+        subagent_type: "Claude Code",
+        background: true,
+        task_type: taskType,
+        tool_use_id: stringValue(obj.tool_use_id),
+      },
+      raw: obj,
+    }];
+  }
+
+  if (subtype === "task_progress" && taskId) {
+    const content = {
+      status: "running",
+      description: stringValue(obj.description),
+      last_tool_name: stringValue(obj.last_tool_name),
+      usage: obj.usage,
+    };
+    return [{
+      kind: "tool_result",
+      toolUseId: taskId,
+      content,
+      isError: false,
+      parentToolUseId: taskId,
+      raw: obj,
+    }];
+  }
+
+  if (subtype === "task_notification" && taskId) {
+    const status = obj.status;
+    return [{
+      kind: "tool_result",
+      toolUseId: taskId,
+      content: {
+        status,
+        summary: stringValue(obj.summary),
+        output_file: stringValue(obj.output_file),
+        usage: obj.usage,
+      },
+      isError: agentStatusIsError(status),
+      raw: obj,
+    }];
+  }
+
+  return [{ kind: "system", raw: obj }];
 }
 
 function parseItemEvent(type: string, obj: Record<string, unknown>): StreamEvent[] {

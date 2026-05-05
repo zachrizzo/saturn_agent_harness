@@ -7,6 +7,7 @@
 // shell process). Stale locks older than `META_LOCK_STALE_MS` are reaped.
 
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { constants, promises as fs } from "node:fs";
 import { sessionsRoot } from "./paths";
 
@@ -34,6 +35,18 @@ async function removeStaleLock(file: string): Promise<boolean> {
   }
 }
 
+async function removeOwnedLock(file: string, token: string): Promise<void> {
+  try {
+    const raw = await fs.readFile(file, "utf8");
+    const parsed = JSON.parse(raw) as { token?: unknown };
+    if (parsed.token !== token) return;
+    await fs.unlink(file);
+  } catch {
+    // Lock cleanup is best-effort. If the file disappeared, another writer has
+    // already made progress; if it changed owners, leave it in place.
+  }
+}
+
 export type MetaLockHandle = {
   acquired: boolean;
   release: () => Promise<void>;
@@ -44,10 +57,12 @@ export async function acquireSessionMetaLock(
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): Promise<MetaLockHandle> {
   const file = lockPath(sessionId);
+  const token = randomUUID();
   const payload = JSON.stringify({
     session_id: sessionId,
     pid: process.pid,
     holder: "dashboard",
+    token,
     acquired_at: new Date().toISOString(),
   });
   const deadline = Date.now() + Math.max(0, timeoutMs);
@@ -64,7 +79,7 @@ export async function acquireSessionMetaLock(
       }
       return {
         acquired: true,
-        release: () => fs.unlink(file).catch(() => {}),
+        release: () => removeOwnedLock(file, token),
       };
     } catch (err) {
       if (!isEEXIST(err)) throw err;

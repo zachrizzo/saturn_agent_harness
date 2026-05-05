@@ -41,6 +41,7 @@ type AssistantProps = {
   onOpenFile?: (path: string) => void;
   onRunSubAgentInBackground?: (id: string, title: string) => void;
   backgroundSubAgentIds?: Set<string>;
+  onBedrockAuthReady?: () => Promise<void> | void;
 };
 
 type Props = UserProps | AssistantProps;
@@ -86,11 +87,16 @@ function isBedrockAuthFailureText(text: string): boolean {
   );
 }
 
-function bedrockAuthCalloutDetail(text: string): string {
+function bedrockAuthTargetFromText(text: string): { profile?: string; region?: string } {
   const profile = text.match(/AWS profile '([^']+)'/)?.[1]
     ?? text.match(/AWS_PROFILE=([^\s]+)/)?.[1];
   const region = text.match(/\bin ([a-z]{2}-[a-z]+-\d)\b/)?.[1]
     ?? text.match(/AWS_REGION=([^\s]+)/)?.[1];
+  return { profile, region };
+}
+
+function bedrockAuthCalloutDetail(text: string): string {
+  const { profile, region } = bedrockAuthTargetFromText(text);
   const target = [
     profile ? `profile ${profile}` : "the configured AWS profile",
     region ? `in ${region}` : "",
@@ -145,6 +151,7 @@ function areMessageBubblePropsEqual(prev: Props, next: Props): boolean {
       prev.sessionId === next.sessionId &&
       prev.onOpenFile === next.onOpenFile &&
       prev.onRunSubAgentInBackground === next.onRunSubAgentInBackground &&
+      prev.onBedrockAuthReady === next.onBedrockAuthReady &&
       sameSet(prev.backgroundSubAgentIds, next.backgroundSubAgentIds) &&
       sameStringArray(prev.hiddenMcpImageServers, next.hiddenMcpImageServers) &&
       sameEventArray(prev.events, next.events)
@@ -1047,11 +1054,18 @@ function PlanProposal({
   );
 }
 
-function BedrockAuthCallout({ sourceText }: { sourceText: string }) {
+function BedrockAuthCallout({
+  sourceText,
+  onReady,
+}: {
+  sourceText: string;
+  onReady?: () => Promise<void> | void;
+}) {
   const [launching, setLaunching] = useState(false);
   const [checking, setChecking] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const detail = bedrockAuthCalloutDetail(sourceText);
+  const authTarget = bedrockAuthTargetFromText(sourceText);
 
   const launch = async () => {
     setLaunching(true);
@@ -1060,7 +1074,10 @@ function BedrockAuthCallout({ sourceText }: { sourceText: string }) {
       const res = await fetch("/api/bedrock/auth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({
+          profile: authTarget.profile,
+          region: authTarget.region,
+        }),
       });
       const data = await res.json().catch(() => null) as unknown;
       if (!res.ok) throw new Error(errorMessageFromPayload(data) ?? "failed to open AWS SSO login");
@@ -1077,13 +1094,20 @@ function BedrockAuthCallout({ sourceText }: { sourceText: string }) {
     setChecking(true);
     setStatus(null);
     try {
-      const res = await fetch("/api/bedrock/auth");
+      const params = new URLSearchParams();
+      if (authTarget.profile) params.set("profile", authTarget.profile);
+      if (authTarget.region) params.set("region", authTarget.region);
+      const query = params.size > 0 ? `?${params.toString()}` : "";
+      const res = await fetch(`/api/bedrock/auth${query}`);
       const data = await res.json().catch(() => null) as unknown;
       if (!res.ok) throw new Error(errorMessageFromPayload(data) ?? "failed to check Bedrock auth");
       const authStatus = asRecord(asRecord(data).status);
       const ready = authStatus.ready === true;
       const profile = typeof authStatus.profile === "string" ? authStatus.profile : "the configured AWS profile";
       const region = typeof authStatus.region === "string" ? authStatus.region : "";
+      if (ready && onReady) {
+        await onReady();
+      }
       setStatus(ready
         ? `Bedrock is authenticated for ${profile}${region ? ` in ${region}` : ""}. Retry your message.`
         : `Bedrock still needs an AWS SSO session for ${profile}${region ? ` in ${region}` : ""}.`);
@@ -1136,6 +1160,7 @@ function AssistantBlock({
   onOpenFile,
   onRunSubAgentInBackground,
   backgroundSubAgentIds,
+  onBedrockAuthReady,
 }: AssistantProps) {
   const [hovered, setHovered] = useState(false);
   const displayEvents = useMemo(
@@ -1356,7 +1381,13 @@ function AssistantBlock({
   });
   flushToolRow();
   if (showBedrockAuthCallout) {
-    rendered.push(<BedrockAuthCallout key="bedrock-auth" sourceText={bedrockAuthSourceText} />);
+    rendered.push(
+      <BedrockAuthCallout
+        key="bedrock-auth"
+        sourceText={bedrockAuthSourceText}
+        onReady={onBedrockAuthReady}
+      />,
+    );
   }
 
   if (rendered.length === 0 && streaming) {

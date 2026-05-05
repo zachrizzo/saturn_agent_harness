@@ -236,6 +236,8 @@ export async function spawnTurn(
       CLAUDE_CODE_USE_BEDROCK: "1",
       AWS_PROFILE: bedrockConfig?.profile ?? "",
       AWS_REGION: bedrockConfig?.region ?? "",
+      AWS_DEFAULT_REGION: bedrockConfig?.region ?? "",
+      AWS_SDK_LOAD_CONFIG: "1",
     } : isPersonal ? {
       CLAUDE_CODE_USE_BEDROCK: "",
       CLAUDE_CODE_USE_VERTEX: "",

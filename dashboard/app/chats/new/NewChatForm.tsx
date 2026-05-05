@@ -59,8 +59,8 @@ export function NewChatForm({ initialAgentId }: Props) {
   const selectedAgent = agents.find((a) => a.id === selectedAgentId) ?? null;
   const isOrchestrator = selectedAgent?.kind === "orchestrator";
 
-  // Always show the cwd picker for ad-hoc chats so it's obvious
-  const showCwdPicker = !selectedAgent;
+  // Swarm/orchestrator runs need a per-chat cwd because slices inherit it.
+  const showCwdPicker = !selectedAgent || isOrchestrator;
   const defaultCli = normalizeCli(selectedAgent?.defaultCli ?? selectedAgent?.cli ?? settings?.defaultCli ?? DEFAULT_CLI);
   const defaultModel = selectedAgent
     ? selectedAgent.models?.[defaultCli] ?? selectedAgent.model ?? (isBedrockCli(defaultCli) ? toBedrockId(DEFAULT_CLAUDE_ALIAS) : undefined)
@@ -73,6 +73,12 @@ export function NewChatForm({ initialAgentId }: Props) {
     if (selectedAgent || cwdTouched || cwd.trim() || !settings?.defaultCwd) return;
     setCwd(settings.defaultCwd);
   }, [cwd, cwdTouched, selectedAgent, settings?.defaultCwd]);
+
+  useEffect(() => {
+    if (!selectedAgent) return;
+    setCwd(selectedAgent.cwd ?? settings?.defaultCwd ?? "");
+    setCwdTouched(false);
+  }, [selectedAgent, settings?.defaultCwd]);
 
   const start = async (
     message: string,
@@ -104,6 +110,7 @@ export function NewChatForm({ initialAgentId }: Props) {
           message: initialMessage,
           cli,
           model: model || undefined,
+          cwd: isOrchestrator ? cwd.trim() || undefined : undefined,
           mcpTools,
           reasoningEffort,
           ...(Object.keys(overrides).length > 0 ? { overrides } : {}),

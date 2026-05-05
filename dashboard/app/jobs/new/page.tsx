@@ -28,6 +28,7 @@ export default function NewJobPage() {
   const [model, setModel] = useState("");
   const [reasoningEffort, setReasoningEffort] = useState<ModelReasoningEffort | "">("");
   const [timeoutSeconds, setTimeoutSeconds] = useState("");
+  const [catchUpMissedRuns, setCatchUpMissedRuns] = useState(false);
   const [models, setModels] = useState<Model[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,6 +59,7 @@ export default function NewJobPage() {
           model: model || undefined,
           reasoningEffort: reasoningEffort || undefined,
           timeout_seconds: timeoutSeconds ? Number(timeoutSeconds) : undefined,
+          catchUpMissedRuns,
         }),
       });
       const data = await res.json() as { error?: string };
@@ -152,6 +154,20 @@ export default function NewJobPage() {
               ))}
             </div>
           </div>
+          <label className="flex items-start gap-3 rounded-lg border border-border bg-bg-subtle p-3 text-sm">
+            <input
+              type="checkbox"
+              checked={catchUpMissedRuns}
+              onChange={(e) => setCatchUpMissedRuns(e.target.checked)}
+              className="mt-1 h-4 w-4 accent-[var(--accent)]"
+            />
+            <span>
+              <span className="block font-medium text-fg">Run missed schedule</span>
+              <span className="mt-0.5 block text-xs leading-relaxed text-muted">
+                If this Mac is asleep or offline, start one catch-up run when Saturn next opens, as long as the missed fire was within 25 hours.
+              </span>
+            </span>
+          </label>
         </div>
 
         {/* Prompt */}

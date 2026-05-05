@@ -3,7 +3,7 @@ import { getSessionMeta, type CLI, type PlanAction } from "@/lib/runs";
 import { spawnTurn } from "@/lib/turn";
 import { DEFAULT_CLI, normalizeCli } from "@/lib/clis";
 import type { ModelReasoningEffort } from "@/lib/models";
-import { assertBedrockReady, isBedrockNotReadyError } from "@/lib/bedrock-auth";
+import { assertBedrockSsoReady, isBedrockNotReadyError } from "@/lib/bedrock-auth";
 import { isBedrockCli } from "@/lib/clis";
 import { acquireSessionTurnLock } from "@/lib/session-turn-lock";
 import { appendUploadReferences, isSessionUploadLimitError, saveSessionUploads } from "@/lib/session-uploads";
@@ -52,7 +52,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (meta.status === "running") {
     return NextResponse.json({ error: "previous turn still running" }, { status: 409 });
   }
-
   const lock = await acquireSessionTurnLock(id);
   if (!lock.ok) {
     return NextResponse.json({ error: "previous turn still running" }, { status: 409 });
@@ -66,7 +65,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   try {
     if (isBedrockCli(cli)) {
-      await assertBedrockReady();
+      await assertBedrockSsoReady();
     }
 
     const uploads = await saveSessionUploads(id, files);

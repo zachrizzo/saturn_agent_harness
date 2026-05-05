@@ -86,7 +86,7 @@ export function SliceInspector({ sessionId, entry, onRerun, onClose }: Props) {
     esRef.current = null;
     setSliceEvents([]);
     seenRef.current.clear();
-    if (!entry) return;
+    if (!entry || entry.planned) return;
 
     const url = `/api/sessions/${encodeURIComponent(sessionId)}/slices/${encodeURIComponent(
       entry.slice_run_id
@@ -153,6 +153,52 @@ export function SliceInspector({ sessionId, entry, onRerun, onClose }: Props) {
           <div className="text-[12px] text-subtle">
             Click a slice lane on the left to inspect its inputs, streamed
             events, and result.
+          </div>
+        </div>
+      </aside>
+    );
+  }
+
+  if (entry.planned) {
+    return (
+      <aside className="inspector">
+        <div className="flex items-center gap-2 mb-2">
+          <h3 style={{ margin: 0, flex: 1, minWidth: 0 }} className="truncate">
+            {entry.label ?? entry.slice_id ?? "Queued slice"}
+            <span
+              style={{
+                color: statusColor(entry.status),
+                fontSize: 10,
+                textTransform: "uppercase",
+                letterSpacing: "0.04em",
+              }}
+            >
+              {" "}· {entry.status.replace(/_/g, " ")}
+            </span>
+          </h3>
+          {onClose && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={onClose}
+              aria-label="Close inspector"
+              style={{ padding: "2px 6px", fontSize: 11 }}
+            >
+              ✕
+            </Button>
+          )}
+        </div>
+        <div className="insp-section">
+          <div className="text-[12px] text-subtle">
+            This slice is planned by the workflow graph and has not started yet.
+            Events and output will appear after the orchestrator dispatches it.
+          </div>
+        </div>
+        <div className="insp-section">
+          <div className="kv">
+            {kv("Status", entry.status)}
+            {kv("Slice id", entry.slice_id ?? null)}
+            {kv("Graph node", entry.graph_node_id ?? null)}
           </div>
         </div>
       </aside>

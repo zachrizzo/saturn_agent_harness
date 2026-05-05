@@ -19,8 +19,10 @@ Usage:
     STDERR_FILE  appended with the CLI's stderr
 """
 import os
+import signal
 import sys
 import subprocess
+from contextlib import suppress
 
 argv = sys.argv[1:]
 if "--" not in argv:
@@ -39,6 +41,32 @@ if len(paths) != 4 or not cmd:
     sys.exit(2)
 
 stdin_path, turn_path, stream_path, stderr_path = paths
+AUTH_FAILURE_EXIT_CODE = 20
+
+
+def is_bedrock_auth_failure(line: bytes) -> bool:
+    text = line.decode("utf-8", errors="ignore").lower()
+    return (
+        ("api error:" in text and "sso session" in text and "expired" in text)
+        or "authentication timed out" in text
+        or "bedrock is not authenticated" in text
+    )
+
+
+def terminate_process_group(process: subprocess.Popen, stderr_f) -> None:
+    stderr_f.write(
+        b"pgid_shim: Bedrock authentication failed; terminating CLI process group\n"
+    )
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    with suppress(ProcessLookupError):
+        os.killpg(os.getpgrp(), signal.SIGTERM)
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        # Do not SIGKILL our own process group here: the shim is the group
+        # leader, so that would prevent returning the auth-specific exit code.
+        process.kill()
+        process.wait()
 
 # Put ourselves in a new process group. The child we exec will inherit it,
 # so one kill -<pgid> reaches the whole tree.
@@ -59,6 +87,9 @@ with open(stdin_path, "rb") as stdin_f, \
         for line in p.stdout:
             turn_f.write(line)
             stream_f.write(line)
+            if is_bedrock_auth_failure(line):
+                terminate_process_group(p, stderr_f)
+                sys.exit(AUTH_FAILURE_EXIT_CODE)
     except KeyboardInterrupt:
         p.terminate()
     sys.exit(p.wait())

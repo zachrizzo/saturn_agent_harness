@@ -126,6 +126,13 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ name
     }
   }
 
+  if (body.catchUpMissedRuns !== undefined) {
+    if (typeof body.catchUpMissedRuns !== "boolean") {
+      return NextResponse.json({ error: "catchUpMissedRuns must be a boolean" }, { status: 400 });
+    }
+    patch.catchUpMissedRuns = body.catchUpMissedRuns;
+  }
+
   try {
     const job = await updateJob(name, patch);
     if (patch.cron !== undefined && patch.cron !== existing.cron) syncCron(name);

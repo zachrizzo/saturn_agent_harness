@@ -336,6 +336,7 @@ function JobRow({ job, runs, latest, rate, health }: JobRowProps): JSX.Element {
           currentModel={job.model}
           currentCli={job.cli as CLI | undefined}
           currentReasoningEffort={job.reasoningEffort}
+          currentCatchUpMissedRuns={job.catchUpMissedRuns}
         />
         <PlayButton jobName={job.name} />
       </div>

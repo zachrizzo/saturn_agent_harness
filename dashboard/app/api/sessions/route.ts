@@ -13,7 +13,7 @@ import {
 import { spawnTurn } from "@/lib/turn";
 import { DEFAULT_CLI, normalizeCli } from "@/lib/clis";
 import type { ModelReasoningEffort } from "@/lib/models";
-import { assertBedrockReady, isBedrockNotReadyError } from "@/lib/bedrock-auth";
+import { assertBedrockSsoReady, isBedrockNotReadyError } from "@/lib/bedrock-auth";
 import { isBedrockCli } from "@/lib/clis";
 import { agentSupportedClis } from "@/lib/session-utils";
 import { markSessionRunnerFailed } from "@/lib/session-lifecycle";
@@ -27,6 +27,7 @@ type CreateSessionBody = {
   message?: string;
   cli?: CLI;
   model?: string;
+  cwd?: string;
   mcpTools?: boolean;
   reasoningEffort?: ModelReasoningEffort;
   adhoc_config?: {
@@ -163,13 +164,17 @@ export async function POST(req: NextRequest) {
   if (!agent) {
     return NextResponse.json({ error: `agent not found: ${body.agent_id}` }, { status: 404 });
   }
+  const cwdOverride = typeof body.cwd === "string" && body.cwd.trim()
+    ? body.cwd.trim()
+    : undefined;
+  const sessionAgent: Agent = cwdOverride ? { ...agent, cwd: cwdOverride } : agent;
 
-  const cli = normalizeCli(body.cli ?? body.adhoc_config?.cli ?? agent.defaultCli ?? agent.cli ?? DEFAULT_CLI);
-  const model = body.model ?? body.adhoc_config?.model ?? agent.models?.[cli] ?? agent.model;
+  const cli = normalizeCli(body.cli ?? body.adhoc_config?.cli ?? sessionAgent.defaultCli ?? sessionAgent.cli ?? DEFAULT_CLI);
+  const model = body.model ?? body.adhoc_config?.model ?? sessionAgent.models?.[cli] ?? sessionAgent.model;
   const reasoningEffort =
-    body.reasoningEffort ?? body.adhoc_config?.reasoningEffort ?? agent.reasoningEfforts?.[cli] ?? agent.reasoningEffort;
+    body.reasoningEffort ?? body.adhoc_config?.reasoningEffort ?? sessionAgent.reasoningEfforts?.[cli] ?? sessionAgent.reasoningEffort;
 
-  if (body.agent_id && !agentSupportedClis(agent).includes(cli)) {
+  if (body.agent_id && !agentSupportedClis(sessionAgent).includes(cli)) {
     return NextResponse.json(
       { error: `${cli} is not enabled for agent ${body.agent_id}` },
       { status: 400 },
@@ -191,7 +196,7 @@ export async function POST(req: NextRequest) {
 
   if (isBedrockCli(cli)) {
     try {
-      await assertBedrockReady();
+      await assertBedrockSsoReady();
     } catch (err) {
       if (isBedrockNotReadyError(err)) {
         return NextResponse.json({ error: err.message }, { status: 409 });
@@ -206,7 +211,7 @@ export async function POST(req: NextRequest) {
   const meta: SessionMeta = {
     session_id,
     agent_id: body.agent_id,
-    agent_snapshot: agent,
+    agent_snapshot: sessionAgent,
     started_at: now,
     status: "running",
     turns: [],
@@ -221,7 +226,7 @@ export async function POST(req: NextRequest) {
   try {
     const uploads = await saveSessionUploads(session_id, files);
     const messageWithUploads = appendUploadReferences(message, uploads);
-    await spawnTurn(session_id, cli, model, messageWithUploads, agent, body.mcpTools, reasoningEffort);
+    await spawnTurn(session_id, cli, model, messageWithUploads, sessionAgent, body.mcpTools, reasoningEffort);
     return NextResponse.json({ session_id, message: messageWithUploads });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);

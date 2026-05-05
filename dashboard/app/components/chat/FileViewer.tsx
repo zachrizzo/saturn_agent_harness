@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState, useCallback } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { BundledLanguage } from "shiki";
 
 type Props = {
@@ -57,6 +59,8 @@ type DiffState =
 type ViewMode = "preview" | "source" | "diff";
 type DiffLineKind = "add" | "del" | "ctx";
 
+const MARKDOWN_PLUGINS = [remarkGfm];
+
 type ParsedDiffRow =
   | { kind: "section"; text: string }
   | { kind: "file"; text: string }
@@ -100,6 +104,11 @@ function langOf(p: string): BundledLanguage {
 function isHtmlFile(data: FileContent): boolean {
   const mime = data.mimeType.toLowerCase();
   return mime.startsWith("text/html") || ["html", "htm"].includes(extOf(data.name || data.path));
+}
+
+function isMarkdownFile(data: FileContent): boolean {
+  const mime = data.mimeType.toLowerCase();
+  return mime.startsWith("text/markdown") || ["md", "mdx"].includes(extOf(data.name || data.path));
 }
 
 function formatBytes(n: number): string {
@@ -270,7 +279,13 @@ export function FileViewer({ filePath, sessionId, refreshKey, onClose }: Props) 
   const parts = filePath.split("/");
   const fileName = parts.pop() ?? filePath;
   const dirPart = parts.join("/");
-  const viewModes = state.status === "ok" && isHtmlFile(state.data)
+  const viewModes = state.status === "ok" && isMarkdownFile(state.data)
+    ? ([
+        ["preview", "Rendered"],
+        ["source", "Source"],
+        ["diff", "Diff"],
+      ] as const)
+    : state.status === "ok" && isHtmlFile(state.data)
     ? ([
         ["preview", "Preview"],
         ["source", "Source"],
@@ -505,6 +520,10 @@ function FilePreview({
   rawUrl: string;
   setActiveSheetIndex: (index: number) => void;
 }) {
+  if (data.kind === "text" && isMarkdownFile(data) && mode === "preview" && typeof data.content === "string") {
+    return <MarkdownPreview content={data.content} />;
+  }
+
   if (isHtmlFile(data) && mode === "preview") {
     return <HtmlPreview name={data.name} rawUrl={rawUrl} />;
   }
@@ -572,6 +591,24 @@ function FilePreview({
   }
 
   return <EmptyPreview label="Preview is not available for this file type." rawUrl={rawUrl} />;
+}
+
+const markdownComponents: Components = {
+  a: ({ href, children, ...props }) => (
+    <a href={href} target="_blank" rel="noreferrer" {...props}>
+      {children}
+    </a>
+  ),
+};
+
+function MarkdownPreview({ content }: { content: string }) {
+  return (
+    <article className="file-viewer-markdown prose-dashboard">
+      <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS} components={markdownComponents}>
+        {content}
+      </ReactMarkdown>
+    </article>
+  );
 }
 
 function HtmlPreview({ name, rawUrl }: { name: string; rawUrl: string }) {

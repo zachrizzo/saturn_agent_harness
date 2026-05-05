@@ -10,6 +10,7 @@ import {
 import { listTasks } from "@/lib/tasks";
 import { formatTokens } from "@/lib/format";
 import { dailyTokenSeries, detectIssues } from "@/lib/analytics";
+import { runMissedJobCatchUps } from "@/lib/missed-job-catchup";
 import { AutoRefresh } from "./auto-refresh";
 import { NowStrip } from "./components/dashboard/NowStrip";
 import { KpiRow } from "./components/dashboard/KpiRow";
@@ -47,6 +48,10 @@ function tokensDelta(records: TokenUsageSummary[]): string {
 }
 
 export default async function DashboardPage() {
+  await runMissedJobCatchUps().catch((err) => {
+    console.error("missed job catch-up failed", err);
+  });
+
   const [jobs, allRuns, runTokenSummaries, sessions, sessionTokenSummaries, tasks] = await Promise.all([
     listJobs(),
     listRuns(),

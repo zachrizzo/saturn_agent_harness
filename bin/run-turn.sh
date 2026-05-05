@@ -54,11 +54,6 @@ _cleanup_on_exit() {
   fi
   rm -f "${LOCK_FILE:-}" 2>/dev/null || true
   rm -f "${_settings_tmp:-}" 2>/dev/null || true
-  # Defensive: drop any meta lock we might still hold if the script aborts
-  # mid-update (saturn_meta_update releases on success).
-  if [[ -n "${SESSION_DIR:-}" ]]; then
-    rm -f "$SESSION_DIR/meta.lock" 2>/dev/null || true
-  fi
 }
 trap _cleanup_on_exit EXIT
 

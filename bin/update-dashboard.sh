@@ -10,12 +10,19 @@ saturn_setup_env
 
 REPO="$AUTOMATIONS_ROOT"
 LABEL="com.zachrizzo.claude-cron-dashboard"
+LOCK_DIR="$REPO/runs/dashboard-update.lock"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] dashboard-updater: $*"; }
 
 cd "$REPO"
+mkdir -p "$REPO/runs"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  log "another dashboard update is already running"
+  exit 0
+fi
+trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
 
-git fetch origin main 2>&1 | while IFS= read -r line; do log "fetch: $line"; done || true
+git fetch origin main 2>&1 | while IFS= read -r line; do log "fetch: $line"; done
 
 LOCAL="$(git rev-parse HEAD)"
 REMOTE="$(git rev-parse origin/main)"
@@ -37,8 +44,10 @@ log "building dashboard..."
 npm run build 2>&1 | while IFS= read -r line; do log "build: $line"; done
 
 log "restarting dashboard service..."
-launchctl stop "$LABEL" || true
-sleep 2
-launchctl start "$LABEL"
+launchctl kickstart -k "gui/$(id -u)/$LABEL" || {
+  launchctl kill TERM "gui/$(id -u)/$LABEL" || true
+  sleep 2
+  launchctl kickstart "gui/$(id -u)/$LABEL"
+}
 
 log "done — updated to $(git -C "$REPO" rev-parse --short HEAD) and restarted"

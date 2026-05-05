@@ -1,12 +1,17 @@
 import { notFound } from "next/navigation";
 import { getJob, listRuns, readFinalMarkdown } from "@/lib/runs";
 import { formatDuration, formatTimestamp, formatTokens, nextFireTime } from "@/lib/format";
+import { runMissedJobCatchUps } from "@/lib/missed-job-catchup";
 import { JobDetailClient } from "./JobDetailClient";
 
 export const revalidate = 0;
 export const dynamic = "force-dynamic";
 
 export default async function JobPage({ params }: { params: Promise<{ name: string }> }) {
+  await runMissedJobCatchUps().catch((err) => {
+    console.error("missed job catch-up failed", err);
+  });
+
   const { name } = await params;
   const job = await getJob(name);
   if (!job) notFound();

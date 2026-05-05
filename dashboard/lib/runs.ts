@@ -8,6 +8,7 @@ import { countTextTokensForCli } from "./token-counters";
 import { DEFAULT_CLI, normalizeCli } from "./clis";
 import type { CLI } from "./clis";
 import { reconcileStaleRunningSession } from "./session-lifecycle";
+import { withSessionMetaLock } from "./session-meta-lock";
 export type { StreamEvent, TokenBreakdown, ToolCallSummary } from "./events";
 export { toEvents, getTokenBreakdown, getToolCallSummary } from "./events";
 export type { CLI } from "./clis";
@@ -68,6 +69,7 @@ export type Job = {
   reasoningEffort?: ModelReasoningEffort;
   cli?: CLI;
   timeout_seconds?: number;
+  catchUpMissedRuns?: boolean;
 };
 
 export type JobUpdatePatch = {
@@ -80,6 +82,7 @@ export type JobUpdatePatch = {
   reasoningEffort?: ModelReasoningEffort | null;
   cli?: CLI | null;
   timeout_seconds?: number | null;
+  catchUpMissedRuns?: boolean;
 };
 
 export type Agent = {
@@ -249,6 +252,7 @@ const COMPACT_SESSION_RECENT_FINAL_CHARS = 1200;
 type SessionStreamRead = {
   raw: string;
   partial: boolean;
+  visiblePartial: boolean;
 };
 
 async function readStreamFile(streamFile: string): Promise<string> {
@@ -332,19 +336,20 @@ async function readRecentSessionStream(
   try {
     handle = await fs.open(streamFile, "r");
   } catch (err) {
-    if (isENOENT(err)) return { raw: "", partial: false };
+    if (isENOENT(err)) return { raw: "", partial: false, visiblePartial: false };
     throw err;
   }
 
   try {
     const stat = await handle.stat();
-    if (stat.size === 0) return { raw: "", partial: false };
+    if (stat.size === 0) return { raw: "", partial: false, visiblePartial: false };
 
     let offset = stat.size;
     let loadedBytes = 0;
     const buffers: Buffer[] = [];
     let candidate = "";
     let candidateStart = stat.size;
+    const requiredEndMarkers = Math.max(1, hasTrailingTurn ? recentTurns : recentTurns + 1);
 
     while (offset > 0 && loadedBytes < maxBytes) {
       const length = Math.min(
@@ -362,7 +367,6 @@ async function readRecentSessionStream(
       const raw = Buffer.concat(buffers).toString("utf8");
       candidate = stripPartialFirstLine(raw, candidateStart === 0);
       if (countTurnStartMarkers(candidate) >= recentTurns) break;
-      const requiredEndMarkers = Math.max(1, hasTrailingTurn ? recentTurns : recentTurns + 1);
       if (countTurnEndMarkers(candidate) >= requiredEndMarkers) break;
     }
 
@@ -372,6 +376,7 @@ async function readRecentSessionStream(
       return {
         raw: trimmed.raw,
         partial: candidateStart > 0 || trimmed.trimmed,
+        visiblePartial: candidateStart > 0 && turnStartCount < recentTurns,
       };
     }
 
@@ -379,6 +384,7 @@ async function readRecentSessionStream(
     return {
       raw: trimmed.raw,
       partial: candidateStart > 0 || trimmed.trimmed || trimmed.markerCount > recentTurns,
+      visiblePartial: candidateStart > 0 && trimmed.markerCount < requiredEndMarkers,
     };
   } finally {
     await handle.close();
@@ -391,7 +397,7 @@ async function readSessionStream(
   hasTrailingTurn: boolean,
 ): Promise<SessionStreamRead> {
   if (options.eventMode !== "recent") {
-    return { raw: await readStreamFile(streamFile), partial: false };
+    return { raw: await readStreamFile(streamFile), partial: false, visiblePartial: false };
   }
 
   return readRecentSessionStream(
@@ -577,9 +583,9 @@ function compactStreamEvents(events: StreamEvent[], maxChars: number): StreamEve
     const raw = compactRawForEvent(event.raw);
     switch (event.kind) {
       case "assistant_text":
-        return { ...event, text: compactString(event.text, maxChars * 8), raw };
+        return { ...event, raw };
       case "plan_text":
-        return { ...event, text: compactString(event.text, maxChars * 8), raw };
+        return { ...event, raw };
       case "thinking":
         return { ...event, text: compactString(event.text, maxChars), raw };
       case "tool_use":
@@ -677,6 +683,10 @@ export async function updateJob(
   if (patch.timeout_seconds !== undefined) {
     if (patch.timeout_seconds === null) delete job.timeout_seconds;
     else job.timeout_seconds = patch.timeout_seconds;
+  }
+  if (patch.catchUpMissedRuns !== undefined) {
+    if (patch.catchUpMissedRuns) job.catchUpMissedRuns = true;
+    else delete job.catchUpMissedRuns;
   }
 
   parsed.jobs[idx] = job;
@@ -789,6 +799,7 @@ export async function updateJobSettings(
     cli?: CLI;
     reasoningEffort?: ModelReasoningEffort | null;
     cron?: string;
+    catchUpMissedRuns?: boolean;
   },
 ): Promise<void> {
   await updateJob(name, settings);
@@ -956,7 +967,7 @@ export async function listSessionTokenSummaries(): Promise<SessionTokenSummary[]
 export async function getSession(
   sessionId: string,
   options: SessionReadOptions = {},
-): Promise<{ meta: SessionMeta; events: StreamEvent[]; stderr: string; eventsPartial: boolean } | null> {
+): Promise<{ meta: SessionMeta; events: StreamEvent[]; stderr: string; eventsPartial: boolean; visibleEventsPartial: boolean } | null> {
   const dir = sessionDir(sessionId);
   const meta = await getSessionMeta(sessionId);
   if (!meta) return null;
@@ -984,7 +995,8 @@ export async function getSession(
     meta: compactedMeta.meta,
     events,
     stderr,
-    eventsPartial: stream.partial || shouldCompactEvents || compactedMeta.partial,
+    eventsPartial: stream.partial,
+    visibleEventsPartial: stream.visiblePartial,
   };
 }
 
@@ -1046,14 +1058,16 @@ export async function updateSessionMeta(
   patch: SessionTriagePatch
 ): Promise<SessionMeta> {
   const safe = sanitizeTriagePatch(patch);
-  const metaPath = path.join(sessionDir(sessionId), "meta.json");
-  const raw = await fs.readFile(metaPath, "utf8");
-  const meta = JSON.parse(raw) as SessionMeta;
-  const next: SessionMeta = { ...meta, ...safe };
-  // Explicit null clears snoozed_until; drop the property entirely to keep meta tidy.
-  if (safe.snoozed_until === null) delete next.snoozed_until;
-  await fs.writeFile(metaPath, JSON.stringify(next, null, 2), "utf8");
-  return next;
+  return withSessionMetaLock(sessionId, async () => {
+    const metaPath = path.join(sessionDir(sessionId), "meta.json");
+    const raw = await fs.readFile(metaPath, "utf8");
+    const meta = JSON.parse(raw) as SessionMeta;
+    const next: SessionMeta = { ...meta, ...safe };
+    // Explicit null clears snoozed_until; drop the property entirely to keep meta tidy.
+    if (safe.snoozed_until === null) delete next.snoozed_until;
+    await fs.writeFile(metaPath, JSON.stringify(next, null, 2), "utf8");
+    return next;
+  });
 }
 
 export async function triggerJob(name: string, _model?: string): Promise<string> {

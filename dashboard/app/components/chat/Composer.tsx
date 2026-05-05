@@ -14,7 +14,8 @@ import {
   type ModelReasoningEffort,
 } from "@/lib/models";
 import type { SlashCommand } from "@/app/api/slash-commands/route";
-import { CLI_SHORT_LABELS, CLI_VALUES, normalizeCli } from "@/lib/clis";
+import { CLI_SHORT_LABELS, CLI_VALUES, isBedrockCli, normalizeCli } from "@/lib/clis";
+import { toBedrockId } from "@/lib/claude-models";
 
 type Props = {
   currentCli: CLI;
@@ -62,6 +63,16 @@ type QueuedMessage = {
   reasoningEffort?: ModelReasoningEffort;
 };
 
+function modelIdForCli(cli: CLI, modelId: string | undefined): string | undefined {
+  if (!modelId) return undefined;
+  return isBedrockCli(cli) ? toBedrockId(modelId) : modelId;
+}
+
+function findSelectedModel(models: Model[], cli: CLI, modelId: string | undefined): Model | undefined {
+  const normalized = modelIdForCli(cli, modelId);
+  return models.find((candidate) => candidate.id === modelId || candidate.id === normalized);
+}
+
 function readQueuedMessages(queueStorageKey: string | null): QueuedMessage[] {
   if (!queueStorageKey || typeof window === "undefined") return [];
   try {
@@ -92,7 +103,7 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
     cli?: CLI;
     model?: string;
     mcpTools?: boolean;
-    reasoningEffort?: ModelReasoningEffort;
+    reasoningEffort?: ModelReasoningEffort | null;
   } | null>(null);
 
   const [message, setMessage] = useState("");
@@ -188,14 +199,16 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
     didUserChoose.current = true;
     if (prefs.cli) setCli(normalizeCli(prefs.cli));
     if (prefs.model) setModel(prefs.model);
-    if (prefs.reasoningEffort) setReasoningEffort(prefs.reasoningEffort);
+    if (Object.prototype.hasOwnProperty.call(prefs, "reasoningEffort")) {
+      setReasoningEffort(prefs.reasoningEffort ?? "");
+    }
     if (typeof prefs.mcpTools === "boolean") setMcpTools(prefs.mcpTools);
   }, [storageKey]);
 
   // Persist cli/model/mcpTools/reasoningEffort to localStorage whenever they change
   useEffect(() => {
     if (!storageKey) return;
-    localStorage.setItem(storageKey, JSON.stringify({ cli, model, mcpTools, reasoningEffort: reasoningEffort || undefined }));
+    localStorage.setItem(storageKey, JSON.stringify({ cli, model, mcpTools, reasoningEffort: reasoningEffort || null }));
   }, [cli, model, mcpTools, reasoningEffort, storageKey]);
 
   // Sync cli/model from parent when they arrive (e.g. first turn completes and meta updates)
@@ -346,8 +359,13 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
         if (cancelled) return;
         const list: Model[] = data.models ?? [];
         setModels(list);
-        if (list.length > 0 && (!model || !list.find((m) => m.id === model))) {
-          setModel(list[0].id);
+        if (list.length > 0) {
+          const selected = findSelectedModel(list, cli, model);
+          if (selected && selected.id !== model) {
+            setModel(selected.id);
+          } else if (!model || !selected) {
+            setModel(list[0].id);
+          }
         }
       })
       .catch(() => {});
@@ -364,8 +382,16 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
   }, [cli]);
 
   useEffect(() => {
+    if (!model || models.length === 0) return;
+    const selected = findSelectedModel(models, cli, model);
+    if (selected && selected.id !== model) setModel(selected.id);
+  }, [cli, model, models]);
+
+  useEffect(() => {
     if (!reasoningEffort) return;
-    const selected = models.find((m) => m.id === model);
+    if (models.length === 0) return;
+    const selected = findSelectedModel(models, cli, model);
+    if (!selected) return;
     const normalized = normalizeReasoningEffortForCli(cli, reasoningEffort);
     const available = reasoningEffortOptionsForCli(cli, selected).map((option) => option.value);
     if (!normalized || normalized !== reasoningEffort || !available.includes(normalized)) {
@@ -674,7 +700,7 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
 
   const readyAttachmentCount = attachments.filter((a) => (a.path || a.file) && !a.error).length;
   const canSend = (!!message.trim() || readyAttachmentCount > 0) && !anyUploading;
-  const selectedModel = models.find((m) => m.id === model);
+  const selectedModel = findSelectedModel(models, cli, model);
   const effortOptions = reasoningEffortOptionsForCli(cli, selectedModel);
 
   const inner = (
@@ -873,7 +899,7 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
           <div className="h-3.5 w-px bg-border mx-1.5" />
 
           {/* Model dropdown */}
-          <div className="relative flex items-center min-w-0 max-w-[130px]" title={models.find((m) => m.id === model) ? formatModelOption(models.find((m) => m.id === model)!) : model}>
+          <div className="relative flex items-center min-w-0 max-w-[130px]" title={selectedModel ? formatModelOption(selectedModel) : model}>
             <select
               value={model}
               onChange={(e) => { didUserChoose.current = true; setModel(e.target.value); }}

@@ -57,6 +57,9 @@ function shortSliceId(id: string | undefined): string {
 export function SliceLanes({ slices, streaming, activeRunId, onSelect }: Props) {
   const sorted = useMemo(() => {
     return [...slices].sort((a, b) => {
+      if (a.execution_order !== undefined || b.execution_order !== undefined) {
+        return (a.execution_order ?? Number.MAX_SAFE_INTEGER) - (b.execution_order ?? Number.MAX_SAFE_INTEGER);
+      }
       const aT = a.started_at ? Date.parse(a.started_at) : Number.MAX_SAFE_INTEGER;
       const bT = b.started_at ? Date.parse(b.started_at) : Number.MAX_SAFE_INTEGER;
       return aT - bT;
@@ -87,7 +90,8 @@ export function SliceLanes({ slices, streaming, activeRunId, onSelect }: Props) 
   const windowMs = Math.max(1, windowEnd - windowStart);
 
   const running = sorted.filter((s) => s.status === "running");
-  const completed = sorted.filter((s) => s.status !== "running");
+  const completed = sorted.filter((s) => s.status !== "running" && s.status !== "queued" && s.status !== "skipped");
+  const queued = sorted.filter((s) => s.status === "queued");
 
   return (
     <section
@@ -122,6 +126,8 @@ export function SliceLanes({ slices, streaming, activeRunId, onSelect }: Props) 
         <span className="text-[12.5px] text-fg font-medium">
           {running.length > 0
             ? `${running.length} slice${running.length === 1 ? "" : "s"} running`
+            : queued.length > 0
+            ? `${queued.length} slice${queued.length === 1 ? "" : "s"} queued`
             : streaming
             ? "Waiting for next dispatch…"
             : sorted.length > 0
@@ -156,6 +162,7 @@ export function SliceLanes({ slices, streaming, activeRunId, onSelect }: Props) 
         <ul className="m-0 p-0 list-none" style={{ background: "var(--bg)" }}>
           {sorted.map((entry, i) => {
             const isActive = entry.slice_run_id === activeRunId;
+            const canInspect = !entry.planned;
 
             // Bar geometry
             const startT = entry.started_at ? Date.parse(entry.started_at) : windowStart;
@@ -185,6 +192,7 @@ export function SliceLanes({ slices, streaming, activeRunId, onSelect }: Props) 
                 <button
                   type="button"
                   onClick={() => onSelect(entry)}
+                  disabled={!canInspect}
                   className="w-full text-left px-4 py-2.5 transition-colors"
                   style={{
                     background: isActive ? "var(--accent-soft)" : "transparent",
@@ -226,7 +234,7 @@ export function SliceLanes({ slices, streaming, activeRunId, onSelect }: Props) 
                       style={{ flex: "0 0 160px", minWidth: 0 }}
                       title={entry.slice_id ?? "custom slice"}
                     >
-                      {shortSliceId(entry.slice_id)}
+                      {entry.label ?? shortSliceId(entry.slice_id)}
                     </span>
 
                     {/* Timeline bar */}
@@ -280,6 +288,8 @@ export function SliceLanes({ slices, streaming, activeRunId, onSelect }: Props) 
                         ? formatDurationShort(entry.duration_ms)
                         : entry.status === "running"
                         ? formatDurationShort(Date.now() - startT)
+                        : entry.status === "queued"
+                        ? "queued"
                         : "—"}
                     </span>
 

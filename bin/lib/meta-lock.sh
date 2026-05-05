@@ -49,7 +49,6 @@ saturn_meta_lock_acquire() {
     fi
 
     if [[ "$(date +%s)" -ge "$deadline" ]]; then
-      printf '%s\n' "$lock_file"
       return 1
     fi
 
@@ -73,5 +72,9 @@ saturn_meta_lock_age_s() {
 # saturn_meta_lock_release <lock-file>
 saturn_meta_lock_release() {
   local lock_file="$1"
-  [[ -n "$lock_file" ]] && rm -f "$lock_file" 2>/dev/null || true
+  [[ -n "$lock_file" && -f "$lock_file" ]] || return 0
+  if grep -Eq '"holder":"shell"|"holder"[[:space:]]*:[[:space:]]*"shell"' "$lock_file" 2>/dev/null \
+      && grep -Eq "\"pid\":$$|\"pid\"[[:space:]]*:[[:space:]]*$$" "$lock_file" 2>/dev/null; then
+    rm -f "$lock_file" 2>/dev/null || true
+  fi
 }

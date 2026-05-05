@@ -372,9 +372,9 @@ saturn/
 
 ## Adding a new job
 
-Open `http://127.0.0.1:3737/jobs/new` and fill in the schedule, prompt, runtime, and optional working directory. Saving the form writes `jobs/jobs.json` and syncs the job into crontab.
+Open `http://127.0.0.1:3737/jobs/new` and fill in the schedule, prompt, runtime, and optional working directory. Saving the form writes `jobs/jobs.json` and syncs the job into crontab. Enable "Run missed schedule" for jobs that should start one catch-up run when the Mac was asleep or offline for a scheduled fire within the last 25 hours.
 
-You can also edit `jobs/jobs.json` manually to append an object with `name`, `cron`, `prompt`, `allowedTools`, and optional `description`, `cwd`. Then:
+You can also edit `jobs/jobs.json` manually to append an object with `name`, `cron`, `prompt`, `allowedTools`, optional `description`, `cwd`, and optional `catchUpMissedRuns: true`. Then:
 
 ```bash
 bin/register-job.sh

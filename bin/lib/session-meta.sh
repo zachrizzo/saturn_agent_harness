@@ -19,15 +19,15 @@ SATURN_SESSION_META_SH_LOADED=1
 # applies the jq program (with the same arg-passing convention as `jq`),
 # swaps tmp→meta.json with mv (POSIX-atomic), then releases the lock.
 #
-# Best-effort with respect to the lock — if the lock can't be acquired
-# within meta-lock.sh's timeout the rewrite still happens (the caller is
-# the one chiefly serialized by it; the dashboard background route can
-# retry on its own snapshot).
+# Best-effort with respect to the lock: if acquisition times out, the rewrite
+# still happens, but this process must not release a lock it never acquired.
 saturn_meta_update() {
   local lock_file
   lock_file="$(saturn_meta_lock_acquire "$SESSION_DIR" || true)"
   jq "$@" "$META_FILE" > "${META_FILE}.tmp" && mv "${META_FILE}.tmp" "$META_FILE"
   local rc=$?
-  saturn_meta_lock_release "$lock_file"
+  if [[ -n "$lock_file" ]]; then
+    saturn_meta_lock_release "$lock_file"
+  fi
   return "$rc"
 }

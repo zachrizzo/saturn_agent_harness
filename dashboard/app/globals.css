@@ -1751,6 +1751,12 @@ h1, h2, h3, h4, h5, h6 {
 .chat-shell.no-inspector {
   grid-template-columns: 1fr;
 }
+.chat-shell.inspector-collapsed {
+  grid-template-columns: minmax(0, 1fr);
+}
+.chat-shell.inspector-collapsed .inspector {
+  display: none;
+}
 
 .chat-main {
   display: flex;
@@ -1881,19 +1887,48 @@ h1, h2, h3, h4, h5, h6 {
   max-width: 360px;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 7px;
+  gap: 2px;
+  padding: 3px;
   border: 1px solid var(--border);
   border-radius: 9999px;
   background: var(--bg);
   color: var(--text);
-  cursor: pointer;
   font-size: 11px;
   transition: border-color 80ms ease, background 80ms ease;
 }
 .background-agent-chip:hover {
   border-color: var(--border-strong);
   background: var(--bg-hover);
+}
+.background-agent-main {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 5px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.background-agent-stop {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border: 0;
+  border-left: 1px solid var(--border);
+  background: transparent;
+  color: var(--fail);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 650;
+}
+.background-agent-stop:hover:not(:disabled) {
+  color: var(--fail);
+  background: color-mix(in srgb, var(--fail) 10%, transparent);
+}
+.background-agent-stop:disabled {
+  cursor: wait;
+  opacity: 0.55;
 }
 .background-agent-dot {
   width: 7px;
@@ -1908,6 +1943,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 .background-agent-dot.ok { background: var(--success); }
 .background-agent-dot.err { background: var(--fail); }
+.background-agent-dot.stop { background: var(--text-subtle); }
 .background-agent-name {
   min-width: 0;
   overflow: hidden;
@@ -1925,13 +1961,14 @@ h1, h2, h3, h4, h5, h6 {
 .background-agent-status.run { color: var(--running); }
 .background-agent-status.ok { color: var(--success); }
 .background-agent-status.err { color: var(--fail); }
+.background-agent-status.stop { color: var(--text-subtle); }
 
 .chat-composer-area {
   flex: 0 0 auto;
 }
 
 .chat-inspector-toggle {
-  display: none;
+  display: inline-flex;
 }
 
 .chat-inspector-backdrop {
@@ -1943,6 +1980,10 @@ h1, h2, h3, h4, h5, h6 {
   bottom: 8.5rem;
   background: var(--bg-elev);
   color: var(--fg);
+}
+
+.chat-shell.inspector-collapsed .chat-scroll-bottom-button {
+  right: 24px;
 }
 
 .chat-bottom-sentinel {
@@ -1957,6 +1998,10 @@ h1, h2, h3, h4, h5, h6 {
 
   .chat-inspector-toggle {
     display: inline-flex;
+  }
+
+  .chat-shell.inspector-collapsed .inspector {
+    display: flex;
   }
 
   .chat-shell .inspector {
@@ -5205,6 +5250,47 @@ h1, h2, h3, h4, h5, h6 {
   background: var(--bg);
   border-bottom: 1px solid var(--border);
 }
+.insp-file-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  margin-bottom: 7px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-subtle);
+  color: var(--text-subtle);
+}
+.insp-file-search:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: var(--bg);
+}
+.insp-file-search input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 11px;
+}
+.insp-file-search input::placeholder {
+  color: var(--text-subtle);
+}
+.insp-file-search button {
+  flex-shrink: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-subtle);
+  cursor: pointer;
+  font-size: 10.5px;
+  font-weight: 650;
+}
+.insp-file-search button:hover {
+  color: var(--text);
+}
 .insp-file-filter {
   display: flex;
   gap: 4px;
@@ -5239,6 +5325,12 @@ h1, h2, h3, h4, h5, h6 {
   color: currentColor;
   font-variant-numeric: tabular-nums;
   opacity: 0.72;
+}
+.insp-file-search-count {
+  margin-top: 6px;
+  color: var(--text-subtle);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
 }
 .insp-file-tree-actions {
   display: flex;
@@ -5575,6 +5667,46 @@ h1, h2, h3, h4, h5, h6 {
 }
 /* Line numbers from Shiki (if enabled) */
 .file-viewer-code .line { display: block; }
+
+.file-viewer-markdown {
+  flex: 1;
+  overflow: auto;
+  padding: 18px 22px 40px;
+  background: var(--bg);
+}
+.file-viewer-markdown.prose-dashboard {
+  font-size: 13px;
+  line-height: 1.65;
+}
+.file-viewer-markdown.prose-dashboard h1 {
+  font-size: 1.25rem;
+  margin: 0 0 0.75rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid var(--border);
+}
+.file-viewer-markdown.prose-dashboard h2 {
+  font-size: 1rem;
+  margin-top: 1.35rem;
+}
+.file-viewer-markdown.prose-dashboard h3 {
+  font-size: 0.9rem;
+  margin-top: 1rem;
+}
+.file-viewer-markdown.prose-dashboard p,
+.file-viewer-markdown.prose-dashboard ul,
+.file-viewer-markdown.prose-dashboard ol,
+.file-viewer-markdown.prose-dashboard blockquote,
+.file-viewer-markdown.prose-dashboard table,
+.file-viewer-markdown.prose-dashboard pre {
+  max-width: 860px;
+}
+.file-viewer-markdown.prose-dashboard ol {
+  margin: 0.35rem 0;
+  padding-left: 1.25rem;
+}
+.file-viewer-markdown.prose-dashboard ol li {
+  padding: 0.2rem 0;
+}
 
 .file-viewer-diff-pane {
   display: flex;

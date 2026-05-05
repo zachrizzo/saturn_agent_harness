@@ -41,6 +41,8 @@ setup_bedrock_env() {
   export CLAUDE_CODE_USE_BEDROCK="${CLAUDE_CODE_USE_BEDROCK:-1}"
   export AWS_PROFILE="${AWS_PROFILE:-sondermind-development-new}"
   export AWS_REGION="${AWS_REGION:-us-east-1}"
+  export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-$AWS_REGION}"
+  export AWS_SDK_LOAD_CONFIG="${AWS_SDK_LOAD_CONFIG:-1}"
 }
 
 shell_join_quoted() {
@@ -71,7 +73,9 @@ bedrock_settings_json() {
       env: {
         CLAUDE_CODE_USE_BEDROCK: "1",
         AWS_PROFILE: $profile,
-        AWS_REGION: $region
+        AWS_REGION: $region,
+        AWS_DEFAULT_REGION: $region,
+        AWS_SDK_LOAD_CONFIG: "1"
       }
     }'
 }

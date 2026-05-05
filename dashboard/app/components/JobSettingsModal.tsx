@@ -31,15 +31,24 @@ type Props = {
   currentModel?: string;
   currentCli?: CLI;
   currentReasoningEffort?: ModelReasoningEffort;
+  currentCatchUpMissedRuns?: boolean;
 };
 
-export function JobSettingsModal({ jobName, currentCron, currentModel, currentCli = DEFAULT_CLI, currentReasoningEffort }: Props) {
+export function JobSettingsModal({
+  jobName,
+  currentCron,
+  currentModel,
+  currentCli = DEFAULT_CLI,
+  currentReasoningEffort,
+  currentCatchUpMissedRuns = false,
+}: Props) {
   const cronInputId = `job-cron-${jobName}`;
   const [isOpen, setIsOpen] = useState(false);
   const [cron, setCron] = useState(currentCron);
   const [cli, setCli] = useState<CLI>(normalizeCli(currentCli));
   const [model, setModel] = useState(currentModel ?? "");
   const [reasoningEffort, setReasoningEffort] = useState<ModelReasoningEffort | "">(currentReasoningEffort ?? "");
+  const [catchUpMissedRuns, setCatchUpMissedRuns] = useState(currentCatchUpMissedRuns);
   const [models, setModels] = useState<Model[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -84,6 +93,7 @@ export function JobSettingsModal({ jobName, currentCron, currentModel, currentCl
     setCli(normalizeCli(currentCli));
     setModel(currentModel ?? "");
     setReasoningEffort(currentReasoningEffort ?? "");
+    setCatchUpMissedRuns(currentCatchUpMissedRuns);
     setSaved(false);
     setError(null);
     setIsOpen(true);
@@ -113,6 +123,7 @@ export function JobSettingsModal({ jobName, currentCron, currentModel, currentCl
           model: model || null,
           cli,
           reasoningEffort: reasoningEffort || null,
+          catchUpMissedRuns,
         }),
       });
       if (!res.ok) throw new Error((await res.json()).error ?? "Failed");
@@ -252,6 +263,25 @@ export function JobSettingsModal({ jobName, currentCron, currentModel, currentCl
                     ))}
                   </Select>
                 </div>
+
+                <label className="flex items-start gap-3 rounded border border-border bg-bg-subtle p-3 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={catchUpMissedRuns}
+                    onChange={(e) => {
+                      setCatchUpMissedRuns(e.target.checked);
+                      setSaved(false);
+                    }}
+                    disabled={saving}
+                    className="mt-1 h-4 w-4 accent-[var(--accent)]"
+                  />
+                  <span>
+                    <span className="block font-medium text-fg">Run missed schedule</span>
+                    <span className="mt-0.5 block text-xs leading-relaxed text-muted">
+                      If this Mac is asleep or offline, start one catch-up run when Saturn next opens, as long as the missed fire was within 25 hours.
+                    </span>
+                  </span>
+                </label>
               </div>
 
               <div className="p-5 pt-0 flex gap-2 justify-end">

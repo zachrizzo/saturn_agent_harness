@@ -24,11 +24,12 @@ export async function PUT(
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const { model, cli, reasoningEffort, cron } = body as {
+  const { model, cli, reasoningEffort, cron, catchUpMissedRuns } = body as {
     model?: string | null;
     cli?: LegacyCLI;
     reasoningEffort?: ModelReasoningEffort | null;
     cron?: unknown;
+    catchUpMissedRuns?: unknown;
   };
 
   const normalizedCron = typeof cron === "string" ? cron.trim() : undefined;
@@ -56,6 +57,9 @@ export async function PUT(
   ) {
     return NextResponse.json({ error: "invalid reasoningEffort" }, { status: 400 });
   }
+  if (catchUpMissedRuns !== undefined && typeof catchUpMissedRuns !== "boolean") {
+    return NextResponse.json({ error: "catchUpMissedRuns must be a boolean" }, { status: 400 });
+  }
 
   // Normalize Bedrock IDs to short aliases before writing to jobs.json so the
   // stored value is always `claude-sonnet-4-6` not `global.anthropic.claude-sonnet-4-6`.
@@ -71,6 +75,7 @@ export async function PUT(
       cli: normalizedCli,
       reasoningEffort: normalizedEffort,
       cron: normalizedCron,
+      catchUpMissedRuns,
     });
 
     if (normalizedCron !== undefined && normalizedCron !== job.cron) {

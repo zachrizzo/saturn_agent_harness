@@ -65,6 +65,7 @@ export default async function ChatSessionPage({
       initialMeta={session.meta}
       initialEvents={session.events}
       initialEventsPartial={session.eventsPartial}
+      initialVisibleEventsPartial={session.visibleEventsPartial}
       pendingMessage={pendingMessage}
       hiddenMcpImageServers={settings.hiddenMcpImageServers}
     />

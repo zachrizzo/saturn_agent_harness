@@ -119,6 +119,7 @@ export function JobCard({ job, runs, latestOutput }: Props): JSX.Element {
             currentModel={job.model}
             currentCli={job.cli as CLI | undefined}
             currentReasoningEffort={job.reasoningEffort}
+            currentCatchUpMissedRuns={job.catchUpMissedRuns}
           />
           <PlayButton jobName={job.name} />
         </div>

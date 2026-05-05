@@ -1,6 +1,7 @@
 "use client";
 
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import Link from "next/link";
 import type { SessionMeta, CLI } from "@/lib/runs";
 import type { ModelReasoningEffort } from "@/lib/models";
@@ -54,6 +55,9 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
   const metaRef = useRef<SessionMeta>(initialMeta);
   const [events, setEvents] = useState<StreamEvent[]>(initialEvents);
   const seenRef = useRef(new Set(initialEvents.map((e) => JSON.stringify(e.raw))));
+  const mountedRef = useRef(false);
+  const sseActiveRef = useRef(false);
+  const latestSnapshotRequestRef = useRef(0);
   const pendingEventsRef = useRef<PendingSwarmEvents[]>([]);
   const pendingLineKeysRef = useRef(new Set<string>());
   const eventFlushRef = useRef<number | null>(null);
@@ -64,6 +68,14 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
   const [sliceRuns, setSliceRuns] = useState<SliceEntry[]>([]);
   const sliceRunsKeyRef = useRef(JSON.stringify([]));
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   // Keep metaRef in sync for use inside SSE callbacks
   useEffect(() => {
@@ -110,6 +122,94 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
     setSliceRuns(next);
   }, []);
 
+  const applySessionSnapshot = useCallback((incoming: SessionMeta, incomingEvents: StreamEvent[]) => {
+    if (!mountedRef.current) return;
+    if (incoming.turns.length < metaRef.current.turns.length) return;
+
+    flushPendingEvents();
+    setMeta((current) => {
+      if (incoming.turns.length < current.turns.length) return current;
+      return incoming;
+    });
+    setStreaming(incoming.status === "running");
+
+    startTransition(() => {
+      setEvents((current) => {
+        const keys = new Set<string>();
+        const merged: StreamEvent[] = [];
+
+        for (const event of incomingEvents) {
+          const key = JSON.stringify(event.raw);
+          if (keys.has(key)) continue;
+          keys.add(key);
+          merged.push(event);
+        }
+        for (const event of current) {
+          const key = JSON.stringify(event.raw);
+          if (keys.has(key)) continue;
+          keys.add(key);
+          merged.push(event);
+        }
+
+        if (merged.length === current.length) {
+          let same = true;
+          for (let i = 0; i < current.length; i += 1) {
+            if (JSON.stringify(current[i].raw) !== JSON.stringify(merged[i].raw)) {
+              same = false;
+              break;
+            }
+          }
+          if (same) {
+            seenRef.current = keys;
+            return current;
+          }
+        }
+
+        seenRef.current = keys;
+        return merged;
+      });
+    });
+  }, [flushPendingEvents]);
+
+  const refreshSessionSnapshot = useCallback(async () => {
+    if (!mountedRef.current || !pageVisible) return;
+    if (sseActiveRef.current && metaRef.current.status === "running") return;
+    const requestId = latestSnapshotRequestRef.current + 1;
+    latestSnapshotRequestRef.current = requestId;
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+        cache: "no-store",
+      });
+      if (!res.ok) return;
+      const data = await res.json() as { meta: SessionMeta; events: StreamEvent[] };
+      if (!mountedRef.current || requestId !== latestSnapshotRequestRef.current) return;
+      applySessionSnapshot(data.meta, data.events ?? []);
+    } catch {
+      /* ignore */
+    }
+  }, [applySessionSnapshot, pageVisible, sessionId]);
+
+  // App Router navigation can reuse an older server payload. Freshen once on
+  // mount so swarm pages converge without a browser refresh.
+  useEffect(() => {
+    if (!pageVisible) return;
+    const timer = window.setTimeout(() => { void refreshSessionSnapshot(); }, 120);
+    return () => window.clearTimeout(timer);
+  }, [pageVisible, refreshSessionSnapshot]);
+
+  // SSE is the fast path, but periodic no-store snapshots keep the swarm view
+  // moving if the EventSource connection gets interrupted or a browser tab
+  // resumes from sleep.
+  useEffect(() => {
+    if (!pageVisible || (meta.status !== "running" && !streaming)) return;
+    const initial = window.setTimeout(() => { void refreshSessionSnapshot(); }, 1200);
+    const interval = window.setInterval(() => { void refreshSessionSnapshot(); }, 2500);
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(interval);
+    };
+  }, [meta.status, pageVisible, refreshSessionSnapshot, streaming]);
+
   // Connect SSE whenever status transitions to running
   useEffect(() => {
     if (meta.status !== "running" || !pageVisible) return;
@@ -124,6 +224,11 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
     const es = new EventSource(
       `/api/sessions/${encodeURIComponent(sessionId)}/stream${query ? `?${query}` : ""}`
     );
+    let closedByTerminalMeta = false;
+
+    es.onopen = () => {
+      sseActiveRef.current = true;
+    };
 
     es.onmessage = (e) => {
       let obj: Record<string, unknown>;
@@ -137,6 +242,8 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
         const incoming = (obj as { meta: SessionMeta }).meta;
         // Stale-read guard
         if (incoming.turns.length < metaRef.current.turns.length) return;
+        closedByTerminalMeta = true;
+        sseActiveRef.current = false;
         flushPendingEvents();
         setMeta(incoming);
         setStreaming(false);
@@ -155,16 +262,22 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
       scheduleEventFlush();
     };
     es.onerror = () => {
+      sseActiveRef.current = false;
       flushPendingEvents();
+      void refreshSessionSnapshot();
+      if (!closedByTerminalMeta && metaRef.current.status === "running") {
+        return;
+      }
       es.close();
       setStreaming(false);
     };
 
     return () => {
+      sseActiveRef.current = false;
       es.close();
       clearPendingEvents();
     };
-  }, [clearPendingEvents, flushPendingEvents, pageVisible, scheduleEventFlush, sessionId, meta.status, meta.turns]);
+  }, [clearPendingEvents, flushPendingEvents, pageVisible, refreshSessionSnapshot, scheduleEventFlush, sessionId, meta.status, meta.turns.length]);
 
   // Poll slice index. Poll more frequently while streaming; also refresh once
   // after streaming stops so the final durations land in the UI.
@@ -305,7 +418,8 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
     setMeta((m) => ({ ...m, status: "failed" }));
   }, []);
 
-  const handleSliceRerun = useCallback(() => {
+  const handleSliceRerun = useCallback((newRunId?: string) => {
+    if (newRunId) setActiveRunId(newRunId);
     fetch(`/api/sessions/${encodeURIComponent(sessionId)}/slices`, {
       cache: "no-store",
     })
@@ -338,29 +452,42 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
   const agentId = snap?.id ?? meta.agent_id;
   const agentCliModels = snap?.models;
   const agentCliReasoningEfforts = snap?.reasoningEfforts;
+  const headerDetails = [
+    meta.agent_snapshot?.description,
+    `Session ${sessionId}`,
+  ].filter(Boolean).join(" · ");
 
   const activeSlice =
     sliceRuns.find((s) => s.slice_run_id === activeRunId) ?? null;
+  const runStartedAt =
+    lastTurn?.started_at ??
+    (meta as SessionMeta & { last_turn_started_at?: string }).last_turn_started_at ??
+    meta.started_at;
 
   return (
-    <div className="chat-shell">
+    <div
+      className={`chat-shell ${mobileInspectorOpen ? "inspector-open" : ""}`}
+      style={{ "--inspector-width": "360px" } as CSSProperties}
+    >
       <div className="chat-main">
         {/* Header */}
-        <header className="chat-header">
-          <h1 className="truncate">{agentName}</h1>
-          <Chip variant="accent">orchestrator</Chip>
-          <Chip variant="accent">{CLI_SHORT_LABELS[currentCli]}</Chip>
-          {currentModel && (
-            <Chip>
-              <span className="mono truncate max-w-[180px]">{toClaudeAlias(currentModel) ?? currentModel}</span>
-            </Chip>
-          )}
-          {streaming && (
-            <Chip variant="warn" dot>
-              live
-            </Chip>
-          )}
-          <div className="ml-auto flex items-center gap-2">
+        <header className="chat-header" title={headerDetails || sessionId}>
+          <div className="chat-title-row">
+            <h1 className="truncate">{agentName}</h1>
+            <Chip variant="accent">orchestrator</Chip>
+            <Chip variant="accent">{CLI_SHORT_LABELS[currentCli]}</Chip>
+            {currentModel && (
+              <Chip className="chat-model-chip">
+                <span className="mono truncate">{toClaudeAlias(currentModel) ?? currentModel}</span>
+              </Chip>
+            )}
+            {streaming && (
+              <Chip variant="warn" dot>
+                live
+              </Chip>
+            )}
+          </div>
+          <div className="chat-header-actions">
             {agentId && agentId !== "__adhoc__" && (
               <Link href={`/agents/${encodeURIComponent(agentId)}/edit`}>
                 <Button size="sm" variant="ghost">
@@ -368,16 +495,15 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
                 </Button>
               </Link>
             )}
-          </div>
-          {meta.agent_snapshot?.description && (
-            <p
-              className="text-[12px] text-muted mt-1 truncate"
-              style={{ flexBasis: "100%" }}
+            <Button
+              size="sm"
+              variant="ghost"
+              className="chat-inspector-toggle"
+              onClick={() => setMobileInspectorOpen(true)}
             >
-              {meta.agent_snapshot.description}
-            </p>
-          )}
-          <div className="session-id">{sessionId}</div>
+              Panel
+            </Button>
+          </div>
         </header>
 
         <div className="chat-stream">
@@ -386,6 +512,7 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
             sessionId={sessionId}
             streaming={streaming}
             slices={sliceRuns}
+            runStartedAt={runStartedAt}
             onAbort={handleAbort}
           />
 
@@ -466,12 +593,25 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
         </div>
       </div>
 
+      <button
+        type="button"
+        className="chat-inspector-backdrop"
+        onClick={() => setMobileInspectorOpen(false)}
+        aria-label="Close inspector panel"
+      />
+
       {/* Right inspector — reuses the .inspector shell from globals.css */}
       <SliceInspector
         sessionId={sessionId}
         entry={activeSlice}
         onRerun={handleSliceRerun}
-        onClose={activeSlice ? () => setActiveRunId(null) : undefined}
+        onClose={
+          activeSlice
+            ? () => setActiveRunId(null)
+            : mobileInspectorOpen
+            ? () => setMobileInspectorOpen(false)
+            : undefined
+        }
       />
     </div>
   );

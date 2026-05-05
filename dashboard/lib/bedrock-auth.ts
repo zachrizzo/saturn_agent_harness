@@ -48,6 +48,8 @@ function awsEnv(profile: string, region: string): NodeJS.ProcessEnv {
     ...process.env,
     AWS_PROFILE: profile,
     AWS_REGION: region,
+    AWS_DEFAULT_REGION: region,
+    AWS_SDK_LOAD_CONFIG: "1",
     AWS_PAGER: "",
   };
 }
@@ -95,7 +97,7 @@ async function runAws(args: string[], profile: string, region: string): Promise<
   });
 }
 
-export async function assertBedrockReady(config?: BedrockConfig): Promise<void> {
+export async function assertBedrockSsoReady(config?: BedrockConfig): Promise<void> {
   const { profile, region } = config ?? await readBedrockConfig();
 
   try {
@@ -103,6 +105,12 @@ export async function assertBedrockReady(config?: BedrockConfig): Promise<void> 
   } catch (err) {
     throw new BedrockNotReadyError(friendlyAwsMessage(err, profile, region));
   }
+}
+
+export async function assertBedrockReady(config?: BedrockConfig): Promise<void> {
+  const { profile, region } = config ?? await readBedrockConfig();
+
+  await assertBedrockSsoReady({ profile, region });
 
   try {
     await runAws(["bedrock", "list-inference-profiles"], profile, region);

@@ -7,13 +7,18 @@ import { ApplyPanel } from "@/app/components/ApplyPanel";
 
 export type SliceEntry = {
   slice_run_id: string;
+  graph_run_id?: string;
+  graph_node_id?: string;
   slice_id?: string;
+  label?: string;
   status: string;
   started_at?: string;
   finished_at?: string;
   tokens?: { input: number; output: number; total: number };
   duration_ms?: number;
   sandbox_mode?: string;
+  planned?: boolean;
+  execution_order?: number;
 };
 
 type Props = {

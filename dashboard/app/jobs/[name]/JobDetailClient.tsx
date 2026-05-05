@@ -126,6 +126,7 @@ export function JobDetailClient({ job, runs, nextFire, avgDuration, avgTokens }:
           currentModel={job.model}
           currentCli={job.cli}
           currentReasoningEffort={job.reasoningEffort}
+          currentCatchUpMissedRuns={job.catchUpMissedRuns}
         />
       </header>
 

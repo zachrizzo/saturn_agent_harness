@@ -487,6 +487,7 @@ async function cleanupWorktreeOnFailure(
 async function writeSliceResult(
   sliceDir: string,
   result: {
+    slice_id?: string;
     status: SliceExecuteStatus;
     output: unknown | null;
     error?: string;
@@ -507,6 +508,7 @@ async function writeSliceResult(
     meta = {};
   }
 
+  if (result.slice_id) meta.slice_id = result.slice_id;
   meta.status = result.status;
   meta.output = result.output;
   meta.error = result.error ?? null;
@@ -579,6 +581,14 @@ ${JSON.stringify(req.inputs, null, 2)}
   const maxTokens =
     req.budgetOverride?.max_tokens ?? slice.budget?.max_tokens;
 
+  const queuedAt = new Date().toISOString();
+  await appendIndex(req.sessionId, {
+    slice_run_id,
+    slice_id: slice.id,
+    status: "running",
+    started_at: queuedAt,
+  });
+
   let outcome: RunSliceOutcome;
   try {
     outcome = await runSliceProcess({
@@ -645,7 +655,7 @@ ${JSON.stringify(req.inputs, null, 2)}
   );
   await cleanupWorktreeOnFailure(slice.sandbox.mode, sandbox, outcome.exitCode);
   await recordBudget(req.sessionId, tokens.total);
-  await writeSliceResult(sliceDir, { status, output, error, tokens, duration_ms, raw_output });
+  await writeSliceResult(sliceDir, { slice_id: slice.id, status, output, error, tokens, duration_ms, raw_output });
 
   await appendIndex(req.sessionId, {
     slice_run_id,
@@ -694,6 +704,14 @@ export async function executeCustomSlice(
   const timeout_seconds = req.spec.budget?.timeout_seconds ?? 180;
   const maxTokens = req.spec.budget?.max_tokens;
 
+  const queuedAt = new Date().toISOString();
+  await appendIndex(req.sessionId, {
+    slice_run_id,
+    slice_id: "__custom__",
+    status: "running",
+    started_at: queuedAt,
+  });
+
   let outcome: RunSliceOutcome;
   try {
     outcome = await runSliceProcess({
@@ -728,7 +746,7 @@ export async function executeCustomSlice(
   );
   await cleanupWorktreeOnFailure(sandboxSpec.mode, sandbox, outcome.exitCode);
   await recordBudget(req.sessionId, tokens.total);
-  await writeSliceResult(sliceDir, { status, output: null, error, tokens, duration_ms, raw_output });
+  await writeSliceResult(sliceDir, { slice_id: "__custom__", status, output: null, error, tokens, duration_ms, raw_output });
 
   await appendIndex(req.sessionId, {
     slice_run_id,

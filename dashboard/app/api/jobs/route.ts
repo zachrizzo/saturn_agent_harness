@@ -52,6 +52,9 @@ export async function POST(req: Request) {
   if (timeoutSeconds !== undefined && (!Number.isInteger(timeoutSeconds) || timeoutSeconds <= 0)) {
     return NextResponse.json({ error: "timeout_seconds must be a positive integer" }, { status: 400 });
   }
+  if (body.catchUpMissedRuns !== undefined && typeof body.catchUpMissedRuns !== "boolean") {
+    return NextResponse.json({ error: "catchUpMissedRuns must be a boolean" }, { status: 400 });
+  }
 
   const allowedTools = (() => {
     if (body.allowedTools === undefined) return undefined;
@@ -86,6 +89,7 @@ export async function POST(req: Request) {
     ...(body.model ? { model: toClaudeAlias(body.model as string) ?? (body.model as string) } : {}),
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(timeoutSeconds ? { timeout_seconds: timeoutSeconds } : {}),
+    ...(body.catchUpMissedRuns === true ? { catchUpMissedRuns: true } : {}),
   };
 
   try {
