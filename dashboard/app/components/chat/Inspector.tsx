@@ -9,6 +9,8 @@ import type { StreamEvent, TokenBreakdown } from "@/lib/events";
 import type { SessionMeta } from "@/lib/runs";
 import { projectNameFromPath, type TerminalListResponse, type TerminalRecord } from "@/lib/terminal-types";
 import { FileViewer } from "@/app/components/chat/FileViewer";
+import { BackgroundAgentsPanel } from "@/app/components/chat/BackgroundAgentsPanel";
+import type { BackgroundActivityRow } from "@/app/components/chat/background-agents";
 
 export type InspectorTool = {
   id: string;
@@ -27,10 +29,16 @@ type Props = {
   events: StreamEvent[];
   width: number;
   onWidthChange: (width: number) => void;
+  backgroundActivities?: BackgroundActivityRow[];
+  isBackgroundActivityStopping?: (row: BackgroundActivityRow) => boolean;
+  onInspectBackgroundAgent?: (id: string) => void;
+  onStopBackgroundActivity?: (row: BackgroundActivityRow) => void;
+  onDismissBackgroundActivity?: (row: BackgroundActivityRow) => void;
   referencedFiles?: string[];
   fileOpenRequest?: { path: string; requestId: number } | null;
   onInsertIntoComposer?: (text: string) => void;
   onClose?: () => void;
+  requestedTab?: { key: InspectorTabKey; requestId: number } | null;
 };
 
 function sameInspectorTool(a: InspectorTool, b: InspectorTool): boolean {
@@ -74,14 +82,16 @@ function useStableToolList(tools: InspectorTool[]): InspectorTool[] {
   }, [tools]);
 }
 
-const INSPECTOR_TABS = [
+export type InspectorTabKey = "tool" | "agents" | "terminal" | "files" | "web" | "tokens";
+
+const INSPECTOR_TABS: Array<{ key: InspectorTabKey; label: string }> = [
   { key: "tool", label: "Tool" },
+  { key: "agents", label: "Agents" },
   { key: "terminal", label: "Terminal" },
   { key: "files", label: "Files" },
   { key: "web", label: "Web" },
   { key: "tokens", label: "Tokens" },
-] as const;
-type TabKey = typeof INSPECTOR_TABS[number]["key"];
+];
 type FilesFilter = "all" | "changes" | "files";
 type FileDiscoveryStatus = "idle" | "loading" | "ready";
 
@@ -1065,12 +1075,18 @@ export const Inspector = memo(function Inspector({
   events,
   width,
   onWidthChange,
+  backgroundActivities = [],
+  isBackgroundActivityStopping = () => false,
+  onInspectBackgroundAgent = () => {},
+  onStopBackgroundActivity = () => {},
+  onDismissBackgroundActivity = () => {},
   referencedFiles = [],
   fileOpenRequest,
   onInsertIntoComposer,
   onClose,
+  requestedTab,
 }: Props) {
-  const [tab, setTab] = useState<TabKey>("tool");
+  const [tab, setTab] = useState<InspectorTabKey>("tool");
   const [filesFilter, setFilesFilter] = useState<FilesFilter>("all");
   const [fileSearch, setFileSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -1103,6 +1119,11 @@ export const Inspector = memo(function Inspector({
   const pendingPtyDataRef = useRef("");
   const resizeCleanupRef = useRef<(() => void) | null>(null);
   const latestTurn = session.turns.at(-1);
+
+  useEffect(() => {
+    if (!requestedTab) return;
+    setTab(requestedTab.key);
+  }, [requestedTab?.key, requestedTab?.requestId]);
   const latestTurnStartedAt = latestTurn?.started_at ?? "";
   const latestTurnFinishedAt = latestTurn?.finished_at ?? "";
   const sessionCwd = session.agent_snapshot?.cwd?.trim() || null;
@@ -1751,6 +1772,7 @@ export const Inspector = memo(function Inspector({
         {INSPECTOR_TABS.map(({ key, label }) => {
           const badge =
             key === "tool" ? tools.length :
+            key === "agents" ? backgroundActivities.length :
             key === "terminal" ? relatedTerminals.length :
             key === "files" ? fileTabCount :
             null;
@@ -1769,6 +1791,17 @@ export const Inspector = memo(function Inspector({
           );
         })}
       </div>
+
+      {/* ── Agents tab ── */}
+      {tab === "agents" && (
+        <BackgroundAgentsPanel
+          rows={backgroundActivities}
+          isStopping={isBackgroundActivityStopping}
+          onInspectAgent={onInspectBackgroundAgent}
+          onStop={onStopBackgroundActivity}
+          onDismiss={onDismissBackgroundActivity}
+        />
+      )}
 
       {/* ── Tool tab ── */}
       {tab === "tool" && (

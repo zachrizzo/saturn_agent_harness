@@ -21,6 +21,7 @@ export function successRate(runs: RunMeta[]): number {
 }
 
 export type StatusVariant = "success" | "warn" | "fail" | "default";
+export type JobHealth = "running" | "attention" | "healthy" | "idle";
 
 /** Map a run status (string or RunMeta) to a Chip / tone variant. */
 export function statusVariant(
@@ -49,6 +50,35 @@ export function rateToneClass(rate: number, hasRuns: boolean): string {
   if (rate >= 80) return "text-[var(--success)]";
   if (rate >= 50) return "text-[var(--warn)]";
   return "text-[var(--fail)]";
+}
+
+export function rateVariant(rate: number, hasRuns: boolean): StatusVariant {
+  if (!hasRuns) return "default";
+  if (rate >= 80) return "success";
+  if (rate >= 50) return "warn";
+  return "fail";
+}
+
+export function jobHealthFor(runs: RunMeta[], rate = successRate(runs)): JobHealth {
+  const latest = runs[0];
+  if (latest?.status === "running") return "running";
+  if (!runs.length) return "idle";
+  if (latest?.status === "failed" || rate < 80) return "attention";
+  return "healthy";
+}
+
+export function jobHealthLabel(health: JobHealth): string {
+  if (health === "running") return "Running";
+  if (health === "attention") return "Needs attention";
+  if (health === "idle") return "No runs";
+  return "Healthy";
+}
+
+export function jobHealthVariant(health: JobHealth): StatusVariant {
+  if (health === "healthy") return "success";
+  if (health === "running") return "warn";
+  if (health === "attention") return "fail";
+  return "default";
 }
 
 /** Coarse "N{unit} ago" string for a recent ISO timestamp. */

@@ -14,11 +14,14 @@ export type TurnChunk = {
 };
 
 type EventSlice = {
-  sid?: string;
   turnId?: string;
   start: number;
   end: number;
   hasResult: boolean;
+};
+
+type LegacyEventSlice = EventSlice & {
+  sid?: string;
 };
 
 type BuildTurnChunksOptions = {
@@ -34,6 +37,16 @@ function turnMarkerId(ev: StreamEvent): string | undefined {
   const raw = rawRecord(ev);
   if (raw.type !== "saturn.turn_start") return undefined;
   return typeof raw.turn_id === "string" ? raw.turn_id : undefined;
+}
+
+function turnIdFromMetaTurn(turn: SessionMeta["turns"][number]): string | undefined {
+  const value = (turn as unknown as Record<string, unknown>).turn_id;
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function nativeSessionIdFromMetaTurn(turn: SessionMeta["turns"][number]): string | undefined {
+  const value = (turn as unknown as Record<string, unknown>).cli_session_id;
+  return typeof value === "string" && value.trim() ? value : undefined;
 }
 
 function nativeSessionId(ev: StreamEvent): string | undefined {
@@ -61,8 +74,8 @@ function splitByResult(
   end: number,
   sid?: string,
   includeTrailing = true,
-): EventSlice[] {
-  const slices: EventSlice[] = [];
+): LegacyEventSlice[] {
+  const slices: LegacyEventSlice[] = [];
   let sliceStart = start;
   let sawResult = false;
   for (let i = start; i < end; i++) {
@@ -77,14 +90,32 @@ function splitByResult(
   return slices;
 }
 
-function buildLegacySlices(events: StreamEvent[], start: number, end: number): EventSlice[] {
+function buildSaturnTurnSlices(events: StreamEvent[]): EventSlice[] {
+  const turnStarts: Array<{ turnId: string; idx: number }> = [];
+  events.forEach((ev, idx) => {
+    const turnId = turnMarkerId(ev);
+    if (turnId) turnStarts.push({ turnId, idx });
+  });
+
+  return turnStarts.map((start, pos): EventSlice => {
+    const end = pos + 1 < turnStarts.length ? turnStarts[pos + 1].idx : events.length;
+    return {
+      turnId: start.turnId,
+      start: start.idx,
+      end,
+      hasResult: hasTerminalResult(events, start.idx, end),
+    };
+  });
+}
+
+function buildLegacyCompatibilitySlices(events: StreamEvent[], start: number, end: number): LegacyEventSlice[] {
   const starts: Array<{ sid: string; idx: number }> = [];
   for (let i = start; i < end; i++) {
     const sid = nativeSessionId(events[i]);
     if (sid) starts.push({ sid, idx: i });
   }
 
-  const slices: EventSlice[] = [];
+  const slices: LegacyEventSlice[] = [];
   if (starts.length === 0) {
     slices.push(...splitByResult(events, start, end));
     return slices;
@@ -96,6 +127,31 @@ function buildLegacySlices(events: StreamEvent[], start: number, end: number): E
     slices.push(...splitByResult(events, segmentStart.idx, segmentEnd, segmentStart.sid, isLastSegment));
   });
   return slices;
+}
+
+function nextUnclaimedSlice<T extends EventSlice>(
+  slices: T[],
+  consumed: Set<EventSlice>,
+  cursor: { value: number },
+  predicate: (slice: T) => boolean = () => true,
+): T | undefined {
+  while (cursor.value < slices.length) {
+    const slice = slices[cursor.value];
+    cursor.value += 1;
+    if (!consumed.has(slice) && predicate(slice)) return slice;
+  }
+  return undefined;
+}
+
+function latestUnclaimedOpenSlice<T extends EventSlice>(
+  slices: T[],
+  consumed: Set<EventSlice>,
+): T | undefined {
+  for (let i = slices.length - 1; i >= 0; i--) {
+    const slice = slices[i];
+    if (!consumed.has(slice) && !slice.hasResult) return slice;
+  }
+  return undefined;
 }
 
 export function buildTurnChunks(
@@ -129,59 +185,39 @@ export function buildTurnChunks(
     };
   };
 
-  const turnStarts: Array<{ turnId: string; idx: number }> = [];
-  events.forEach((ev, i) => {
-    const turnId = turnMarkerId(ev);
-    if (turnId) turnStarts.push({ turnId, idx: i });
-  });
+  const saturnSlices = buildSaturnTurnSlices(events);
 
-  if (turnStarts.length > 0) {
-    const markerSlices = turnStarts.map((start, pos): EventSlice => {
-      const end = pos + 1 < turnStarts.length ? turnStarts[pos + 1].idx : events.length;
-      return {
-        turnId: start.turnId,
-        start: start.idx,
-        end,
-        hasResult: hasTerminalResult(events, start.idx, end),
-      };
-    });
-    const slicesByTurnId = new Map(markerSlices.map((slice) => [slice.turnId!, slice]));
-    const consumedMarkerSlices = new Set<EventSlice>();
-    const legacySlices = buildLegacySlices(events, 0, turnStarts[0].idx);
-    let legacyCursor = 0;
-    let markerCursor = 0;
-    const nextUnclaimedMarkerSlice = () => {
-      while (markerCursor < markerSlices.length) {
-        const candidate = markerSlices[markerCursor];
-        markerCursor += 1;
-        if (!consumedMarkerSlices.has(candidate)) return candidate;
-      }
-      return undefined;
-    };
+  if (saturnSlices.length > 0) {
+    const slicesByTurnId = new Map(saturnSlices.map((slice) => [slice.turnId!, slice]));
+    const consumedSaturnSlices = new Set<EventSlice>();
+    const leadingLegacySlices = buildLegacyCompatibilitySlices(events, 0, saturnSlices[0].start);
+    let leadingLegacyCursor = 0;
+    const saturnCursor = { value: 0 };
     const result: TurnChunk[] = [];
 
     meta.turns.forEach((t, i) => {
-      const turnId = (t as unknown as Record<string, unknown>).turn_id as string | undefined;
+      const turnId = turnIdFromMetaTurn(t);
       let slice = turnId ? slicesByTurnId.get(turnId) : undefined;
       if (slice) {
-        consumedMarkerSlices.add(slice);
-      } else if (legacyCursor < legacySlices.length) {
-        slice = legacySlices[legacyCursor++];
-      } else {
-        // Optimistic client turns do not know the server-generated turn_id yet.
-        // Attach the next unclaimed saturn.turn_start slice so live output shows
-        // immediately instead of waiting for a metadata refresh.
-        slice = nextUnclaimedMarkerSlice();
-        if (slice) consumedMarkerSlices.add(slice);
+        consumedSaturnSlices.add(slice);
+      } else if (leadingLegacyCursor < leadingLegacySlices.length) {
+        // Compatibility only: old sessions may have stream events before the
+        // first dashboard-owned turn marker. Modern turns never use this path.
+        slice = leadingLegacySlices[leadingLegacyCursor++];
+      } else if (i === meta.turns.length - 1 && meta.status === "running") {
+        // Optimistic client turns briefly exist before the server snapshot with
+        // the new turn_id arrives. Only attach an open Saturn slice.
+        slice = nextUnclaimedSlice(saturnSlices, consumedSaturnSlices, saturnCursor, (candidate) => !candidate.hasResult);
+        if (slice) consumedSaturnSlices.add(slice);
       }
       if (shouldMaterializeTurn(i)) result.push(makeChunk(t, i, slice));
     });
     return result;
   }
 
-  const allSlices = buildLegacySlices(events, 0, events.length);
+  const allSlices = buildLegacyCompatibilitySlices(events, 0, events.length);
 
-  const slicesBySid = new Map<string, EventSlice[]>();
+  const slicesBySid = new Map<string, LegacyEventSlice[]>();
   for (const slice of allSlices) {
     if (!slice.sid) continue;
     const group = slicesBySid.get(slice.sid) ?? [];
@@ -192,29 +228,14 @@ export function buildTurnChunks(
   const consumedBySid = new Map<string, number>();
   const consumedSlices = new Set<EventSlice>();
   const result: TurnChunk[] = [];
-  let unclaimedSliceCursor = 0;
-  const nextUnclaimedSlice = () => {
-    while (unclaimedSliceCursor < allSlices.length) {
-      const slice = allSlices[unclaimedSliceCursor];
-      unclaimedSliceCursor += 1;
-      if (!consumedSlices.has(slice)) return slice;
-    }
-    return undefined;
-  };
-  const latestUnclaimedSlice = () => {
-    for (let i = allSlices.length - 1; i >= 0; i--) {
-      const slice = allSlices[i];
-      if (!consumedSlices.has(slice)) return slice;
-    }
-    return undefined;
-  };
+  const legacyCursor = { value: 0 };
 
   for (let i = 0; i < meta.turns.length; i++) {
     const t = meta.turns[i];
     const isLast = i === meta.turns.length - 1;
-    const sid = (t as unknown as Record<string, unknown>).cli_session_id as string | undefined | null;
+    const sid = nativeSessionIdFromMetaTurn(t);
 
-    let slice: EventSlice | undefined;
+    let slice: LegacyEventSlice | undefined;
 
     if (sid) {
       const consumed = consumedBySid.get(sid) ?? 0;
@@ -222,13 +243,14 @@ export function buildTurnChunks(
       if (slice) consumedBySid.set(sid, consumed + 1);
     } else if (isLast && meta.status === "running" && allSlices.length > 0) {
       // The turn stub is written before run-turn.sh fills cli_session_id.
-      // Attach the newest unclaimed native slice so live output is visible.
-      slice = latestUnclaimedSlice();
+      // Attach the newest unclaimed native slice so live output is visible,
+      // but only if it is still open. Otherwise an optimistic new turn can
+      // briefly render the previous completed assistant reply until refresh.
+      slice = latestUnclaimedOpenSlice(allSlices, consumedSlices);
     } else {
-      // Legacy aborted turns were written before dashboard turn ids existed.
-      // Preserve chronological order by assigning the next unclaimed slice,
-      // even when the CLI reused a native session id from an earlier turn.
-      slice = nextUnclaimedSlice();
+      // Compatibility only: sessions written before dashboard turn ids must be
+      // assigned chronologically because native CLIs can reuse session ids.
+      slice = nextUnclaimedSlice(allSlices, consumedSlices, legacyCursor);
     }
 
     if (slice) consumedSlices.add(slice);

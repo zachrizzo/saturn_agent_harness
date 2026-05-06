@@ -12,8 +12,17 @@ import { toEvents, getTokenBreakdown } from "@/lib/events";
 import { Button, Chip } from "@/app/components/ui";
 import { MessageBubble } from "@/app/components/chat/MessageBubble";
 import { Composer, type ComposerHandle } from "@/app/components/chat/Composer";
-import { Inspector, type InspectorTool } from "@/app/components/chat/Inspector";
+import { Inspector, type InspectorTabKey, type InspectorTool } from "@/app/components/chat/Inspector";
 import { ToolSelectionProvider } from "@/app/components/chat/tool-selection";
+import {
+  backgroundActivityDismissKey,
+  backgroundRunStatus,
+  backgroundSubAgentRows,
+  sortBackgroundActivityRows,
+  type BackgroundActivityRow,
+  type BackgroundRunSnapshot,
+  type BackgroundSubAgent,
+} from "@/app/components/chat/background-agents";
 import { buildTurnChunks } from "./turn-chunks";
 import type { TurnChunk } from "./turn-chunks";
 import { CLI_SHORT_LABELS, DEFAULT_CLI, normalizeCli } from "@/lib/clis";
@@ -45,28 +54,6 @@ type BedrockAuthPrompt = {
   status?: string;
   launching: boolean;
   checking: boolean;
-};
-
-type BackgroundSubAgent = {
-  id: string;
-  title: string;
-};
-
-type BackgroundSubAgentRow = BackgroundSubAgent & {
-  status: "run" | "ok" | "err" | "stop";
-};
-
-type BackgroundRunSnapshot = {
-  status: SessionMeta["status"];
-  finished_at?: string;
-  latestTurnStatus?: SessionMeta["turns"][number]["status"];
-};
-
-type BackgroundActivityRow = {
-  id: string;
-  title: string;
-  status: BackgroundSubAgentRow["status"];
-  kind: "session" | "agent";
 };
 
 const STREAM_EVENT_FLUSH_MS = 250;
@@ -333,84 +320,8 @@ function runningToolState(tools: InspectorTool[]): { latest?: InspectorTool; cou
   return { latest, count };
 }
 
-function subAgentTitleFromInput(input: unknown): string {
-  if (!input || typeof input !== "object") return "Sub-agent";
-  const record = input as Record<string, unknown>;
-  const description = typeof record.description === "string" ? record.description.trim() : "";
-  if (description) return description;
-  const subagentType = typeof record.subagent_type === "string" ? record.subagent_type.trim() : "";
-  if (subagentType) return subagentType;
-  return "Sub-agent";
-}
-
-function isBackgroundAgentToolUse(event: Extract<StreamEvent, { kind: "tool_use" }>): boolean {
-  if (event.name !== "Agent") return false;
-  const input = asRecord(event.input);
-  const raw = asRecord(event.raw);
-  return input.background === true
-    || (raw.type === "system" && raw.subtype === "task_started" && raw.task_type === "local_agent");
-}
-
-function backgroundAgentStatus(
-  result: Extract<StreamEvent, { kind: "tool_result" }> | undefined,
-): BackgroundSubAgentRow["status"] {
-  if (!result) return "run";
-  const content = asRecord(result.content);
-  const status = typeof content.status === "string" ? content.status : "";
-  if (status === "canceled" || status === "cancelled" || status === "stopped") return "stop";
-  return result.isError ? "err" : "ok";
-}
-
-function backgroundRunStatus(
-  status: SessionMeta["status"] | undefined,
-  latestTurnStatus?: SessionMeta["turns"][number]["status"],
-): BackgroundSubAgentRow["status"] {
-  if (latestTurnStatus === "aborted") return "stop";
-  if (status === "success" || status === "idle") return "ok";
-  if (status === "failed") return "err";
-  return "run";
-}
-
-function backgroundActivityDismissKey(row: Pick<BackgroundActivityRow, "id" | "kind">): string {
-  return `${row.kind}:${row.id}`;
-}
-
 function dismissedBackgroundStorageKey(sessionId: string): string {
   return `${DISMISSED_BACKGROUND_ACTIVITY_KEY_PREFIX}:${sessionId}`;
-}
-
-function backgroundSubAgentRows(
-  agents: Record<string, BackgroundSubAgent>,
-  events: StreamEvent[],
-): BackgroundSubAgentRow[] {
-  const rowsById = new Map<string, BackgroundSubAgent>();
-  const toolUses = new Map<string, Extract<StreamEvent, { kind: "tool_use" }>>();
-  const results = new Map<string, Extract<StreamEvent, { kind: "tool_result" }>>();
-
-  for (const agent of Object.values(agents)) {
-    rowsById.set(agent.id, agent);
-  }
-  for (const event of events) {
-    if (event.kind === "tool_use" && event.name === "Agent") {
-      toolUses.set(event.id, event);
-      if (isBackgroundAgentToolUse(event) && !rowsById.has(event.id)) {
-        rowsById.set(event.id, { id: event.id, title: subAgentTitleFromInput(event.input) });
-      }
-    }
-    if (event.kind === "tool_result" && !(event as { parentToolUseId?: string }).parentToolUseId) {
-      results.set(event.toolUseId, event);
-    }
-  }
-
-  return Array.from(rowsById.values()).map((agent) => {
-    const toolUse = toolUses.get(agent.id);
-    const result = results.get(agent.id);
-    return {
-      ...agent,
-      title: toolUse ? subAgentTitleFromInput(toolUse.input) : agent.title,
-      status: backgroundAgentStatus(result),
-    };
-  });
 }
 
 export function ChatView({
@@ -494,9 +405,11 @@ export function ChatView({
   const turnRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const [inspectorWidth, setInspectorWidth] = useState(420);
   const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
+  const [inspectorTabRequest, setInspectorTabRequest] = useState<{ key: InspectorTabKey; requestId: number } | null>(null);
   const [referencedFiles, setReferencedFiles] = useState<string[]>([]);
   const [fileOpenRequest, setFileOpenRequest] = useState<{ path: string; requestId: number } | null>(null);
   const fileOpenRequestId = useRef(0);
+  const inspectorTabRequestId = useRef(0);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const [compactInspectorLayout, setCompactInspectorLayout] = useState(false);
   const [bedrockAuthPrompt, setBedrockAuthPrompt] = useState<BedrockAuthPrompt | null>(null);
@@ -1516,6 +1429,13 @@ export function ChatView({
     composerRef.current?.insertText(text);
   }, []);
 
+  const openInspectorTab = useCallback((key: InspectorTabKey) => {
+    inspectorTabRequestId.current += 1;
+    setInspectorTabRequest({ key, requestId: inspectorTabRequestId.current });
+    setInspectorCollapsed(false);
+    setMobileInspectorOpen(true);
+  }, []);
+
   const stopGeneration = useCallback(async () => {
     const { controller, seq } = beginExclusiveAction();
     beginMutation();
@@ -1539,7 +1459,7 @@ export function ChatView({
   const runSubAgentInBackground = useCallback(async (id: string, title: string) => {
     setBackgroundSubAgents((current) => ({
       ...current,
-      [id]: { id, title },
+      [id]: { ...(current[id] ?? { id, startedAt: new Date().toISOString() }), title },
     }));
     setBackgroundingCurrentTurn(true);
     try {
@@ -1569,9 +1489,8 @@ export function ChatView({
   const showBackgroundSubAgent = useCallback((id: string) => {
     const tool = tools.find((item) => item.id === id);
     if (tool) setActiveToolId(id);
-    setInspectorCollapsed(false);
-    setMobileInspectorOpen(true);
-  }, [tools]);
+    openInspectorTab("tool");
+  }, [openInspectorTab, tools]);
 
   const stopBackgroundSubAgent = useCallback(async (id: string) => {
     setStoppingBackgroundAgents((current) => new Set(current).add(id));
@@ -1780,20 +1699,26 @@ export function ChatView({
     [backgroundSubAgents, renderedEvents],
   );
   const backgroundRunRows = useMemo<BackgroundActivityRow[]>(() => (
-    (meta.background_runs ?? []).map((run) => {
+    (meta.background_runs ?? []).map((run, index) => {
       const snapshot = backgroundRunSnapshots[run.session_id];
       return {
         id: run.session_id,
         title: run.title,
         kind: "session" as const,
         status: backgroundRunStatus(snapshot?.status, snapshot?.latestTurnStatus),
+        startedAt: run.started_at,
+        updatedAt: snapshot?.finished_at ?? run.started_at,
+        activityOrder: index,
       };
     })
   ), [backgroundRunSnapshots, meta.background_runs]);
-  const backgroundActivityRows = useMemo<BackgroundActivityRow[]>(() => [
-    ...backgroundRunRows,
-    ...backgroundRows.map((row) => ({ ...row, kind: "agent" as const })),
-  ], [backgroundRows, backgroundRunRows]);
+  const backgroundActivityRows = useMemo<BackgroundActivityRow[]>(
+    () => sortBackgroundActivityRows([
+      ...backgroundRunRows,
+      ...backgroundRows.map((row) => ({ ...row, kind: "agent" as const })),
+    ]),
+    [backgroundRows, backgroundRunRows],
+  );
   const visibleBackgroundActivityRows = useMemo(
     () => backgroundActivityRows.filter((row) => (
       row.status === "run" || !dismissedBackgroundActivity.has(backgroundActivityDismissKey(row))
@@ -1808,6 +1733,16 @@ export function ChatView({
     () => new Set(backgroundRows.map((row) => row.id)),
     [backgroundRows],
   );
+  const isBackgroundActivityStopping = useCallback((row: BackgroundActivityRow) => (
+    row.kind === "session" ? stoppingBackgroundRuns.has(row.id) : stoppingBackgroundAgents.has(row.id)
+  ), [stoppingBackgroundAgents, stoppingBackgroundRuns]);
+  const stopBackgroundActivity = useCallback((row: BackgroundActivityRow) => {
+    if (row.kind === "session") {
+      void stopBackgroundRun(row.id);
+    } else {
+      void stopBackgroundSubAgent(row.id);
+    }
+  }, [stopBackgroundRun, stopBackgroundSubAgent]);
   const toggleInspectorPanel = useCallback(() => {
     if (compactInspectorLayout) {
       setMobileInspectorOpen(true);
@@ -1872,6 +1807,20 @@ export function ChatView({
               >
                 Fork
               </Button>
+              {visibleBackgroundActivityRows.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className={`chat-background-panel-button ${activeBackgroundRows.length > 0 ? "active" : ""}`.trim()}
+                  onClick={() => openInspectorTab("agents")}
+                  title="Manage background agents"
+                >
+                  Agents
+                  <span className="chat-background-panel-count">
+                    {activeBackgroundRows.length > 0 ? activeBackgroundRows.length : visibleBackgroundActivityRows.length}
+                  </span>
+                </Button>
+              )}
               <Button
                 size="sm"
                 variant="ghost"
@@ -1883,73 +1832,6 @@ export function ChatView({
               </Button>
             </div>
           </header>
-
-          {visibleBackgroundActivityRows.length > 0 && (
-            <div className="background-agents-tray" aria-label="Background agents">
-              <div className="background-agents-tray-copy">
-                <div className="background-agents-tray-title">Background activity</div>
-                <div className="background-agents-tray-subtitle">
-                  {activeBackgroundRows.length > 0
-                    ? "You can keep chatting while these runs finish."
-                    : "Background runs have finished."}
-                </div>
-              </div>
-              <div className="background-agents-list">
-                {visibleBackgroundActivityRows.map((agent) => (
-                  <div
-                    key={`${agent.kind}-${agent.id}`}
-                    className="background-agent-chip"
-                    title={agent.title}
-                  >
-                    {agent.kind === "session" ? (
-                      <Link className="background-agent-main" href={`/chats/${encodeURIComponent(agent.id)}`}>
-                        <span className={`background-agent-dot ${agent.status}`} aria-hidden="true" />
-                        <span className="background-agent-name">{agent.title}</span>
-                        <span className={`background-agent-status ${agent.status}`}>
-                          {agent.status === "run" ? "running" : agent.status === "ok" ? "done" : agent.status === "stop" ? "stopped" : "failed"}
-                        </span>
-                      </Link>
-                    ) : (
-                      <button
-                        type="button"
-                        className="background-agent-main"
-                        onClick={() => showBackgroundSubAgent(agent.id)}
-                      >
-                        <span className={`background-agent-dot ${agent.status}`} aria-hidden="true" />
-                        <span className="background-agent-name">{agent.title}</span>
-                        <span className={`background-agent-status ${agent.status}`}>
-                          {agent.status === "run" ? "running" : agent.status === "ok" ? "done" : agent.status === "stop" ? "stopped" : "failed"}
-                        </span>
-                      </button>
-                    )}
-                    {agent.status === "run" && (
-                      <button
-                        type="button"
-                        className="background-agent-stop"
-                        disabled={agent.kind === "session" ? stoppingBackgroundRuns.has(agent.id) : stoppingBackgroundAgents.has(agent.id)}
-                        onClick={() => agent.kind === "session" ? stopBackgroundRun(agent.id) : stopBackgroundSubAgent(agent.id)}
-                        title={agent.kind === "session" ? "Stop background run" : "Stop background agent"}
-                        aria-label={`Stop background ${agent.kind === "session" ? "run" : "agent"} ${agent.title}`}
-                      >
-                        {(agent.kind === "session" ? stoppingBackgroundRuns.has(agent.id) : stoppingBackgroundAgents.has(agent.id)) ? "..." : "Stop"}
-                      </button>
-                    )}
-                    {agent.status !== "run" && (
-                      <button
-                        type="button"
-                        className="background-agent-dismiss"
-                        onClick={() => dismissBackgroundActivity(agent)}
-                        title="Dismiss background activity"
-                        aria-label={`Dismiss background ${agent.kind === "session" ? "run" : "agent"} ${agent.title}`}
-                      >
-                        &times;
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
 
           <div
             ref={setChatScrollElement}
@@ -2172,10 +2054,16 @@ export function ChatView({
           events={renderedEvents}
           width={inspectorWidth}
           onWidthChange={setInspectorWidth}
+          backgroundActivities={visibleBackgroundActivityRows}
+          isBackgroundActivityStopping={isBackgroundActivityStopping}
+          onInspectBackgroundAgent={showBackgroundSubAgent}
+          onStopBackgroundActivity={stopBackgroundActivity}
+          onDismissBackgroundActivity={dismissBackgroundActivity}
           referencedFiles={referencedFiles}
           fileOpenRequest={fileOpenRequest}
           onInsertIntoComposer={insertIntoComposer}
           onClose={() => setMobileInspectorOpen(false)}
+          requestedTab={inspectorTabRequest}
         />
       </div>
     </ToolSelectionProvider>

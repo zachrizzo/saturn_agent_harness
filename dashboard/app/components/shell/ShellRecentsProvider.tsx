@@ -11,9 +11,8 @@ import {
   useState,
 } from "react";
 import type { SessionMeta } from "@/lib/runs";
-import { toInboxSessions } from "@/lib/chat-inbox";
 import type { RecentChatItem } from "./Sidebar";
-import { SIDEBAR_RECENT_CHAT_LIMIT } from "./recent-chat-limit";
+import { sessionsToRecentChatItems } from "./recent-chat-items";
 
 const RECENTS_POLL_MS = 5000;
 
@@ -37,26 +36,9 @@ function sameRecents(a: RecentChatItem[], b: RecentChatItem[]): boolean {
       && item.projectPath === other.projectPath
       && item.isMultiCli === other.isMultiCli
       && item.isSwarm === other.isSwarm
+      && item.isRunning === other.isRunning
       && item.lastReplyAt === other.lastReplyAt;
   });
-}
-
-function sessionsToRecentItems(sessions: SessionMeta[]): RecentChatItem[] {
-  const active = sessions.filter(
-    (s) => !s.archived && ((s.turns ?? []).length > 0 || s.status === "running"),
-  );
-  return toInboxSessions(active).slice(0, SIDEBAR_RECENT_CHAT_LIMIT).map((s) => ({
-    id: s.id,
-    title: s.title,
-    agent: s.agent,
-    preview: s.preview,
-    relTime: s.relTime,
-    projectName: s.projectName,
-    projectPath: s.projectPath,
-    isMultiCli: s.multi,
-    isSwarm: s.isSwarm,
-    lastReplyAt: s.lastFinishedAt ?? null,
-  }));
 }
 
 export function ShellRecentsProvider({
@@ -107,7 +89,7 @@ export function ShellRecentsProvider({
         });
         if (!res.ok || cancelled) return;
         const { sessions } = await res.json() as { sessions: SessionMeta[] };
-        const items = sessionsToRecentItems(sessions);
+        const items = sessionsToRecentChatItems(sessions);
         if (!cancelled) {
           setRecents((current) => (sameRecents(current, items) ? current : items));
         }

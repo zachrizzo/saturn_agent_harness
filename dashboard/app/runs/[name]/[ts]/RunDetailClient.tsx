@@ -9,6 +9,7 @@ import type { StreamEvent, TokenBreakdown, ToolCallSummary } from "@/lib/events"
 import { toEvents, getTokenBreakdown, getToolCallSummary } from "@/lib/events";
 import { formatDuration, formatTimestamp, formatTokens } from "@/lib/format";
 import { Button, Card, Chip } from "@/app/components/ui";
+import { statusVariant } from "@/lib/job-helpers";
 
 type Props = {
   name: string;
@@ -29,14 +30,6 @@ type Props = {
   modelLabel: string | null;
   cliLabel: string;
 };
-
-type StatusVariant = "success" | "warn" | "fail" | "default";
-function statusVariant(status: string): StatusVariant {
-  if (status === "success") return "success";
-  if (status === "failed") return "fail";
-  if (status === "running") return "warn";
-  return "default";
-}
 
 const STREAM_EVENT_FLUSH_MS = 250;
 

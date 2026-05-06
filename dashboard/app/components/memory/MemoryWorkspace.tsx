@@ -1014,7 +1014,7 @@ export function MemoryWorkspace({ defaultCwd = null }: MemoryWorkspaceProps) {
   }
 
   return (
-    <div className="memory-workspace" data-mobile-mode={mobileMode}>
+    <div className="memory-workspace" data-mobile-mode={mobileMode} data-mode={mode}>
       <div className="memory-mobile-tabs" aria-label="Memory panes">
         <button type="button" className={mobileMode === "notes" ? "active" : ""} onClick={() => setMobileMode("notes")}>Notes</button>
         <button type="button" className={mobileMode === "note" ? "active" : ""} onClick={() => setMobileMode("note")}>Note</button>
@@ -1374,8 +1374,10 @@ function MemoryGraph({
   const panMovedRef = useRef(false);
 
   useEffect(() => {
-    setViewport(fitGraphViewport(world.width, world.height, width, height));
-  }, [graphKey, world.height, world.width]);
+    setViewport(selectedNode
+      ? centerGraphViewport(selectedNode.x, selectedNode.y, width, height, 1.35)
+      : fitGraphViewport(world.width, world.height, width, height));
+  }, [graphKey, selectedNode, world.height, world.width]);
 
   const visibleRect = useMemo(() => viewportRect(viewport, width, height), [viewport]);
   const focusPoint = selectedNode ?? {
@@ -1434,7 +1436,7 @@ function MemoryGraph({
       setViewport(fitGraphViewport(world.width, world.height, width, height));
       return;
     }
-    setViewport(centerGraphViewport(selectedNode.x, selectedNode.y, width, height, 1.15));
+    setViewport(centerGraphViewport(selectedNode.x, selectedNode.y, width, height, 1.35));
   }
 
   return (
@@ -1466,7 +1468,7 @@ function MemoryGraph({
           <button type="button" aria-label="Zoom in" onClick={() => setViewport((current) => ({ ...current, k: clamp(current.k * 1.18, 0.26, 2.2) }))}>
             +
           </button>
-          <span>{visibleNodes.length} / {nodes.length} visible</span>
+          <span>{visibleNodes.length} / {nodes.length} notes</span>
         </div>
         <svg
           ref={svgRef}
@@ -1538,6 +1540,7 @@ function MemoryGraph({
                 const isHovered = node.id === hoveredId;
                 const isNeighbor = selectedNeighborIds.has(node.id);
                 const showLabel = labelIds.has(node.id);
+                const labelFontSize = clamp(11 / viewport.k, 5.5, 12);
                 return (
                   <g
                     key={node.id}
@@ -1564,7 +1567,13 @@ function MemoryGraph({
                     <title>{node.title}</title>
                     <circle className={`memory-graph-node-${memoryTypeClass(node.type)}`} r={isSelected ? node.radius + 5 : node.radius} />
                     {showLabel && (
-                      <text y={node.radius + 15}>
+                      <text
+                        y={node.radius + 16 / viewport.k}
+                        style={{
+                          fontSize: `${labelFontSize}px`,
+                          fontWeight: isSelected || isHovered ? 680 : 560,
+                        }}
+                      >
                         {labelLines.map((line, index) => (
                           <tspan key={`${node.id}-label-${index}`} x={0} dy={index === 0 ? 0 : 13 / viewport.k}>
                             {line}
@@ -1896,8 +1905,8 @@ function foveatedLabelIds(
   zoom: number,
 ) {
   const selectedNeighbors = selectedId ? adjacency.get(selectedId) ?? new Set<string>() : new Set<string>();
-  const fovea = 150 / Math.max(0.6, zoom);
-  const limit = Math.max(10, Math.min(52, Math.round(18 + zoom * 22)));
+  const fovea = 118 / Math.max(0.65, zoom);
+  const limit = Math.max(7, Math.min(18, Math.round(8 + zoom * 4)));
   const ranked = visibleNodes
     .map((node) => {
       const distance = Math.hypot(node.x - focusPoint.x, node.y - focusPoint.y);

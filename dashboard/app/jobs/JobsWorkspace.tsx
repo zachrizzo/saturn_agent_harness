@@ -6,7 +6,16 @@ import { useMemo, useState, type ReactNode } from "react";
 import parser from "cron-parser";
 import type { Job, RunMeta, CLI } from "@/lib/runs";
 import { formatDuration, formatTokens, nextFireTime } from "@/lib/format";
-import { rateColorVar, statusVariant, successRate, relativeTime } from "@/lib/job-helpers";
+import {
+  jobHealthFor,
+  jobHealthLabel,
+  jobHealthVariant,
+  rateColorVar,
+  statusVariant,
+  successRate,
+  relativeTime,
+  type JobHealth,
+} from "@/lib/job-helpers";
 import { JobSettingsModal } from "@/app/components/JobSettingsModal";
 import { PlayButton } from "@/app/components/PlayButton";
 import { DeleteJobButton } from "@/app/components/DeleteJobButton";
@@ -23,7 +32,6 @@ type Props = {
 
 type Filter = "all" | "attention" | "running" | "idle";
 type Sort = "priority" | "recent" | "success" | "name";
-type Health = "running" | "attention" | "healthy" | "idle";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -39,28 +47,6 @@ function nextRunMs(cron: string): number {
   } catch {
     return Number.POSITIVE_INFINITY;
   }
-}
-
-function healthFor(runs: RunMeta[], rate: number): Health {
-  const latest = runs[0];
-  if (latest?.status === "running") return "running";
-  if (!runs.length) return "idle";
-  if (latest?.status === "failed" || rate < 80) return "attention";
-  return "healthy";
-}
-
-function healthLabel(health: Health): string {
-  if (health === "running") return "Running";
-  if (health === "attention") return "Needs attention";
-  if (health === "idle") return "No runs";
-  return "Healthy";
-}
-
-function healthVariant(health: Health): "success" | "warn" | "fail" | "default" {
-  if (health === "healthy") return "success";
-  if (health === "running") return "warn";
-  if (health === "attention") return "fail";
-  return "default";
 }
 
 export function JobsWorkspace({ jobs, runsByJob, allRuns }: Props): JSX.Element {
@@ -87,7 +73,7 @@ export function JobsWorkspace({ jobs, runsByJob, allRuns }: Props): JSX.Element 
         const runs = runsByJob[job.name] ?? [];
         const latest = runs[0];
         const rate = successRate(runs);
-        const health = healthFor(runs, rate);
+        const health = jobHealthFor(runs, rate);
         const haystack = `${job.name} ${job.description ?? ""} ${job.cron} ${job.cli ?? ""} ${job.model ?? ""}`.toLowerCase();
         return { job, runs, latest, rate, health, haystack };
       })
@@ -102,14 +88,14 @@ export function JobsWorkspace({ jobs, runsByJob, allRuns }: Props): JSX.Element 
         if (sort === "name") return a.job.name.localeCompare(b.job.name);
         if (sort === "success") return a.rate - b.rate;
         if (sort === "recent") return startMs(b.latest) - startMs(a.latest);
-        const order: Record<Health, number> = { attention: 0, running: 1, idle: 2, healthy: 3 };
+        const order: Record<JobHealth, number> = { attention: 0, running: 1, idle: 2, healthy: 3 };
         return order[a.health] - order[b.health] || startMs(b.latest) - startMs(a.latest);
       });
   }, [filter, jobs, query, runsByJob, sort]);
 
   const attentionCount = jobs.filter((job) => {
     const runs = runsByJob[job.name] ?? [];
-    return healthFor(runs, successRate(runs)) === "attention";
+    return jobHealthFor(runs, successRate(runs)) === "attention";
   }).length;
   const idleCount = jobs.filter((job) => (runsByJob[job.name] ?? []).length === 0).length;
 
@@ -275,7 +261,7 @@ type JobRowProps = {
   runs: RunMeta[];
   latest?: RunMeta;
   rate: number;
-  health: Health;
+  health: JobHealth;
 };
 
 function JobRow({ job, runs, latest, rate, health }: JobRowProps): JSX.Element {
@@ -299,8 +285,8 @@ function JobRow({ job, runs, latest, rate, health }: JobRowProps): JSX.Element {
       </div>
 
       <div className="jobs-row-health">
-        <Chip variant={healthVariant(health)} dot={health === "running"}>
-          {healthLabel(health)}
+        <Chip variant={jobHealthVariant(health)} dot={health === "running"}>
+          {jobHealthLabel(health)}
         </Chip>
         <span style={{ color: hasRuns ? rateColorVar(rate) : "var(--text-subtle)" }}>
           {hasRuns ? `${rate}% success` : "waiting for first run"}

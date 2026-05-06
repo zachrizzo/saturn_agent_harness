@@ -8,7 +8,7 @@ import { GeneratedOutputView } from "@/app/components/generated-ui/GeneratedOutp
 import { JobSettingsModal } from "@/app/components/JobSettingsModal";
 import { PlayButton } from "@/app/components/PlayButton";
 import { Button, Card, Chip } from "@/app/components/ui";
-import { statusVariant } from "@/lib/job-helpers";
+import { rateVariant, statusVariant, successRate as calculateSuccessRate } from "@/lib/job-helpers";
 import { toClaudeAlias } from "@/lib/claude-models";
 import { formatReasoningEffort } from "@/lib/models";
 import { CLI_LABELS, DEFAULT_CLI, normalizeCli } from "@/lib/clis";
@@ -53,7 +53,7 @@ export function JobDetailClient({ job, runs, nextFire, avgDuration, avgTokens }:
   const successCount = runs.filter((r) => r.status === "success").length;
   const failedCount = runs.filter((r) => r.status === "failed").length;
   const runningCount = runs.filter((r) => r.status === "running").length;
-  const successRate = runs.length > 0 ? (successCount / runs.length) * 100 : 0;
+  const successRate = calculateSuccessRate(runs);
 
   const last7Days = Date.now() - 7 * 24 * 60 * 60 * 1000;
   const runsLast7Days = runs.filter((r) => new Date(r.started_at).getTime() > last7Days).length;
@@ -94,13 +94,7 @@ export function JobDetailClient({ job, runs, nextFire, avgDuration, avgTokens }:
 
   const maxDuration = Math.max(...runs.map((run) => run.duration_ms ?? 0));
 
-  function getRateTone(): "success" | "warn" | "fail" | "default" {
-    if (runs.length === 0) return "default";
-    if (successRate >= 80) return "success";
-    if (successRate >= 50) return "warn";
-    return "fail";
-  }
-  const rateTone = getRateTone();
+  const rateTone = rateVariant(successRate, runs.length > 0);
 
   const modelDisplay = job.model ? (toClaudeAlias(job.model) ?? job.model) : "default";
   const effortDisplay = formatReasoningEffort(job.reasoningEffort);

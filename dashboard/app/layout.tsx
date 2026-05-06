@@ -6,12 +6,11 @@ import { GeistMono } from "geist/font/mono";
 import { ThemeProvider, themeScript } from "./components/ThemeProvider";
 import { LinkTargetPolicy } from "./components/LinkTargetPolicy";
 import { listSessions } from "@/lib/runs";
-import { toInboxSessions } from "@/lib/chat-inbox";
 import { Header } from "@/app/components/shell/Header";
 import { DesktopSidebar } from "@/app/components/shell/DesktopSidebar";
 import { ShellRecentsProvider } from "@/app/components/shell/ShellRecentsProvider";
 import type { RecentChatItem } from "@/app/components/shell/Sidebar";
-import { SIDEBAR_RECENT_CHAT_LIMIT } from "@/app/components/shell/recent-chat-limit";
+import { sessionsToRecentChatItems } from "@/app/components/shell/recent-chat-items";
 import { RouteContainer } from "./RouteContainer";
 
 export const metadata: Metadata = {
@@ -44,21 +43,7 @@ const uiPrefsScript = `
 
 async function getRecents(): Promise<RecentChatItem[]> {
   const sessions = await listSessions({ compactMeta: true });
-  const active = sessions.filter(
-    (s) => !s.archived && ((s.turns ?? []).length > 0 || s.status === "running"),
-  );
-  return toInboxSessions(active).slice(0, SIDEBAR_RECENT_CHAT_LIMIT).map((s) => ({
-    id: s.id,
-    title: s.title,
-    agent: s.agent,
-    preview: s.preview,
-    relTime: s.relTime,
-    projectName: s.projectName,
-    projectPath: s.projectPath,
-    isMultiCli: s.multi,
-    isSwarm: s.isSwarm,
-    lastReplyAt: s.lastFinishedAt ?? null,
-  }));
+  return sessionsToRecentChatItems(sessions);
 }
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {

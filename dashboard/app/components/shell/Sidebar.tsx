@@ -59,6 +59,8 @@ export type RecentChatItem = {
   isMultiCli?: boolean;
   /** Orchestrator/swarm sessions get a small badge in the recent list. */
   isSwarm?: boolean;
+  /** True while the session runner is still producing a turn. */
+  isRunning?: boolean;
   lastReplyAt?: string | null;
 };
 
@@ -542,11 +544,19 @@ export function Sidebar({
                               </span>
                               {r.isMultiCli && MultiCliIcon}
                             </div>
-                            <span className={[
-                              "shrink-0 text-[11px]",
-                              unread ? "text-accent font-medium" : "text-subtle",
-                            ].join(" ")}>
-                              {r.relTime}
+                            <span className="shrink-0 flex items-center gap-1.5">
+                              {r.isRunning && (
+                                <span className="recent-chat-running" title="In progress" aria-label="In progress">
+                                  <span aria-hidden="true" />
+                                  live
+                                </span>
+                              )}
+                              <span className={[
+                                "text-[11px]",
+                                unread ? "text-accent font-medium" : "text-subtle",
+                              ].join(" ")}>
+                                {r.relTime}
+                              </span>
                             </span>
                           </div>
                           {r.agent && r.agent !== "Ad-hoc" && (
