@@ -192,7 +192,6 @@ export function buildTurnChunks(
     const consumedSaturnSlices = new Set<EventSlice>();
     const leadingLegacySlices = buildLegacyCompatibilitySlices(events, 0, saturnSlices[0].start);
     let leadingLegacyCursor = 0;
-    const saturnCursor = { value: 0 };
     const result: TurnChunk[] = [];
 
     meta.turns.forEach((t, i) => {
@@ -206,9 +205,16 @@ export function buildTurnChunks(
         slice = leadingLegacySlices[leadingLegacyCursor++];
       } else if (i === meta.turns.length - 1 && meta.status === "running") {
         // Optimistic client turns briefly exist before the server snapshot with
-        // the new turn_id arrives. Only attach an open Saturn slice.
-        slice = nextUnclaimedSlice(saturnSlices, consumedSaturnSlices, saturnCursor, (candidate) => !candidate.hasResult);
-        if (slice) consumedSaturnSlices.add(slice);
+        // the new turn_id arrives. Only attach a new open Saturn slice that
+        // starts after the previous turn's slice; otherwise a partial or stale
+        // event snapshot can make the previous reply look like the new one.
+        const previousTurnId = i > 0 ? turnIdFromMetaTurn(meta.turns[i - 1]) : undefined;
+        const previousSlice = previousTurnId ? slicesByTurnId.get(previousTurnId) : undefined;
+        const openSlice = latestUnclaimedOpenSlice(saturnSlices, consumedSaturnSlices);
+        if (openSlice && (!previousTurnId || (previousSlice && openSlice.start > previousSlice.start))) {
+          slice = openSlice;
+          consumedSaturnSlices.add(slice);
+        }
       }
       if (shouldMaterializeTurn(i)) result.push(makeChunk(t, i, slice));
     });

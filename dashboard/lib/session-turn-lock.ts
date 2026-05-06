@@ -4,6 +4,11 @@ import { sessionsRoot } from "./paths";
 
 const TURN_LOCK_STALE_MS = 6 * 60 * 60 * 1000;
 
+type SessionTurnLockOptions = {
+  waitMs?: number;
+  retryDelayMs?: number;
+};
+
 function lockPath(sessionId: string): string {
   return path.join(sessionsRoot(), sessionId, "turn.lock");
 }
@@ -23,18 +28,28 @@ async function removeStaleLock(file: string): Promise<boolean> {
   }
 }
 
-export async function acquireSessionTurnLock(sessionId: string): Promise<
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function acquireSessionTurnLock(
+  sessionId: string,
+  options: SessionTurnLockOptions = {},
+): Promise<
   | { ok: true; release: () => Promise<void> }
   | { ok: false }
 > {
   const file = lockPath(sessionId);
+  const waitMs = Math.max(0, options.waitMs ?? 0);
+  const retryDelayMs = Math.max(25, options.retryDelayMs ?? 100);
+  const deadline = Date.now() + waitMs;
   const payload = JSON.stringify({
     session_id: sessionId,
     pid: process.pid,
     acquired_at: new Date().toISOString(),
   }, null, 2);
 
-  for (let attempt = 0; attempt < 2; attempt++) {
+  while (true) {
     try {
       const fd = await fs.open(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL);
       try {
@@ -48,10 +63,10 @@ export async function acquireSessionTurnLock(sessionId: string): Promise<
       };
     } catch (err) {
       if (!isEEXIST(err)) throw err;
-      if (attempt === 0 && await removeStaleLock(file)) continue;
-      return { ok: false };
+      if (await removeStaleLock(file)) continue;
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) return { ok: false };
+      await sleep(Math.min(retryDelayMs, remainingMs));
     }
   }
-
-  return { ok: false };
 }

@@ -127,8 +127,51 @@ function stripFileUrl(rawPath: string): string {
   }
 }
 
+function codexHomeDir(): string | null {
+  return process.env.CODEX_HOME ?? (process.env.HOME ? path.join(process.env.HOME, ".codex") : null);
+}
+
+function expandKnownPathPrefix(requested: string): string {
+  if (requested === "~" || requested.startsWith("~/")) {
+    return process.env.HOME ? path.join(process.env.HOME, requested.slice(2)) : requested;
+  }
+
+  const homePrefixes = ["$HOME/", "${HOME}/"];
+  for (const prefix of homePrefixes) {
+    if (requested.startsWith(prefix)) {
+      return process.env.HOME ? path.join(process.env.HOME, requested.slice(prefix.length)) : requested;
+    }
+  }
+
+  const codexHomePrefixes = ["$CODEX_HOME/", "${CODEX_HOME}/"];
+  for (const prefix of codexHomePrefixes) {
+    if (requested.startsWith(prefix)) {
+      const codexHome = codexHomeDir();
+      return codexHome ? path.join(codexHome, requested.slice(prefix.length)) : requested;
+    }
+  }
+
+  return requested;
+}
+
+function cleanRequestedPath(rawPath: string): string {
+  let requested = rawPath.trim();
+  if (requested.startsWith("<") && requested.endsWith(">")) {
+    requested = requested.slice(1, -1).trim();
+  }
+  requested = stripFileUrl(requested).trim();
+  if (/%[0-9a-f]{2}/i.test(requested)) {
+    try {
+      requested = decodeURIComponent(requested);
+    } catch {
+      // Keep the raw path when it is not valid URI-encoded text.
+    }
+  }
+  return expandKnownPathPrefix(requested);
+}
+
 function candidatePaths(rawPath: string, roots: string[]): string[] {
-  const requested = stripFileUrl(rawPath).trim();
+  const requested = cleanRequestedPath(rawPath);
   if (!requested) return [];
 
   const candidates = new Set<string>();
@@ -161,7 +204,7 @@ const MAX_SUFFIX_SEARCH_ENTRIES = 10_000;
 const MAX_SUFFIX_SEARCH_MS = 750;
 
 function searchableSuffix(rawPath: string): string | null {
-  const requested = stripFileUrl(rawPath).trim();
+  const requested = cleanRequestedPath(rawPath);
   if (!requested) return null;
   const suffix = requested.replace(/^[/\\]+/, "");
   if (!suffix || suffix === "." || suffix.split(/[\\/]+/).includes("..")) return null;
@@ -215,16 +258,45 @@ async function findBySuffix(roots: string[], rawPath: string): Promise<string | 
   return matches[0] ?? null;
 }
 
+async function generatedImageRoots(): Promise<string[]> {
+  const codexHome = codexHomeDir();
+  const roots = [
+    codexHome ? path.join(codexHome, "generated_images") : null,
+    process.env.HOME ? path.join(process.env.HOME, ".codex", "generated_images") : null,
+  ].filter((value): value is string => Boolean(value));
+  const realRoots = await Promise.all(
+    roots.map(async (root) => {
+      try {
+        return await fs.realpath(root);
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return Array.from(new Set(realRoots.filter((root): root is string => root !== null)));
+}
+
+function isGeneratedImageFile(filePath: string): boolean {
+  return IMAGE_EXTS.has(extOf(filePath)) && extOf(filePath) !== ".svg";
+}
+
 export async function resolveSessionFile(
   id: string,
   cwd: string | undefined,
   rawPath: string,
 ): Promise<string | null> {
   const roots = await allowedRoots(id, cwd);
+  const generatedRoots = await generatedImageRoots();
   for (const candidate of candidatePaths(rawPath, roots)) {
     const realCandidate = await existingRealpath(candidate);
     if (!realCandidate) continue;
     if (roots.some((root) => isWithinRoot(realCandidate, root))) return realCandidate;
+    if (
+      isGeneratedImageFile(realCandidate) &&
+      generatedRoots.some((root) => isWithinRoot(realCandidate, root))
+    ) {
+      return realCandidate;
+    }
   }
   return findBySuffix(roots, rawPath);
 }

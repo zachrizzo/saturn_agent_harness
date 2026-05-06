@@ -6788,6 +6788,38 @@ html[data-chat-inspector-collapsed="1"] .chat-shell .chat-scroll-bottom-button {
   background: var(--accent-soft);
 }
 
+.project-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 190px;
+  max-width: 280px;
+  height: 25px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  background: transparent;
+}
+.project-filter span {
+  color: var(--text-subtle);
+  flex: 0 0 auto;
+}
+.project-filter select {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.project-filter:hover {
+  border-color: var(--border-strong);
+}
+
 .chats-search {
   flex: 1;
   max-width: 380px;

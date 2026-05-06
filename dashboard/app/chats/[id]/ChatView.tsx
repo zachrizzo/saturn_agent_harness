@@ -56,7 +56,13 @@ type BedrockAuthPrompt = {
   checking: boolean;
 };
 
+type BackgroundRunSnapshotPayload = BackgroundRunSnapshot & {
+  session_id: string;
+};
+
 const STREAM_EVENT_FLUSH_MS = 250;
+const BACKGROUND_RUN_POLL_MS = 2500;
+const FULL_HISTORY_AUTO_HYDRATE_DELAY_MS = 900;
 const INITIAL_VISIBLE_TURNS = 4;
 const VISIBLE_TURN_INCREMENT = 8;
 const INSPECTOR_WIDTH_KEY = "saturn.inspectorWidth";
@@ -147,9 +153,34 @@ function markLocalRunningTurnAborted(meta: SessionMeta, now = new Date().toISOSt
 function mergeStreamSnapshots(
   currentEvents: StreamEvent[],
   incomingEvents: StreamEvent[],
+  options: { preserveCurrentOrder?: boolean } = {},
 ): { events: StreamEvent[]; keys: Set<string> } {
   const keys = new Set<string>();
   const merged: StreamEvent[] = [];
+
+  if (options.preserveCurrentOrder) {
+    const incomingByKey = new Map<string, StreamEvent>();
+    for (const event of incomingEvents) {
+      incomingByKey.set(streamEventKey(event), event);
+    }
+
+    for (const event of currentEvents) {
+      const key = streamEventKey(event);
+      if (keys.has(key)) continue;
+      keys.add(key);
+      merged.push(incomingByKey.get(key) ?? event);
+      incomingByKey.delete(key);
+    }
+
+    for (const event of incomingEvents) {
+      const key = streamEventKey(event);
+      if (keys.has(key)) continue;
+      keys.add(key);
+      merged.push(event);
+    }
+
+    return { events: merged, keys };
+  }
 
   for (const event of incomingEvents) {
     const key = streamEventKey(event);
@@ -424,6 +455,20 @@ export function ChatView({
   // Tool selection — drives Inspector content.
   const [activeToolId, setActiveToolId] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (!pendingMessage || !meta.turns.some(turnIdFromMetaTurn)) return;
+    const clearPendingMessageParam = () => {
+      const url = new URL(window.location.href);
+      if (!url.searchParams.has("m")) return;
+      url.searchParams.delete("m");
+      const next = `${url.pathname}${url.search}${url.hash}`;
+      window.history.replaceState(window.history.state, "", next);
+    };
+    clearPendingMessageParam();
+    const timer = window.setTimeout(clearPendingMessageParam, 0);
+    return () => window.clearTimeout(timer);
+  }, [meta.turns, pendingMessage]);
+
   const clearTerminalRefreshTimer = useCallback(() => {
     if (terminalRefreshTimerRef.current === null) return;
     window.clearTimeout(terminalRefreshTimerRef.current);
@@ -587,7 +632,7 @@ export function ChatView({
           metaRef.current.status === "running" ||
           sseActiveRef.current;
         const next = preserveClientOnlyEvents
-          ? mergeStreamSnapshots(prev, incomingEvents)
+          ? mergeStreamSnapshots(prev, incomingEvents, { preserveCurrentOrder: true })
           : mergeStreamSnapshots([], incomingEvents);
 
         if (next.events.length === prev.length) {
@@ -683,30 +728,66 @@ export function ChatView({
       return;
     }
 
+    const sessionIds = Array.from(new Set(backgroundRuns.map((run) => run.session_id).filter(Boolean)));
     let cancelled = false;
+    let pollTimer: number | null = null;
+    let controller: AbortController | null = null;
+
+    const clearPollTimer = () => {
+      if (pollTimer === null) return;
+      window.clearTimeout(pollTimer);
+      pollTimer = null;
+    };
+
+    const schedulePoll = () => {
+      clearPollTimer();
+      pollTimer = window.setTimeout(() => { void load(); }, BACKGROUND_RUN_POLL_MS);
+    };
+
     const load = async () => {
-      const snapshots = await Promise.all(backgroundRuns.map(async (run) => {
-        const res = await fetch(`/api/sessions/${encodeURIComponent(run.session_id)}?events=recent&compact=1&meta=full`, {
+      controller?.abort();
+      const currentController = new AbortController();
+      controller = currentController;
+      const params = new URLSearchParams({ summary: "background" });
+      for (const id of sessionIds) params.append("id", id);
+
+      try {
+        const res = await fetch(`/api/sessions/bulk?${params.toString()}`, {
           cache: "no-store",
-        }).catch(() => null);
-        if (!res?.ok) return null;
-        const data = await res.json().catch(() => null) as { meta?: SessionMeta } | null;
-        if (!data?.meta) return null;
-        return [run.session_id, {
-          status: data.meta.status,
-          finished_at: data.meta.finished_at,
-          latestTurnStatus: data.meta.turns.at(-1)?.status,
-        }] as const;
-      }));
-      if (cancelled || !mountedRef.current) return;
-      setBackgroundRunSnapshots(Object.fromEntries(snapshots.filter(Boolean) as Array<readonly [string, BackgroundRunSnapshot]>));
+          signal: currentController.signal,
+        });
+        if (!res.ok) throw new Error("background snapshot read failed");
+        const data = await res.json().catch(() => null) as { sessions?: BackgroundRunSnapshotPayload[] } | null;
+        if (cancelled || !mountedRef.current) return;
+
+        const snapshots = Object.fromEntries(
+          (data?.sessions ?? []).map((snapshot) => [
+            snapshot.session_id,
+            {
+              status: snapshot.status,
+              finished_at: snapshot.finished_at,
+              latestTurnStatus: snapshot.latestTurnStatus,
+            },
+          ]),
+        ) as Record<string, BackgroundRunSnapshot>;
+        setBackgroundRunSnapshots(snapshots);
+
+        const hasRunningBackgroundRun = Object.values(snapshots).some((snapshot) => (
+          backgroundRunStatus(snapshot.status, snapshot.latestTurnStatus) === "run"
+        ));
+        if (!cancelled && hasRunningBackgroundRun) schedulePoll();
+      } catch {
+        if (!cancelled && !currentController.signal.aborted) schedulePoll();
+      } finally {
+        if (controller === currentController) controller = null;
+      }
     };
 
     void load();
-    const interval = window.setInterval(() => { void load(); }, 2500);
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
+      clearPollTimer();
+      controller?.abort();
     };
   }, [meta.background_runs]);
 
@@ -852,6 +933,7 @@ export function ChatView({
     return buildTurnChunks(meta, renderedEvents, { startTurnIndex: hiddenTurnCount });
   }, [renderedEvents, meta.turns, meta.status, hiddenTurnCount]);
   const foregroundStreaming = visibleChunks.some((chunk) => chunk.streaming);
+  const sessionBusy = meta.status === "running" || streaming || foregroundStreaming;
   const historyGateLabel = historyLoading
     ? "Loading..."
     : visibleEventsPartial
@@ -876,12 +958,13 @@ export function ChatView({
   }, [sessionId, turnCount, pendingMessage]);
 
   useEffect(() => {
-    if (!visibleEventsPartial || meta.status === "running" || foregroundStreaming) return;
+    if (!visibleEventsPartial || sessionBusy) return;
     const hydrationKey = `${sessionId}:${meta.turns.length}`;
     if (autoHydrateFullDetailsRef.current === hydrationKey) return;
     autoHydrateFullDetailsRef.current = hydrationKey;
 
     let cancelled = false;
+    let controller: AbortController | null = null;
     const timer = window.setTimeout(() => {
       const generation = snapshotGenerationRef.current;
       const shouldPinBottom = atBottomRef.current;
@@ -895,6 +978,7 @@ export function ChatView({
 
       setHistoryLoading(true);
       void (async () => {
+        controller = new AbortController();
         try {
           const params = new URLSearchParams({
             events: "all",
@@ -903,6 +987,7 @@ export function ChatView({
           });
           const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}?${params.toString()}`, {
             cache: "no-store",
+            signal: controller.signal,
           });
           if (!res.ok) return;
           const data = await res.json() as {
@@ -924,16 +1009,18 @@ export function ChatView({
         } catch {
           preserveScrollRef.current = null;
         } finally {
+          controller = null;
           if (mountedRef.current) setHistoryLoading(false);
         }
       })();
-    }, 160);
+    }, FULL_HISTORY_AUTO_HYDRATE_DELAY_MS);
 
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
+      controller?.abort();
     };
-  }, [applySessionSnapshot, foregroundStreaming, getChatScrollElement, meta.status, meta.turns.length, scrollToEnd, sessionId, visibleEventsPartial]);
+  }, [applySessionSnapshot, getChatScrollElement, meta.turns.length, scrollToEnd, sessionBusy, sessionId, visibleEventsPartial]);
 
   const loadEarlierTurns = useCallback(async () => {
     if (historyLoading) return;
@@ -1598,6 +1685,16 @@ export function ChatView({
       ],
     }));
     setStreaming(true);
+    setAutoScroll(true);
+    setAtBottom(true);
+    atBottomRef.current = true;
+    window.requestAnimationFrame(() => {
+      if (!mountedRef.current) return;
+      scrollToEnd("auto");
+      window.requestAnimationFrame(() => {
+        if (mountedRef.current) scrollToEnd("auto");
+      });
+    });
 
     try {
       const res = await fetch(
@@ -1646,7 +1743,7 @@ export function ChatView({
     } finally {
       finishExclusiveAction(seq, controller);
     }
-  }, [beginExclusiveAction, beginMutation, finishExclusiveAction, isCurrentAction, refreshSessionSnapshot, sessionId, showApiFailure]);
+  }, [beginExclusiveAction, beginMutation, finishExclusiveAction, isCurrentAction, refreshSessionSnapshot, scrollToEnd, sessionId, showApiFailure]);
 
   const approvePlan = () => {
     void sendMessage(
@@ -1773,12 +1870,12 @@ export function ChatView({
                   <span className="mono truncate">{toClaudeAlias(currentModel) ?? currentModel}</span>
                 </Chip>
               )}
-              {foregroundStreaming && (
+              {sessionBusy && (
                 <Chip variant="warn" dot>
                   live
                 </Chip>
               )}
-              {awaitingPlanApproval && !foregroundStreaming && (
+              {awaitingPlanApproval && !sessionBusy && (
                 <Chip variant="accent" dot>
                   plan ready
                 </Chip>
@@ -1795,7 +1892,7 @@ export function ChatView({
               <Button
                 size="sm"
                 variant="ghost"
-                disabled={foregroundStreaming}
+                disabled={sessionBusy}
                 title="Fork this conversation into a new session"
                 onClick={() => {
                   const message = window.prompt(
@@ -1885,8 +1982,8 @@ export function ChatView({
                       sessionId={sessionId}
                       turnIndex={chunk.turnIndex}
                       editing={editingTurnIndex === chunk.turnIndex}
-                      onFork={!foregroundStreaming && !chunk.streaming ? doFork : undefined}
-                      onEdit={!foregroundStreaming && !chunk.streaming ? editFromMessage : undefined}
+                      onFork={!sessionBusy && !chunk.streaming ? doFork : undefined}
+                      onEdit={!sessionBusy && !chunk.streaming ? editFromMessage : undefined}
                     />
                   )}
                   <MessageBubble
@@ -1976,7 +2073,7 @@ export function ChatView({
                 </div>
               </div>
             )}
-            {awaitingPlanApproval && !foregroundStreaming && editingTurnIndex === null && (
+            {awaitingPlanApproval && !sessionBusy && editingTurnIndex === null && (
               <div className="plan-approval-banner">
                 <div className="plan-approval-copy">
                   <div className="plan-approval-title">Plan ready</div>
@@ -2024,7 +2121,7 @@ export function ChatView({
               currentReasoningEffort={currentReasoningEffort}
               agentCliModels={agentCliModels}
               agentCliReasoningEfforts={agentCliReasoningEfforts}
-              disabled={foregroundStreaming}
+              disabled={sessionBusy}
               onSend={editingTurnIndex !== null
                 ? (message, cli, model, mcpTools, reasoningEffort) => {
                     const atTurn = editingTurnIndex;

@@ -345,8 +345,24 @@ const FILE_REF_EXTENSIONS = [
 ];
 const FILE_REF_EXTENSION_PATTERN = FILE_REF_EXTENSIONS.join("|");
 
+function stripMarkdownDestinationBrackets(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.startsWith("<") && trimmed.endsWith(">") ? trimmed.slice(1, -1).trim() : trimmed;
+}
+
+function decodeLocalPathRef(value: string): string {
+  if (/^(https?:|mailto:|tel:|#|data:|blob:|\/api\/)/i.test(value)) return value;
+  if (!/%[0-9a-f]{2}/i.test(value)) return value;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 function normalizeFileRef(value: string): string {
-  return value.trim().replace(/^<|>$/g, "").replace(/[),.;:]+$/g, "");
+  const cleaned = stripMarkdownDestinationBrackets(value).replace(/[),.;:]+$/g, "");
+  return decodeLocalPathRef(cleaned);
 }
 
 function isExternalHref(value: string): boolean {
@@ -387,21 +403,23 @@ function isExternalMediaSrc(src: string): boolean {
 }
 
 function chatMediaSrc(src: string, sessionId?: string): string {
-  if (!sessionId || isExternalMediaSrc(src)) return src;
-  return `/api/sessions/${encodeURIComponent(sessionId)}/files?path=${encodeURIComponent(src)}`;
+  const cleaned = normalizeMediaRef(src);
+  if (!sessionId || isExternalMediaSrc(cleaned)) return cleaned;
+  return `/api/sessions/${encodeURIComponent(sessionId)}/files?path=${encodeURIComponent(cleaned)}`;
 }
 
 function markdownImageSources(text: string): Set<string> {
   const found = new Set<string>();
-  const pattern = /!\[[^\]]*]\(([^)\s]+)(?:\s+["'][^)]*["'])?\)/g;
+  const pattern = /!\[[^\]]*]\((<[^>\r\n]+>|[^)\s]+)(?:\s+["'][^)]*["'])?\)/g;
   for (const match of text.matchAll(pattern)) {
-    found.add(match[1]);
+    found.add(normalizeMediaRef(match[1]));
   }
   return found;
 }
 
 function normalizeMediaRef(src: string): string {
-  return src.trim().replace(/[),.;:]+$/g, "");
+  const cleaned = stripMarkdownDestinationBrackets(src).replace(/[),.;:]+$/g, "");
+  return decodeLocalPathRef(cleaned);
 }
 
 function looksLikeMediaRef(value: string): boolean {
@@ -497,9 +515,10 @@ function mediaKind(src: string): "image" | "video" | "audio" {
 }
 
 function MediaPreview({ src, alt, sessionId }: { src: string; alt?: string; sessionId?: string }) {
-  if (!isRenderableMediaRef(src)) return null;
-  const resolvedSrc = chatMediaSrc(src, sessionId);
-  const kind = mediaKind(src);
+  const cleaned = normalizeMediaRef(src);
+  if (!isRenderableMediaRef(cleaned)) return null;
+  const resolvedSrc = chatMediaSrc(cleaned, sessionId);
+  const kind = mediaKind(cleaned);
   if (kind === "video") {
     return (
       <video

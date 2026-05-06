@@ -72,7 +72,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (meta.status === "running") {
     return NextResponse.json({ error: "previous turn still running" }, { status: 409 });
   }
-  const lock = await acquireSessionTurnLock(id);
+  const lock = await acquireSessionTurnLock(id, { waitMs: 10_000, retryDelayMs: 150 });
   if (!lock.ok) {
     return NextResponse.json({ error: "previous turn still running" }, { status: 409 });
   }

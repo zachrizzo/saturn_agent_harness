@@ -27,6 +27,14 @@ type Props = {
 
 type CliFilter = CLI | "all";
 type ArchiveFilter = "active" | "archived";
+type ProjectFilter = "all" | "__no_project__" | string;
+
+type ProjectOption = {
+  key: ProjectFilter;
+  label: string;
+  path: string | null;
+  count: number;
+};
 
 const ACTIVE_FOLDER_ORDER: FolderKey[] = [
   "needs-reply",
@@ -45,16 +53,55 @@ async function bulkPatch(ids: string[], patch: Record<string, unknown>) {
   });
 }
 
+function formatProjectLabel(name: string | null, path: string | null): string {
+  const raw = name || path?.split("/").filter(Boolean).at(-1) || "No project";
+  return raw.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function projectKey(session: InboxSession): ProjectFilter {
+  return session.projectPath || "__no_project__";
+}
+
+function projectMatches(session: InboxSession, selectedProject: ProjectFilter): boolean {
+  if (selectedProject === "all") return true;
+  if (selectedProject === "__no_project__") return !session.projectPath;
+  return session.projectPath === selectedProject;
+}
+
 export function ChatsInbox({ initialSessions, counts }: Props) {
   const router = useRouter();
   const [archiveFilter, setArchiveFilter] = useState<ArchiveFilter>("active");
   const [folder, setFolder] = useState<FolderKey>("all");
   const [query, setQuery] = useState("");
   const [cli, setCli] = useState<CliFilter>("all");
+  const [project, setProject] = useState<ProjectFilter>("all");
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [openingId, setOpeningId] = useState<string | null>(null);
+
+  const projectOptions = useMemo<ProjectOption[]>(() => {
+    const projects = new Map<ProjectFilter, ProjectOption>();
+    for (const session of initialSessions) {
+      const key = projectKey(session);
+      const current = projects.get(key);
+      if (current) {
+        current.count += 1;
+        continue;
+      }
+      projects.set(key, {
+        key,
+        label: formatProjectLabel(session.projectName, session.projectPath),
+        path: session.projectPath,
+        count: 1,
+      });
+    }
+    return Array.from(projects.values()).sort((a, b) => {
+      if (a.key === "__no_project__") return 1;
+      if (b.key === "__no_project__") return -1;
+      return a.label.localeCompare(b.label) || (a.path ?? "").localeCompare(b.path ?? "");
+    });
+  }, [initialSessions]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -69,13 +116,17 @@ export function ChatsInbox({ initialSessions, counts }: Props) {
         if (s.cli === "mixed" || s.cli === "unknown") return false;
         if (normalizeCli(s.cli) !== cli) return false;
       }
+      if (!projectMatches(s, project)) return false;
       if (!q) return true;
       return (
         s.agent.toLowerCase().includes(q) ||
-        s.preview.toLowerCase().includes(q)
+        s.preview.toLowerCase().includes(q) ||
+        s.title.toLowerCase().includes(q) ||
+        (s.projectName ?? "").toLowerCase().includes(q) ||
+        (s.projectPath ?? "").toLowerCase().includes(q)
       );
     });
-  }, [initialSessions, archiveFilter, folder, cli, query, unreadOnly]);
+  }, [initialSessions, archiveFilter, folder, cli, project, query, unreadOnly]);
 
   const buckets = useMemo(() => bucketInboxSessions(filtered), [filtered]);
 
@@ -121,9 +172,9 @@ export function ChatsInbox({ initialSessions, counts }: Props) {
   const emptyBody =
     archiveFilter === "archived"
       ? counts.archived > 0
-        ? "Try clearing search, CLI, or unread filters."
+        ? "Try clearing search, project, CLI, or unread filters."
         : "Archived chats will show up here after you archive them."
-      : "Try a different folder or clear the filters.";
+      : "Try a different folder, project, or clear the filters.";
 
   const filterChips: Array<{ label: string; value: CliFilter }> = [
     { label: "All CLIs", value: "all" },
@@ -181,6 +232,23 @@ export function ChatsInbox({ initialSessions, counts }: Props) {
             </div>
           )}
           <div className="filters">
+            <label className="project-filter" title={project === "all" ? "All projects" : project}>
+              <span>Project</span>
+              <select
+                value={project}
+                onChange={(event) => {
+                  setProject(event.target.value as ProjectFilter);
+                  clearSelection();
+                }}
+              >
+                <option value="all">All projects ({initialSessions.length})</option>
+                {projectOptions.map((option) => (
+                  <option key={option.key} value={option.key}>
+                    {option.label} ({option.count})
+                  </option>
+                ))}
+              </select>
+            </label>
             {filterChips.map((f) => (
               <button
                 key={f.value}
