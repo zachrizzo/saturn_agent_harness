@@ -6,7 +6,7 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 type DailyRow = { date: string } & Record<string, number>;
 
 /**
- * Bucket token usage by UTC date (YYYY-MM-DD), emitting one entry per day for
+ * Bucket token usage by local date (YYYY-MM-DD), emitting one entry per day for
  * the last `days` days. Each entry has a `date` key plus one numeric key per
  * source (scheduled job names plus aggregate sources like Chats).
  */
@@ -22,11 +22,15 @@ export function dailyTokenSeries(
   ).sort();
 
   const now = new Date();
-  const todayUtcMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const todayLocal = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
   const byDate = new Map<string, Record<string, number>>();
   for (let i = days - 1; i >= 0; i--) {
-    const key = isoDate(new Date(todayUtcMs - i * MS_PER_DAY));
+    const key = localDateKey(new Date(
+      todayLocal.getFullYear(),
+      todayLocal.getMonth(),
+      todayLocal.getDate() - i,
+    ));
     const row: Record<string, number> = {};
     for (const source of sources) row[source] = 0;
     byDate.set(key, row);
@@ -36,7 +40,7 @@ export function dailyTokenSeries(
     if (!r.started_at) continue;
     const d = new Date(r.started_at);
     if (Number.isNaN(d.getTime())) continue;
-    const row = byDate.get(isoDate(d));
+    const row = byDate.get(localDateKey(d));
     if (!row) continue;
     row[r.name] = (row[r.name] ?? 0) + (r.total_tokens ?? 0);
   }
@@ -47,8 +51,11 @@ export function dailyTokenSeries(
   return { data, sources };
 }
 
-function isoDate(d: Date): string {
-  return d.toISOString().slice(0, 10);
+function localDateKey(d: Date): string {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 /**

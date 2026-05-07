@@ -945,45 +945,103 @@ function sumResultTokens(events: StreamEvent[]): number {
   return events.reduce((total, ev) => total + (ev.kind === "result" ? ev.totalTokens : 0), 0);
 }
 
-async function countSessionVisibleTokens(meta: SessionMeta): Promise<number> {
-  const counts = await Promise.all(
-    meta.turns.map(async (turn) => {
+function sessionTokenSourceName(meta: SessionMeta): string {
+  return meta.agent_id ? (meta.agent_snapshot?.name?.trim() || meta.agent_id) : "Chats";
+}
+
+function sameInheritedTurn(a: TurnRecord | undefined, b: TurnRecord | undefined): boolean {
+  if (!a || !b) return false;
+  if (a.turn_id && b.turn_id) return a.turn_id === b.turn_id;
+  return a.cli === b.cli &&
+    a.user_message === b.user_message &&
+    (a.final_text ?? "") === (b.final_text ?? "");
+}
+
+async function inheritedTurnCount(meta: SessionMeta): Promise<number> {
+  const fork = meta.forked_from;
+  if (!fork || fork.at_turn <= 0 || meta.turns.length === 0) return 0;
+
+  const parent = await getSessionMeta(fork.session_id).catch(() => null);
+  if (!parent) return 0;
+
+  const max = Math.min(fork.at_turn, meta.turns.length, parent.turns.length);
+  let count = 0;
+  for (let i = 0; i < max; i++) {
+    if (!sameInheritedTurn(meta.turns[i], parent.turns[i])) break;
+    count++;
+  }
+  return count;
+}
+
+async function countSessionVisibleTokenSummaries(
+  meta: SessionMeta,
+  startTurnIndex: number,
+): Promise<SessionTokenSummary[]> {
+  const name = sessionTokenSourceName(meta);
+  const summaries = await Promise.all(
+    meta.turns.slice(startTurnIndex).map(async (turn) => {
       const count = await countTextTokensForCli({
         cli: turn.cli,
         model: turn.model,
         text: [turn.user_message, turn.final_text].filter(Boolean).join("\n\n"),
       });
-      return count?.total_tokens ?? 0;
+      return {
+        session_id: meta.session_id,
+        name,
+        started_at: turn.started_at ?? meta.started_at,
+        finished_at: turn.finished_at ?? meta.finished_at,
+        status: meta.status,
+        total_tokens: count?.total_tokens ?? 0,
+      };
     }),
   );
 
-  return counts.reduce((total, n) => total + n, 0);
+  return summaries.filter((summary) => (summary.total_tokens ?? 0) > 0);
+}
+
+function sessionStreamTokenSummaries(
+  meta: SessionMeta,
+  streamRaw: string,
+  startTurnIndex: number,
+): SessionTokenSummary[] {
+  const name = sessionTokenSourceName(meta);
+  const resultEvents = parseStreamJsonl(streamRaw)
+    .filter((ev) => ev.kind === "result")
+    .slice(startTurnIndex);
+  if (resultEvents.length === 0) return [];
+
+  return resultEvents
+    .map((event, index) => {
+      const turn = meta.turns[startTurnIndex + index];
+      return {
+        session_id: meta.session_id,
+        name,
+        started_at: turn?.started_at ?? meta.started_at,
+        finished_at: turn?.finished_at ?? meta.finished_at,
+        status: meta.status,
+        total_tokens: event.totalTokens,
+      };
+    })
+    .filter((summary) => (summary.total_tokens ?? 0) > 0);
 }
 
 export async function listSessionTokenSummaries(): Promise<SessionTokenSummary[]> {
   const sessions = await listSessions();
 
-  const summaries = await Promise.all(
+  const summariesBySession = await Promise.all(
     sessions.map(async (meta) => {
       const streamRaw = await fs
         .readFile(path.join(sessionDir(meta.session_id), "stream.jsonl"), "utf8")
         .catch(() => "");
-      const streamTokens = sumResultTokens(parseStreamJsonl(streamRaw));
-      const countedTokens = streamTokens > 0 ? 0 : await countSessionVisibleTokens(meta);
-      const total_tokens = streamTokens > 0 ? streamTokens : countedTokens;
-
-      return {
-        session_id: meta.session_id,
-        name: "Chats",
-        started_at: meta.started_at,
-        finished_at: meta.finished_at,
-        status: meta.status,
-        total_tokens,
-      };
+      const startTurnIndex = await inheritedTurnCount(meta);
+      const streamSummaries = sessionStreamTokenSummaries(meta, streamRaw, startTurnIndex);
+      return streamSummaries.length > 0
+        ? streamSummaries
+        : countSessionVisibleTokenSummaries(meta, startTurnIndex);
     }),
   );
 
-  return summaries.filter((s) => (s.total_tokens ?? 0) > 0);
+  return summariesBySession.flat().filter((s) => (s.total_tokens ?? 0) > 0);
 }
 
 export async function getSession(

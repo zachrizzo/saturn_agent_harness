@@ -1,10 +1,10 @@
 "use client";
 
 import {
-  Area,
-  AreaChart,
   CartesianGrid,
   Legend,
+  Line,
+  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -40,6 +40,10 @@ function formatDate(s: string): string {
   return `${s.slice(5, 7)}/${s.slice(8, 10)}`;
 }
 
+function sourceTotal(data: Props["data"], source: string): number {
+  return data.reduce((total, row) => total + (Number(row[source]) || 0), 0);
+}
+
 export function TokensChart({ data, sources }: Props) {
   if (sources.length === 0) {
     return (
@@ -49,18 +53,12 @@ export function TokensChart({ data, sources }: Props) {
     );
   }
 
+  const rankedSources = [...sources].sort((a, b) => sourceTotal(data, b) - sourceTotal(data, a));
+
   return (
     <div className="rounded-lg border border-border bg-bg-elev p-4">
       <ResponsiveContainer width="100%" height={240}>
-        <AreaChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-          <defs>
-            {sources.map((source, i) => (
-              <linearGradient key={source} id={`fill-${i}`} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={PALETTE[i % PALETTE.length]} stopOpacity={0.4} />
-                <stop offset="100%" stopColor={PALETTE[i % PALETTE.length]} stopOpacity={0.02} />
-              </linearGradient>
-            ))}
-          </defs>
+        <LineChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
           <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
           <XAxis
             dataKey="date"
@@ -93,19 +91,51 @@ export function TokensChart({ data, sources }: Props) {
             wrapperStyle={{ fontSize: 11, color: "var(--text-muted)" }}
             iconType="circle"
           />
-          {sources.map((source, i) => (
-            <Area
+          {rankedSources.map((source, i) => (
+            <Line
               key={source}
               type="monotone"
               dataKey={source}
-              stackId="1"
               stroke={PALETTE[i % PALETTE.length]}
-              strokeWidth={1.5}
-              fill={`url(#fill-${i})`}
+              strokeWidth={1.8}
+              dot={false}
+              activeDot={{ r: 3 }}
             />
           ))}
-        </AreaChart>
+        </LineChart>
       </ResponsiveContainer>
+      <div className="mt-4 grid gap-x-5 gap-y-2 border-t border-border pt-3 sm:grid-cols-2 xl:grid-cols-3">
+        {rankedSources.map((source, i) => (
+          <div key={source} className="min-w-0">
+            <div className="mb-1 flex items-center justify-between gap-3">
+              <div className="flex min-w-0 items-center gap-2">
+                <span
+                  className="h-2.5 w-2.5 shrink-0 rounded-full"
+                  style={{ background: PALETTE[i % PALETTE.length] }}
+                />
+                <span className="truncate text-[12px] font-medium text-fg">{source}</span>
+              </div>
+              <span className="shrink-0 text-[11px] tabular-nums text-muted">
+                {formatTick(sourceTotal(data, source))}
+              </span>
+            </div>
+            <ResponsiveContainer width="100%" height={36}>
+              <LineChart data={data} margin={{ top: 3, right: 2, left: 2, bottom: 3 }}>
+                <XAxis dataKey="date" hide />
+                <YAxis hide domain={[0, "dataMax"]} />
+                <Line
+                  type="monotone"
+                  dataKey={source}
+                  stroke={PALETTE[i % PALETTE.length]}
+                  strokeWidth={1.6}
+                  dot={false}
+                  isAnimationActive={false}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

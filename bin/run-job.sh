@@ -183,14 +183,14 @@ if [[ "$CLI" == "codex" ]]; then
     end
   ' "$RUN_DIR/stream.jsonl" 2>/dev/null > "$RUN_DIR/final.md" || true
   NUM_TURNS="$(jq -rs '[.[] | select(.type == "turn.started")] | length' "$RUN_DIR/stream.jsonl" 2>/dev/null || echo 0)"
-  # Codex token extraction from turn.completed usage
+  # Codex token extraction from turn.completed usage. cached_input_tokens is
+  # the cached portion of input_tokens, so do not count it twice.
   RESULT_JSON="$(jq -c 'select(.type == "turn.completed") | .' "$RUN_DIR/stream.jsonl" 2>/dev/null | tail -n 1 || true)"
   if [[ -n "$RESULT_JSON" ]]; then
     TOTAL_TOKENS="$(jq -r '
       .usage // {} |
-      (.input_tokens // 0) +
+      ((.input_tokens // 0) - (.cached_input_tokens // 0) | if . > 0 then . else 0 end) +
       (.output_tokens // 0) +
-      (.cached_input_tokens // 0) +
       (.reasoning_output_tokens // 0)
     ' <<<"$RESULT_JSON" 2>/dev/null || echo 0)"
   fi
@@ -209,19 +209,31 @@ else
   RESULT_TEXT=""
   if [[ -n "$RESULT_JSON" ]]; then
     # Canonical token extraction — mirrors tokenBreakdownFromRaw() in lib/events.ts.
-    # Handles: Claude (cache_creation_input_tokens may be object or number,
-    #          cache_read_input_tokens), Codex (cached_input_tokens,
-    #          reasoning_output_tokens), plus reasoning for all.
+    # Prefer modelUsage when present because it includes delegated/subagent model
+    # calls. Fall back to provider usage fields for older streams.
     TOTAL_TOKENS="$(jq -r '
-      .usage // {} |
-      (.input_tokens // 0) +
-      (.output_tokens // 0) +
-      (if (.cache_creation_input_tokens | type) == "number"
-        then .cache_creation_input_tokens
-        else (.cache_creation_input_tokens // {} | to_entries | map(.value | numbers) | add // 0)
-        end) +
-      (.cache_read_input_tokens // .cached_input_tokens // 0) +
-      (.reasoning_output_tokens // 0)
+      def model_usage_total:
+        (.modelUsage // {})
+        | to_entries
+        | map(
+            (.value.inputTokens // 0) +
+            (.value.outputTokens // 0) +
+            (.value.cacheCreationInputTokens // 0) +
+            (.value.cacheReadInputTokens // 0)
+          )
+        | add // 0;
+      def usage_total:
+        .usage // {} |
+        (.input_tokens // 0) +
+        (.output_tokens // 0) +
+        (if (.cache_creation_input_tokens | type) == "number"
+          then .cache_creation_input_tokens
+          else (.cache_creation_input_tokens // {} | to_entries | map(.value | numbers) | add // 0)
+          end) +
+        (.cache_read_input_tokens // .cached_input_tokens // 0) +
+        (.reasoning_output_tokens // 0);
+      (model_usage_total) as $model_total |
+      if $model_total > 0 then $model_total else usage_total end
     ' <<<"$RESULT_JSON" 2>/dev/null || echo 0)"
     NUM_TURNS="$(jq -r '.num_turns // 0' <<<"$RESULT_JSON" 2>/dev/null || echo 0)"
     RESULT_TEXT="$(jq -r '.result // ""' <<<"$RESULT_JSON" 2>/dev/null || echo "")"
