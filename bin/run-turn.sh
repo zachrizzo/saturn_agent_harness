@@ -149,10 +149,21 @@ fi
 PROMPT_USER_MESSAGE="$USER_MESSAGE"
 NATIVE_SLASH_COMMAND=""
 NATIVE_CLI_ARGS=""
+CODEX_NATIVE_SLASH_NAME=""
+CODEX_NATIVE_SLASH_ARGS=""
 PLAN_ACTION="${SATURN_PLAN_ACTION:-}"
 PLAN_MODE_FOR_TURN=""
 CODEX_COLLAB_MODE=""
 CURRENT_PLAN_STATUS="$(jq -r '.plan_mode.status // ""' "$META_FILE" 2>/dev/null || true)"
+
+is_codex_native_slash_name() {
+  case "$1" in
+    /permissions|/approvals|/sandbox-add-read-dir|/agent|/apps|/plugins|/clear|/compact|/copy|/diff|/exit|/quit|/experimental|/feedback|/init|/logout|/mcp|/mention|/model|/fast|/goal|/personality|/ps|/stop|/clean|/fork|/side|/resume|/new|/review|/status|/debug-config|/statusline|/title|/keymap)
+      return 0
+      ;;
+  esac
+  return 1
+}
 
 case "$USER_MESSAGE" in
   /plan|/plan\ *)
@@ -167,17 +178,33 @@ case "$USER_MESSAGE" in
     fi
     ;;
   /mcp|/mcp\ *)
-    NATIVE_SLASH_COMMAND="native"
-    NATIVE_CLI_ARGS="$(printf '%s' "${USER_MESSAGE#/mcp}" | sed 's/^[[:space:]]*//')"
-    if [[ -n "$NATIVE_CLI_ARGS" ]]; then
-      NATIVE_CLI_ARGS="mcp $NATIVE_CLI_ARGS"
+    if [[ "$ENGINE" == "codex" ]]; then
+      NATIVE_SLASH_COMMAND="codex"
+      CODEX_NATIVE_SLASH_NAME="mcp"
+      CODEX_NATIVE_SLASH_ARGS="$(printf '%s' "${USER_MESSAGE#/mcp}" | sed 's/^[[:space:]]*//')"
     else
-      NATIVE_CLI_ARGS="mcp list"
+      NATIVE_SLASH_COMMAND="native"
+      NATIVE_CLI_ARGS="$(printf '%s' "${USER_MESSAGE#/mcp}" | sed 's/^[[:space:]]*//')"
+      if [[ -n "$NATIVE_CLI_ARGS" ]]; then
+        NATIVE_CLI_ARGS="mcp $NATIVE_CLI_ARGS"
+      else
+        NATIVE_CLI_ARGS="mcp list"
+      fi
     fi
     ;;
   /native|/native\ *)
     NATIVE_SLASH_COMMAND="native"
     NATIVE_CLI_ARGS="$(printf '%s' "${USER_MESSAGE#/native}" | sed 's/^[[:space:]]*//')"
+    ;;
+  /*)
+    if [[ "$ENGINE" == "codex" ]]; then
+      FIRST_SLASH_TOKEN="${USER_MESSAGE%%[[:space:]]*}"
+      if is_codex_native_slash_name "$FIRST_SLASH_TOKEN"; then
+        NATIVE_SLASH_COMMAND="codex"
+        CODEX_NATIVE_SLASH_NAME="${FIRST_SLASH_TOKEN#/}"
+        CODEX_NATIVE_SLASH_ARGS="$(printf '%s' "${USER_MESSAGE#"$FIRST_SLASH_TOKEN"}" | sed 's/^[[:space:]]*//')"
+      fi
+    fi
     ;;
 esac
 
@@ -598,8 +625,89 @@ $output
   exit "$exit_code"
 }
 
+emit_codex_native_slash_turn() {
+  local output exit_code final_text status command_display keep_session_id
+  local -a helper_cmd
+
+  helper_cmd=(node "$AUTOMATIONS_ROOT/bin/codex-native-slash.mjs" --cwd "$PWD" --meta "$META_FILE")
+  if [[ -n "$PREV_CLI_SESSION_ID" ]]; then
+    helper_cmd+=(--thread-id "$PREV_CLI_SESSION_ID")
+  fi
+  helper_cmd+=("$CODEX_NATIVE_SLASH_NAME")
+  if [[ -n "$CODEX_NATIVE_SLASH_ARGS" ]]; then
+    helper_cmd+=("$CODEX_NATIVE_SLASH_ARGS")
+  fi
+
+  command_display="/$CODEX_NATIVE_SLASH_NAME"
+  [[ -z "$CODEX_NATIVE_SLASH_ARGS" ]] || command_display="$command_display $CODEX_NATIVE_SLASH_ARGS"
+
+  set +e
+  output="$("${helper_cmd[@]}" 2>&1)"
+  exit_code=$?
+  set -e
+
+  [[ -n "$output" ]] || output="(no output)"
+  if [[ "$exit_code" -eq 0 ]]; then
+    final_text="$output"
+    status="success"
+  else
+    final_text="Native Codex slash command failed: \`$command_display\`
+
+\`\`\`text
+$output
+\`\`\`"
+    status="failed"
+  fi
+
+  keep_session_id="$PREV_CLI_SESSION_ID"
+  case "$CODEX_NATIVE_SLASH_NAME" in
+    clear|new|exit|quit)
+      keep_session_id=""
+      ;;
+  esac
+
+  FINISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  jq -nc --arg text "$final_text" '{type: "assistant", message: {content: [{type: "text", text: $text}]}}' >> "$STREAM_FILE"
+  jq -nc --argjson is_error "$([[ "$exit_code" -eq 0 ]] && echo false || echo true)" '
+    {type: "result", subtype: (if $is_error then "error" else "success" end), is_error: $is_error}
+  ' >> "$STREAM_FILE"
+
+  saturn_meta_update \
+    --arg turn_id "$TURN_ID" \
+    --arg cli "$CLI" \
+    --arg model "$MODEL" \
+    --arg reasoning_effort "$REASONING_EFFORT" \
+    --arg cli_session_id "$keep_session_id" \
+    --arg started "$STARTED_AT" \
+    --arg finished "$FINISHED_AT" \
+    --arg user_msg "$USER_MESSAGE" \
+    --arg final "$final_text" \
+    --arg status "$status" \
+    '.turns[-1] = {
+        turn_id: $turn_id,
+        cli: $cli,
+        model: (if $model == "" then null else $model end),
+        reasoningEffort: (if $reasoning_effort == "" then null else $reasoning_effort end),
+        cli_session_id: (if $cli_session_id == "" then null else $cli_session_id end),
+        started_at: $started,
+        finished_at: $finished,
+        status: $status,
+        user_message: $user_msg,
+        final_text: $final
+      }
+      | .status = $status
+      | .finished_at = $finished
+      | del(.last_turn_started_at)'
+
+  printf '%s\n' "$final_text" > "$SESSION_DIR/final.md"
+  capture_saturn_memory "$status"
+  exit "$exit_code"
+}
+
 if [[ "$NATIVE_SLASH_COMMAND" == "native" ]]; then
   emit_native_command_turn
+elif [[ "$NATIVE_SLASH_COMMAND" == "codex" ]]; then
+  emit_codex_native_slash_turn
 fi
 
 # ─── Build CLI args + run ─────────────────────────────────────────────────────
