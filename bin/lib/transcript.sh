@@ -53,6 +53,10 @@ saturn_build_transcript_text() {
                  end)
          else "[no final assistant response recorded; turn status was \($turn.status // "unknown")]"
          end)
+      + (if (($turn.interrupted_summary // "") | length) > 0
+         then "\n\nInterrupted turn details:\n" + (($turn.interrupted_summary // "") | trunc($max_chars))
+         else ""
+         end)
   ' "$meta_file"
 }
 

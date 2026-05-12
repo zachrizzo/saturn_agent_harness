@@ -355,6 +355,27 @@ function dismissedBackgroundStorageKey(sessionId: string): string {
   return `${DISMISSED_BACKGROUND_ACTIVITY_KEY_PREFIX}:${sessionId}`;
 }
 
+function titleFromSteerMessage(message: string): string {
+  const firstLine = message
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .find(Boolean) ?? message.replace(/\s+/g, " ").trim();
+  return firstLine.length > 120 ? `${firstLine.slice(0, 117)}...` : firstLine;
+}
+
+function resumeChip(mode: unknown): { label: string; title: string; variant: "success" | "warn" | "default" } | null {
+  if (mode === "native") {
+    return { label: "native resume", title: "This turn resumed the CLI-native conversation.", variant: "success" };
+  }
+  if (mode === "replay") {
+    return { label: "transcript replay", title: "This turn reconstructed prior context from Saturn transcript.", variant: "warn" };
+  }
+  if (mode === "fresh") {
+    return { label: "fresh context", title: "This turn started without prior native or replayed conversation context.", variant: "default" };
+  }
+  return null;
+}
+
 export function ChatView({
   sessionId,
   initialMeta,
@@ -1392,6 +1413,21 @@ export function ChatView({
     }
   };
 
+  const promptFork = (atTurn?: number) => {
+    const message = window.prompt(
+      typeof atTurn === "number"
+        ? "Fork from this response: what should the next message in the new branch be?"
+        : "Fork: what should the first message in the new branch be?",
+    );
+    const trimmed = message?.trim();
+    if (!trimmed) return;
+    doFork(trimmed, atTurn);
+  };
+
+  const forkAfterAssistantResponse = (turnIndex: number) => {
+    promptFork(turnIndex + 1);
+  };
+
   const doEdit = async (
     message: string,
     atTurn: number,
@@ -1512,6 +1548,39 @@ export function ChatView({
     setMobileInspectorOpen(true);
   }, []);
 
+  const pinContext = useCallback(async (
+    role: "user" | "assistant" | "tool" | "context",
+    text: string,
+    turnIndex?: number,
+  ) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/pins`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          role,
+          text: trimmed,
+          label: role === "assistant" ? "Assistant response" : role === "user" ? "User message" : "Pinned context",
+          source_turn: turnIndex,
+        }),
+      });
+      if (!res.ok) {
+        showApiFailure(await apiFailure(res, "Pin failed"));
+        return;
+      }
+      const data = await res.json().catch(() => null) as { meta?: SessionMeta } | null;
+      if (data?.meta) setMeta(data.meta);
+      startTransition(() => router.refresh());
+    } catch (err) {
+      showApiFailure({
+        message: err instanceof Error ? err.message : "Pin failed",
+        statusLabel: "client error",
+      });
+    }
+  }, [router, sessionId, showApiFailure]);
+
   const insertIntoComposer = useCallback((text: string) => {
     composerRef.current?.insertText(text);
   }, []);
@@ -1542,6 +1611,87 @@ export function ChatView({
       finishExclusiveAction(seq, controller);
     }
   }, [beginExclusiveAction, beginMutation, finishExclusiveAction, isCurrentAction, refreshSessionSnapshot, sessionId]);
+
+  const steerMessage = useCallback(async (
+    message: string,
+    cli: CLI,
+    model?: string,
+    mcpTools?: boolean,
+    reasoningEffort?: ModelReasoningEffort,
+  ): Promise<boolean> => {
+    const { controller, seq } = beginExclusiveAction();
+    beginMutation();
+    const previousTurnId = turnIdFromMetaTurn(metaRef.current.turns.at(-1));
+    sseStartOverrideRef.current = previousTurnId
+      ? { mode: "afterTurnId", turnId: previousTurnId }
+      : { mode: "afterTurns", count: metaRef.current.turns.length };
+    const now = new Date().toISOString();
+    const titleOverride = titleFromSteerMessage(message);
+
+    setMeta((current) => {
+      const aborted = current.status === "running" ? markLocalRunningTurnAborted(current, now) : current;
+      return {
+        ...aborted,
+        status: "running",
+        title_override: titleOverride,
+        turns: [
+          ...aborted.turns,
+          {
+            cli,
+            model,
+            reasoningEffort,
+            steered: true,
+            started_at: now,
+            user_message: message,
+          },
+        ],
+      };
+    });
+    setStreaming(true);
+    setAutoScroll(true);
+    setAtBottom(true);
+    atBottomRef.current = true;
+
+    try {
+      const res = await fetch(
+        `/api/sessions/${encodeURIComponent(sessionId)}/steer`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message, cli, model, mcpTools, reasoningEffort }),
+          signal: controller.signal,
+        },
+      );
+      if (!isCurrentAction(seq, controller)) return false;
+      if (!res.ok) {
+        sseStartOverrideRef.current = null;
+        setStreaming(false);
+        await refreshSessionSnapshot({ force: true });
+        showApiFailure(await apiFailure(res, "Steer failed"), message);
+        return false;
+      }
+      setBedrockAuthPrompt(null);
+      setSseStartNonce((current) => current + 1);
+      for (const delay of [250, 900, 2200]) {
+        window.setTimeout(() => {
+          if (mountedRef.current) void refreshSessionSnapshot({ force: true });
+        }, delay);
+      }
+      return true;
+    } catch (err) {
+      if (controller.signal.aborted || !isCurrentAction(seq, controller)) return false;
+      sseStartOverrideRef.current = null;
+      setStreaming(false);
+      await refreshSessionSnapshot({ force: true });
+      showApiFailure({
+        message: err instanceof Error ? err.message : "Steer failed",
+        statusLabel: "client error",
+      }, message);
+      return false;
+    } finally {
+      finishExclusiveAction(seq, controller);
+    }
+  }, [beginExclusiveAction, beginMutation, finishExclusiveAction, isCurrentAction, refreshSessionSnapshot, sessionId, showApiFailure]);
 
   const runSubAgentInBackground = useCallback(async (id: string, title: string) => {
     setBackgroundSubAgents((current) => ({
@@ -1772,6 +1922,8 @@ export function ChatView({
     lastTurn?.reasoningEffort ?? snap?.reasoningEfforts?.[currentCli] ?? snap?.reasoningEffort;
   const agentName = snap?.name ?? "Ad-hoc";
   const title = sessionTitle(meta, pendingMessage);
+  const currentResume = resumeChip(lastTurn?.resume_mode);
+  const pinnedContextCount = meta.pinned_context?.length ?? 0;
   const agentId = snap?.id ?? meta.agent_id;
   const agentCliModels = snap?.models;
   const agentCliReasoningEfforts = snap?.reasoningEfforts;
@@ -1870,6 +2022,16 @@ export function ChatView({
                   <span className="mono truncate">{toClaudeAlias(currentModel) ?? currentModel}</span>
                 </Chip>
               )}
+              {currentResume && (
+                <Chip variant={currentResume.variant} title={currentResume.title}>
+                  {currentResume.label}
+                </Chip>
+              )}
+              {pinnedContextCount > 0 && (
+                <Chip variant="accent" title="Pinned context is injected into future turns">
+                  {pinnedContextCount} pinned
+                </Chip>
+              )}
               {sessionBusy && (
                 <Chip variant="warn" dot>
                   live
@@ -1894,13 +2056,7 @@ export function ChatView({
                 variant="ghost"
                 disabled={sessionBusy}
                 title="Fork this conversation into a new session"
-                onClick={() => {
-                  const message = window.prompt(
-                    "Fork: what should the first message in the new branch be?",
-                  );
-                  if (!message?.trim()) return;
-                  doFork(message);
-                }}
+                onClick={() => promptFork()}
               >
                 Fork
               </Button>
@@ -1982,7 +2138,7 @@ export function ChatView({
                       sessionId={sessionId}
                       turnIndex={chunk.turnIndex}
                       editing={editingTurnIndex === chunk.turnIndex}
-                      onFork={!sessionBusy && !chunk.streaming ? doFork : undefined}
+                      onPin={(text, turnIndex) => { void pinContext("user", text, turnIndex); }}
                       onEdit={!sessionBusy && !chunk.streaming ? editFromMessage : undefined}
                     />
                   )}
@@ -1993,7 +2149,10 @@ export function ChatView({
                     liveActivity={chunk.streaming ? streamActivityLabel : undefined}
                     liveDetail={chunk.streaming ? streamActivityDetail : undefined}
                     sessionId={sessionId}
+                    turnIndex={chunk.turnIndex}
                     hiddenMcpImageServers={hiddenMcpImageServers}
+                    onFork={!sessionBusy && !chunk.streaming ? forkAfterAssistantResponse : undefined}
+                    onPin={(turnIndex, text) => { void pinContext("assistant", text, turnIndex); }}
                     onOpenFile={openFileInInspector}
                     onRunSubAgentInBackground={chunk.streaming && !backgroundingCurrentTurn ? runSubAgentInBackground : undefined}
                     backgroundSubAgentIds={backgroundSubAgentIds}
@@ -2131,6 +2290,7 @@ export function ChatView({
                 : sendMessage
               }
               onStop={stopGeneration}
+              onSteer={steerMessage}
               sessionId={sessionId}
               cwd={snap?.cwd}
             />

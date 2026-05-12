@@ -216,17 +216,21 @@ NUM_PRIOR_TURNS="$(jq -r '.turns | length' "$META_FILE")"
 RESUME_ID=""
 IS_RESUME="no"
 BUILD_TRANSCRIPT="no"
+RESUME_MODE="fresh"
 
 if [[ "$CLI" == "$PREV_CLI" && -n "$PREV_CLI_SESSION_ID" ]]; then
   RESUME_ID="$PREV_CLI_SESSION_ID"
   IS_RESUME="yes"
+  RESUME_MODE="native"
   PROMPT_TO_SEND="$PROMPT_USER_MESSAGE"
 elif [[ "$NUM_PRIOR_TURNS" -gt 0 ]]; then
   # Switching CLI (or prior turn has no session id) — build a transcript replay
   BUILD_TRANSCRIPT="yes"
+  RESUME_MODE="replay"
 else
   # First turn — seed with agent prompt
   BUILD_TRANSCRIPT="first"
+  RESUME_MODE="fresh"
 fi
 
 # For claude engine, pre-generate a UUID so we can capture the session id on new sessions
@@ -342,6 +346,35 @@ if [[ -n "$SATURN_MEMORY_CONTEXT" ]]; then
   PROMPT_USER_MESSAGE="$(saturn_format_memory_context_block "$SATURN_MEMORY_CONTEXT")$PROMPT_USER_MESSAGE"
 fi
 
+PINNED_CONTEXT_BLOCK="$(jq -r '
+  def trunc($n):
+    if type == "string" and length > $n
+    then .[0:$n] + "\n...[pinned context truncated]"
+    else .
+    end;
+  [
+    (.pinned_context // [])[:20][]
+    | select((.text // "") | type == "string" and length > 0)
+    | "- " + ((.label // .role // "Pinned context") | tostring) + ": "
+      + ((.text // "") | tostring | trunc(4000))
+  ] | join("\n\n")
+' "$META_FILE" 2>/dev/null || true)"
+if [[ -n "$PINNED_CONTEXT_BLOCK" ]]; then
+  PROMPT_USER_MESSAGE="Pinned context for this Saturn chat. Treat these notes as durable context unless the newest user request explicitly supersedes them.
+
+$PINNED_CONTEXT_BLOCK
+
+---
+
+$PROMPT_USER_MESSAGE"
+fi
+
+if [[ "${SATURN_STEER_TURN:-}" == "1" ]]; then
+  PROMPT_USER_MESSAGE="The previous assistant turn was intentionally interrupted by the user. Treat the newest user request as a steering correction or redirect, preserve useful prior context, and continue from there.
+
+$PROMPT_USER_MESSAGE"
+fi
+
 if [[ "$IS_RESUME" == "yes" && "$BUILD_TRANSCRIPT" == "no" ]]; then
   PROMPT_TO_SEND="${SATURN_CONTEXT_REMINDER:+${SATURN_CONTEXT_REMINDER}$'\n\n'}$PROMPT_USER_MESSAGE"
 fi
@@ -371,6 +404,8 @@ TURN_ID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
 
 saturn_meta_update --arg status "running" --arg started "$STARTED_AT" --arg turn_id "$TURN_ID" \
   --arg cli "$CLI" --arg model "$MODEL" --arg reasoning_effort "$REASONING_EFFORT" --arg user_msg "$USER_MESSAGE" \
+  --arg pending_session_id "$RESUME_ID" \
+  --arg resume_mode "$RESUME_MODE" --argjson steered "$([[ "${SATURN_STEER_TURN:-}" == "1" ]] && echo true || echo false)" \
   --arg plan_action "$PLAN_ACTION" --arg plan_mode "$PLAN_MODE_FOR_TURN" \
   '.status = $status
   | .last_turn_started_at = $started
@@ -381,7 +416,9 @@ saturn_meta_update --arg status "running" --arg started "$STARTED_AT" --arg turn
       reasoningEffort: (if $reasoning_effort == "" then null else $reasoning_effort end),
       plan_action: (if $plan_action == "" then null else $plan_action end),
       plan_mode: (if $plan_mode == "" then null else $plan_mode end),
-      cli_session_id: null,
+      resume_mode: $resume_mode,
+      steered: (if $steered then true else null end),
+      cli_session_id: (if $pending_session_id == "" then null else $pending_session_id end),
       started_at: $started,
       finished_at: null,
       status: "running",
@@ -742,6 +779,8 @@ saturn_meta_update \
   --arg status "$STATUS" \
   --arg plan_action "$PLAN_ACTION" \
   --arg plan_mode "$PLAN_MODE_FOR_TURN" \
+  --arg resume_mode "$RESUME_MODE" \
+  --argjson steered "$([[ "${SATURN_STEER_TURN:-}" == "1" ]] && echo true || echo false)" \
   '.turns[-1] = {
       turn_id: $turn_id,
       cli: $cli,
@@ -749,6 +788,8 @@ saturn_meta_update \
       reasoningEffort: (if $reasoning_effort == "" then null else $reasoning_effort end),
       plan_action: (if $plan_action == "" then null else $plan_action end),
       plan_mode: (if $plan_mode == "" then null else $plan_mode end),
+      resume_mode: $resume_mode,
+      steered: (if $steered then true else null end),
       cli_session_id: (if $session_id == "" then null else $session_id end),
       started_at: $started,
       finished_at: $finished,

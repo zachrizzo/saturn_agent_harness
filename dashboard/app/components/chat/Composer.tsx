@@ -28,6 +28,7 @@ type Props = {
   disabled?: boolean;
   onSend: (msg: string, cli: CLI, model?: string, mcpTools?: boolean, reasoningEffort?: ModelReasoningEffort) => void;
   onStop?: () => void;
+  onSteer?: (msg: string, cli: CLI, model?: string, mcpTools?: boolean, reasoningEffort?: ModelReasoningEffort) => boolean | Promise<boolean>;
   placeholder?: string;
   /** "sticky" (default) pins to bottom with gradient; "inline" renders without sticky wrapper */
   variant?: "sticky" | "inline";
@@ -63,7 +64,31 @@ type QueuedMessage = {
   reasoningEffort?: ModelReasoningEffort;
 };
 
+type SlashTrigger = {
+  start: number;
+  end: number;
+  query: string;
+};
+
 const EMPTY_MODELS: Model[] = [];
+
+function findSlashTrigger(text: string, cursor: number): SlashTrigger | null {
+  const safeCursor = Math.max(0, Math.min(cursor, text.length));
+  const beforeCursor = text.slice(0, safeCursor);
+  const match = beforeCursor.match(/(?:^|\s)\/([^\s/]*)$/);
+  if (!match) return null;
+  const query = match[1] ?? "";
+  return {
+    start: safeCursor - query.length - 1,
+    end: safeCursor,
+    query,
+  };
+}
+
+function commandReplacementSpacer(instruction: string, after: string): string {
+  if (!after || !instruction || /\s$/.test(instruction) || /^\s|^[,.;:!?)]/.test(after)) return "";
+  return " ";
+}
 
 function modelIdForCli(cli: CLI, modelId: string | undefined): string | undefined {
   if (!modelId) return undefined;
@@ -95,7 +120,7 @@ export type ComposerHandle = {
 };
 
 const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
-  { currentCli, currentModel, currentReasoningEffort, currentMcpTools, availableClis, agentCliModels, agentCliReasoningEfforts, disabled, onSend, onStop, placeholder, variant = "sticky", sendLabel, header, sessionId, attachmentsEnabled = true, cwd },
+  { currentCli, currentModel, currentReasoningEffort, currentMcpTools, availableClis, agentCliModels, agentCliReasoningEfforts, disabled, onSend, onStop, onSteer, placeholder, variant = "sticky", sendLabel, header, sessionId, attachmentsEnabled = true, cwd },
   ref
 ) {
   const storageKey = sessionId ? `composer:${sessionId}` : null;
@@ -122,6 +147,7 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
   const [notice, setNotice] = useState<string | null>(null);
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashQuery, setSlashQuery] = useState("");
+  const [slashTrigger, setSlashTrigger] = useState<SlashTrigger | null>(null);
   const [slashIdx, setSlashIdx] = useState(0);
   const [cliPickerOpen, setCliPickerOpen] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false);
@@ -203,6 +229,7 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
     setAttachments([]);
     setSlashOpen(false);
     setSlashQuery("");
+    setSlashTrigger(null);
   }, [sessionId]);
 
   useEffect(() => {
@@ -349,6 +376,9 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
     focus: () => textareaRef.current?.focus(),
     setDraft: (text: string) => {
       setMessage(text);
+      setSlashOpen(false);
+      setSlashQuery("");
+      setSlashTrigger(null);
       setTimeout(() => {
         textareaRef.current?.focus();
         textareaRef.current?.setSelectionRange(text.length, text.length);
@@ -363,6 +393,9 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
         const insert = `${needsLeadBreak ? "\n\n" : ""}${text}`;
         const next = `${current.slice(0, start)}${insert}${current.slice(end)}`;
         const cursor = start + insert.length;
+        setSlashOpen(false);
+        setSlashQuery("");
+        setSlashTrigger(null);
         setTimeout(() => {
           textareaRef.current?.focus();
           textareaRef.current?.setSelectionRange(cursor, cursor);
@@ -487,7 +520,34 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
         setMessage("/login");
         setSlashOpen(false);
         setSlashQuery("");
+        setSlashTrigger(null);
         setTimeout(() => textareaRef.current?.focus(), 0);
+        return;
+      }
+
+      const cursor = textareaRef.current?.selectionStart ?? message.length;
+      const activeTrigger =
+        slashTrigger && message[slashTrigger.start] === "/"
+          ? slashTrigger
+          : findSlashTrigger(message, cursor);
+
+      if (activeTrigger) {
+        const before = message.slice(0, activeTrigger.start);
+        const after = message.slice(activeTrigger.end);
+        const spacer = commandReplacementSpacer(cmd.instruction, after);
+        const next = `${before}${cmd.instruction}${spacer}${after}`;
+        const nextCursor = before.length + cmd.instruction.length + spacer.length;
+        setMessage(next);
+        setSlashOpen(false);
+        setSlashQuery("");
+        setSlashTrigger(null);
+        setTimeout(() => {
+          const el = textareaRef.current;
+          if (el) {
+            el.focus();
+            el.setSelectionRange(nextCursor, nextCursor);
+          }
+        }, 0);
         return;
       }
 
@@ -503,6 +563,7 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
       }
       setSlashOpen(false);
       setSlashQuery("");
+      setSlashTrigger(null);
       setTimeout(() => {
         const el = textareaRef.current;
         if (el) {
@@ -511,25 +572,40 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
         }
       }, 0);
     },
-    [message]
+    [message, slashTrigger]
   );
 
-  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const val = e.target.value;
-    setMessage(val);
-
-    // Detect slash command trigger: starts with / and cursor is right after
-    const cursor = e.target.selectionStart ?? 0;
-    const textBefore = val.slice(0, cursor);
-    const slashMatch = textBefore.match(/(?:^|\n)\/([\w-]*)$/);
-    if (slashMatch) {
-      setSlashQuery(slashMatch[1]);
+  const updateSlashMenuForCursor = (value: string, cursor: number) => {
+    const trigger = findSlashTrigger(value, cursor);
+    if (trigger) {
+      setSlashQuery(trigger.query);
+      setSlashTrigger(trigger);
       setSlashOpen(true);
       setSlashIdx(0);
     } else {
       setSlashOpen(false);
       setSlashQuery("");
+      setSlashTrigger(null);
     }
+  };
+
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const val = e.target.value;
+    setMessage(val);
+
+    const cursor = e.target.selectionStart ?? 0;
+    updateSlashMenuForCursor(val, cursor);
+  };
+
+  const handleSelect = (e: React.SyntheticEvent<HTMLTextAreaElement>) => {
+    const el = e.currentTarget;
+    if (el.selectionStart !== el.selectionEnd) {
+      setSlashOpen(false);
+      setSlashQuery("");
+      setSlashTrigger(null);
+      return;
+    }
+    updateSlashMenuForCursor(el.value, el.selectionStart ?? 0);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -552,6 +628,8 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
       }
       if (e.key === "Escape") {
         setSlashOpen(false);
+        setSlashQuery("");
+        setSlashTrigger(null);
         return;
       }
     }
@@ -608,6 +686,8 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
     setMessage("");
     setNotice(null);
     setSlashOpen(false);
+    setSlashQuery("");
+    setSlashTrigger(null);
     // Clean up previews and clear attachments — they're now part of the sent message.
     attachments.forEach((a) => a.previewUrl && URL.revokeObjectURL(a.previewUrl));
     setAttachments([]);
@@ -619,11 +699,18 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
   };
 
   const steerWithQueued = (index: number) => {
-    setQueued((prev) => {
-      const item = prev[index];
-      if (!item) return prev;
-      return [item, ...prev.filter((_, i) => i !== index)];
-    });
+    const item = queued[index];
+    if (!item) return;
+    if (onSteer) {
+      setQueued((prev) => prev.filter((_, i) => i !== index));
+      void Promise.resolve(onSteer(item.text, item.cli, item.model, item.mcpTools, item.reasoningEffort))
+        .then((ok) => {
+          if (!ok) setQueued((prev) => [item, ...prev]);
+        })
+        .catch(() => setQueued((prev) => [item, ...prev]));
+      return;
+    }
+    setQueued((prev) => [item, ...prev.filter((_, i) => i !== index)]);
     onStop?.();
   };
 
@@ -889,6 +976,7 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
             value={message}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
+            onSelect={handleSelect}
             onPaste={(e) => {
               if (!uploadsEnabled) return;
               const files = Array.from(e.clipboardData.files ?? []);
@@ -1105,11 +1193,22 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
                 <button
                   type="button"
                   onClick={() => {
-                    setMessage("/");
+                    const el = textareaRef.current;
+                    const start = el?.selectionStart ?? message.length;
+                    const end = el?.selectionEnd ?? start;
+                    const prefix = start > 0 && !/\s$/.test(message.slice(0, start)) ? " " : "";
+                    const insert = `${prefix}/`;
+                    const slashStart = start + prefix.length;
+                    const cursor = slashStart + 1;
+                    setMessage(`${message.slice(0, start)}${insert}${message.slice(end)}`);
                     setSlashOpen(true);
                     setSlashQuery("");
+                    setSlashTrigger({ start: slashStart, end: cursor, query: "" });
                     setOverflowOpen(false);
-                    setTimeout(() => textareaRef.current?.focus(), 0);
+                    setTimeout(() => {
+                      textareaRef.current?.focus();
+                      textareaRef.current?.setSelectionRange(cursor, cursor);
+                    }, 0);
                   }}
                   className="w-full flex items-center gap-2.5 px-3 py-2 text-[12px] text-fg hover:bg-bg-hover transition-colors"
                 >
@@ -1242,7 +1341,7 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
             >
               <span className="shrink-0 text-subtle text-[10px] mt-0.5">{i + 1}.</span>
               <div className="shrink-0 flex items-center gap-1">
-                {disabled && onStop && (
+                {disabled && (onSteer || onStop) && (
                   <button
                     type="button"
                     onClick={() => steerWithQueued(i)}

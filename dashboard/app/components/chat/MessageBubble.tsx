@@ -33,7 +33,7 @@ type UserProps = {
   sessionId?: string;
   turnIndex?: number;
   editing?: boolean;
-  onFork?: (message: string, turnIndex: number) => void;
+  onPin?: (message: string, turnIndex: number) => void;
   onEdit?: (message: string, turnIndex: number) => void;
 };
 
@@ -44,7 +44,10 @@ type AssistantProps = {
   liveActivity?: string;
   liveDetail?: string;
   sessionId?: string;
+  turnIndex?: number;
   hiddenMcpImageServers?: string[];
+  onFork?: (turnIndex: number) => void;
+  onPin?: (turnIndex: number, text: string) => void;
   onOpenFile?: (path: string) => void;
   onRunSubAgentInBackground?: (id: string, title: string) => void;
   backgroundSubAgentIds?: Set<string>;
@@ -146,7 +149,7 @@ function areMessageBubblePropsEqual(prev: Props, next: Props): boolean {
       prev.sessionId === next.sessionId &&
       prev.turnIndex === next.turnIndex &&
       prev.editing === next.editing &&
-      Boolean(prev.onFork) === Boolean(next.onFork) &&
+      Boolean(prev.onPin) === Boolean(next.onPin) &&
       Boolean(prev.onEdit) === Boolean(next.onEdit)
     );
   }
@@ -156,6 +159,9 @@ function areMessageBubblePropsEqual(prev: Props, next: Props): boolean {
       prev.liveActivity === next.liveActivity &&
       prev.liveDetail === next.liveDetail &&
       prev.sessionId === next.sessionId &&
+      prev.turnIndex === next.turnIndex &&
+      Boolean(prev.onFork) === Boolean(next.onFork) &&
+      Boolean(prev.onPin) === Boolean(next.onPin) &&
       prev.onOpenFile === next.onOpenFile &&
       prev.onRunSubAgentInBackground === next.onRunSubAgentInBackground &&
       prev.onBedrockAuthReady === next.onBedrockAuthReady &&
@@ -218,7 +224,28 @@ function CopyButton({ getText }: { getText: () => string }) {
   );
 }
 
-function UserBubble({ message, cli, model, reasoningEffort, sessionId, turnIndex, editing, onFork, onEdit }: UserProps) {
+function PinButton({ onClick }: { onClick: () => void }) {
+  const [pinned, setPinned] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        onClick();
+        setPinned(true);
+        window.setTimeout(() => setPinned(false), 1500);
+      }}
+      title="Pin as context"
+      className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] text-muted hover:text-fg hover:bg-bg-hover transition-colors"
+    >
+      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 17v4m-5-9l5-7 5 7M7 12h10m-8 0v5h6v-5" />
+      </svg>
+      {pinned ? "Pinned" : "Pin"}
+    </button>
+  );
+}
+
+function UserBubble({ message, cli, model, reasoningEffort, sessionId, turnIndex, editing, onPin, onEdit }: UserProps) {
   const [hovered, setHovered] = useState(false);
   const mediaRefs = extractMediaRefsFromText(message);
 
@@ -240,6 +267,9 @@ function UserBubble({ message, cli, model, reasoningEffort, sessionId, turnIndex
         }}
       >
         <CopyButton getText={() => message} />
+        {onPin && (
+          <PinButton onClick={() => onPin(message, turnIndex ?? 0)} />
+        )}
         {onEdit && (
           <button
             type="button"
@@ -251,19 +281,6 @@ function UserBubble({ message, cli, model, reasoningEffort, sessionId, turnIndex
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
             </svg>
             Edit
-          </button>
-        )}
-        {onFork && (
-          <button
-            type="button"
-            onClick={() => onFork(message, turnIndex ?? 0)}
-            title="Fork from here"
-            className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] text-muted hover:text-fg hover:bg-bg-hover transition-colors"
-          >
-            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
-            </svg>
-            Fork
           </button>
         )}
       </div>
@@ -880,7 +897,10 @@ function AssistantBlock({
   liveActivity,
   liveDetail,
   sessionId,
+  turnIndex,
   hiddenMcpImageServers,
+  onFork,
+  onPin,
   onOpenFile,
   onRunSubAgentInBackground,
   backgroundSubAgentIds,
@@ -1136,12 +1156,28 @@ function AssistantBlock({
       {streaming && (
         <LiveThinkingRow activity={liveActivity} detail={liveDetail} />
       )}
-      {allText && (
+      {(allText || onFork || onPin) && (
         <div
           className="flex items-center gap-0.5 transition-all duration-150"
           style={{ opacity: hovered ? 1 : 0, pointerEvents: hovered ? "auto" : "none" }}
         >
-          <CopyButton getText={() => allText} />
+          {allText && <CopyButton getText={() => allText} />}
+          {allText && onPin && (
+            <PinButton onClick={() => onPin(turnIndex ?? 0, allText)} />
+          )}
+          {onFork && (
+            <button
+              type="button"
+              onClick={() => onFork(turnIndex ?? 0)}
+              title="Fork from this response"
+              className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] text-muted hover:text-fg hover:bg-bg-hover transition-colors"
+            >
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+              </svg>
+              Fork
+            </button>
+          )}
         </div>
       )}
     </div>

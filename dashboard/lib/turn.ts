@@ -187,6 +187,7 @@ export async function spawnTurn(
   mcpTools?: boolean,
   reasoningEffort?: ModelReasoningEffort,
   planAction?: PlanAction,
+  opts: { steered?: boolean } = {},
 ): Promise<void> {
   const script = path.join(binDir(), "run-turn.sh");
   const baseTools = agentSnapshot?.allowedTools ?? [];
@@ -224,6 +225,7 @@ export async function spawnTurn(
     REASONING_EFFORT: effectiveReasoningEffort ?? "",
     ...(await prepareMemoryEnv(sessionId, message, agentSnapshot)),
     ...(planAction ? { SATURN_PLAN_ACTION: planAction } : {}),
+    ...(opts.steered ? { SATURN_STEER_TURN: "1" } : {}),
     ...(isLocal ? {
       ...localProxyEnv,
       CLAUDE_LOCAL_SETTINGS: JSON.stringify({

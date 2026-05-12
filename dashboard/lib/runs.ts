@@ -16,6 +16,16 @@ export type { CLI } from "./clis";
 export type AgentKind = "chat" | "orchestrator";
 export type MutationTier = "read-only" | "writes-scratch" | "writes-source";
 export type PlanAction = "start" | "revise" | "approve";
+export type TurnResumeMode = "native" | "replay" | "fresh";
+
+export type PinnedContextItem = {
+  id: string;
+  text: string;
+  role?: "user" | "assistant" | "tool" | "context";
+  label?: string;
+  source_turn?: number;
+  created_at: string;
+};
 
 export type PlanModeState = {
   status: "awaiting_approval";
@@ -125,12 +135,15 @@ export type TurnRecord = {
   reasoningEffort?: ModelReasoningEffort;
   plan_action?: PlanAction;
   plan_mode?: "plan" | "default";
+  resume_mode?: TurnResumeMode;
+  steered?: boolean;
   cli_session_id?: string;   // underlying CLI's own session id, for native resume
   started_at: string;
   finished_at?: string;
   status?: "running" | "success" | "failed" | "aborted";
   user_message: string;
   final_text?: string;
+  interrupted_summary?: string;
 };
 
 export type BackgroundRunRecord = {
@@ -171,6 +184,8 @@ export type SessionMeta = {
   snoozed_until?: string | null; // ISO timestamp; null clears it
   read_at?: string;              // ISO — last time the user opened this chat
   tags?: string[];               // freeform labels shown inline in the inbox
+  title_override?: string;
+  pinned_context?: PinnedContextItem[];
 };
 
 export type SessionTriagePatch = {
@@ -179,6 +194,8 @@ export type SessionTriagePatch = {
   snoozed_until?: string | null;
   read_at?: string;
   tags?: string[];
+  title_override?: string | null;
+  pinned_context?: PinnedContextItem[];
 };
 
 export type SessionEventReadMode = "all" | "recent";
@@ -1129,6 +1146,13 @@ function sanitizeTriagePatch(patch: unknown): SessionTriagePatch {
     else if (typeof src.snoozed_until === "string") out.snoozed_until = src.snoozed_until;
   }
   if (typeof src.read_at === "string") out.read_at = src.read_at;
+  if ("title_override" in src) {
+    if (src.title_override === null) out.title_override = null;
+    else if (typeof src.title_override === "string") {
+      const title = src.title_override.replace(/\s+/g, " ").trim();
+      if (title) out.title_override = title.slice(0, 120);
+    }
+  }
 
   return out;
 }
@@ -1142,9 +1166,12 @@ export async function updateSessionMeta(
     const metaPath = path.join(sessionDir(sessionId), "meta.json");
     const raw = await fs.readFile(metaPath, "utf8");
     const meta = JSON.parse(raw) as SessionMeta;
-    const next: SessionMeta = { ...meta, ...safe };
+    const { title_override, ...safeWithoutTitle } = safe;
+    const next: SessionMeta = { ...meta, ...safeWithoutTitle };
     // Explicit null clears snoozed_until; drop the property entirely to keep meta tidy.
     if (safe.snoozed_until === null) delete next.snoozed_until;
+    if (title_override === null) delete next.title_override;
+    else if (typeof title_override === "string") next.title_override = title_override;
     await fs.writeFile(metaPath, JSON.stringify(next, null, 2), "utf8");
     return next;
   });

@@ -36,6 +36,9 @@ export function agentModelForCli(agent: Agent, cli: CLI): string | undefined {
  *   3. "New chat" as a last-resort fallback.
  */
 export function sessionTitle(s: SessionMeta, pendingMessage?: string): string {
+  const override = s.title_override?.replace(/\s+/g, " ").trim();
+  if (override) return compactSessionTitle(override);
+
   const turns = s.turns ?? [];
   for (const t of turns) {
     const msg = t?.user_message?.replace(/\s+/g, " ").trim();
