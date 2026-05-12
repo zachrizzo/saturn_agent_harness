@@ -272,10 +272,11 @@ build_cli_args() {
       if [[ "$cli" == "claude-local" ]]; then
         RUN_CMD="$(claude_local_bin)"
         export CLAUDE_CODE_USE_BEDROCK="0"
+        export ANTHROPIC_API_KEY=""
         export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-http://127.0.0.1:4000}"
         export ANTHROPIC_AUTH_TOKEN="sk-local-proxy-key"
       elif [[ "$cli" == "claude-personal" ]]; then
-        unset CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN
+        unset CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX ANTHROPIC_API_KEY ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN
         RUN_ARGS+=(--setting-sources "${CLAUDE_SETTING_SOURCES:-project,local}")
       else
         # Bedrock (or default) path — inject AWS auth if not already set.

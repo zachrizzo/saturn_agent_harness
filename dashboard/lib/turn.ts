@@ -213,6 +213,7 @@ export async function spawnTurn(
 
   const localProxyEnv = {
     CLAUDE_CODE_USE_BEDROCK: "0",
+    ANTHROPIC_API_KEY: "",
     ANTHROPIC_BASE_URL: "http://127.0.0.1:4000",
     ANTHROPIC_AUTH_TOKEN: "sk-local-proxy-key",
     ANTHROPIC_MODEL: localModel,
@@ -247,6 +248,7 @@ export async function spawnTurn(
     } : isPersonal ? {
       CLAUDE_CODE_USE_BEDROCK: "",
       CLAUDE_CODE_USE_VERTEX: "",
+      ANTHROPIC_API_KEY: "",
       ANTHROPIC_BASE_URL: "",
       ANTHROPIC_AUTH_TOKEN: "",
       CLAUDE_SETTING_SOURCES: "project,local",

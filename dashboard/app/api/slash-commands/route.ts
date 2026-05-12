@@ -47,6 +47,15 @@ const BUILTIN_COMMANDS: SlashCommand[] = [
     instruction: "/mcp",
   },
   {
+    name: "native",
+    label: "/native",
+    description: "Run a selected-CLI subcommand directly, for native features Saturn does not model.",
+    kind: "builtin",
+    clis: ["claude-bedrock", "claude-personal", "claude-local", "codex"],
+    transform: "literal",
+    instruction: "/native",
+  },
+  {
     name: "think",
     label: "/think",
     description: "Use extended thinking / reasoning before responding.",

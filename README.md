@@ -222,11 +222,26 @@ bin/sync-configs.sh
 ```
 
 This writes:
-- `~/.claude.json` → `.mcpServers`
-- `~/.codex/config.toml` → `[mcp_servers.*]`
+- `~/.claude.json` → upserts Saturn entries under `.mcpServers`
+- `~/.codex/config.toml` → upserts Saturn entries under `[mcp_servers.*]`
 - Symlinks `skills/<name>/` into `~/.claude/skills/` and `~/.codex/skills/`
 
-Each server entry in `mcps.json` has a `targets` array controlling which CLIs receive it.
+Each server entry in `mcps.json` has a `targets` array controlling which CLIs receive it. Saturn preserves MCP servers that were added directly by Claude Code, Codex, plugins, or the user. Claude Code entries can set `"alwaysLoad": true` when a small server should bypass tool-search deferral.
+
+### Native CLI pass-through
+
+In a chat, send `/native <args>` to run the selected backend's CLI subcommand directly and render its output in the thread. This is the escape hatch for new Claude Code or Codex capabilities that Saturn does not model yet.
+
+Examples:
+
+```text
+/native --help
+/native plugin details figma
+/native agents
+/mcp list
+```
+
+`/mcp <args>` is kept as a shorthand for `/native mcp <args>`.
 
 ---
 

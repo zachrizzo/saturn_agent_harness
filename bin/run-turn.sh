@@ -148,7 +148,7 @@ fi
 
 PROMPT_USER_MESSAGE="$USER_MESSAGE"
 NATIVE_SLASH_COMMAND=""
-NATIVE_MCP_ARGS=""
+NATIVE_CLI_ARGS=""
 PLAN_ACTION="${SATURN_PLAN_ACTION:-}"
 PLAN_MODE_FOR_TURN=""
 CODEX_COLLAB_MODE=""
@@ -167,8 +167,17 @@ case "$USER_MESSAGE" in
     fi
     ;;
   /mcp|/mcp\ *)
-    NATIVE_SLASH_COMMAND="mcp"
-    NATIVE_MCP_ARGS="$(printf '%s' "${USER_MESSAGE#/mcp}" | sed 's/^[[:space:]]*//')"
+    NATIVE_SLASH_COMMAND="native"
+    NATIVE_CLI_ARGS="$(printf '%s' "${USER_MESSAGE#/mcp}" | sed 's/^[[:space:]]*//')"
+    if [[ -n "$NATIVE_CLI_ARGS" ]]; then
+      NATIVE_CLI_ARGS="mcp $NATIVE_CLI_ARGS"
+    else
+      NATIVE_CLI_ARGS="mcp list"
+    fi
+    ;;
+  /native|/native\ *)
+    NATIVE_SLASH_COMMAND="native"
+    NATIVE_CLI_ARGS="$(printf '%s' "${USER_MESSAGE#/native}" | sed 's/^[[:space:]]*//')"
     ;;
 esac
 
@@ -452,15 +461,15 @@ sync_saturn_tasks() {
   saturn_sync_session_tasks "$SESSION_ID" "$TURN_ID" "$STDERR_FILE"
 }
 
-emit_native_mcp_turn() {
+emit_native_command_turn() {
   local parse_file parse_err_file
   local parse_failed="0"
-  local -a mcp_argv
-  parse_file="$(mktemp -t saturn-mcp-args).txt"
-  parse_err_file="$(mktemp -t saturn-mcp-args-err).txt"
+  local -a native_argv
+  parse_file="$(mktemp -t saturn-native-args).txt"
+  parse_err_file="$(mktemp -t saturn-native-args-err).txt"
 
-  if [[ -n "$NATIVE_MCP_ARGS" ]]; then
-    if ! python3 - "$NATIVE_MCP_ARGS" > "$parse_file" 2> "$parse_err_file" <<'PY'
+  if [[ -n "$NATIVE_CLI_ARGS" ]]; then
+    if ! python3 - "$NATIVE_CLI_ARGS" > "$parse_file" 2> "$parse_err_file" <<'PY'
 import shlex
 import sys
 
@@ -476,46 +485,47 @@ PY
     fi
   fi
 
-  mcp_argv=()
+  native_argv=()
   if [[ "$parse_failed" == "0" ]]; then
     while IFS= read -r arg; do
-      [[ -n "$arg" ]] && mcp_argv+=("$arg")
+      [[ -n "$arg" ]] && native_argv+=("$arg")
     done < "$parse_file"
   fi
   rm -f "$parse_file"
 
   local output exit_code command_display final_text status
-  local -a mcp_cmd
+  local -a native_cmd
   if [[ "$parse_failed" == "1" ]]; then
     output="$(cat "$parse_err_file" 2>/dev/null || true)"
-    [[ -n "$output" ]] || output="Could not parse /mcp arguments."
+    [[ -n "$output" ]] || output="Could not parse /native arguments."
     exit_code=2
-    command_display="/mcp $NATIVE_MCP_ARGS"
+    command_display="/native $NATIVE_CLI_ARGS"
   else
-    if [[ ${#mcp_argv[@]} -eq 0 ]]; then
-      mcp_argv=(list)
+    if [[ ${#native_argv[@]} -eq 0 ]]; then
+      native_argv=(--help)
     fi
 
     if [[ "$ENGINE" == "codex" ]]; then
-      mcp_cmd=(codex mcp "${mcp_argv[@]}")
+      native_cmd=(codex "${native_argv[@]}")
     else
-      mcp_cmd=(claude mcp "${mcp_argv[@]}")
+      native_cmd=(claude "${native_argv[@]}")
       case "$CLI" in
         claude-bedrock) setup_bedrock_env ;;
-        claude-personal) unset CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ;;
+        claude-personal) unset CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX ANTHROPIC_API_KEY ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ;;
         claude-local)
-          mcp_cmd=("$(claude_local_bin)" mcp "${mcp_argv[@]}")
+          native_cmd=("$(claude_local_bin)" "${native_argv[@]}")
           export CLAUDE_CODE_USE_BEDROCK="0"
+          export ANTHROPIC_API_KEY=""
           export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-http://127.0.0.1:4000}"
           export ANTHROPIC_AUTH_TOKEN="sk-local-proxy-key"
           ;;
       esac
     fi
 
-    command_display="$(printf '%q ' "${mcp_cmd[@]}")"
+    command_display="$(printf '%q ' "${native_cmd[@]}")"
     command_display="${command_display% }"
     set +e
-    output="$("${mcp_cmd[@]}" 2>&1)"
+    output="$("${native_cmd[@]}" 2>&1)"
     exit_code=$?
     set -e
   fi
@@ -523,16 +533,20 @@ PY
 
   [[ -n "$output" ]] || output="(no output)"
   if [[ "$exit_code" -eq 0 ]]; then
-    final_text="Ran native MCP command: \`$command_display\`
+    local followup=""
+    if [[ ${#native_argv[@]} -gt 0 && "${native_argv[0]}" == "mcp" ]]; then
+      followup="
+
+MCP status refreshed. The next message in this Saturn chat will start a fresh native $ENGINE session so newly connected MCP tools can be loaded without restarting the Saturn chat."
+    fi
+    final_text="Ran native CLI command: \`$command_display\`
 
 \`\`\`text
 $output
-\`\`\`
-
-MCP status refreshed. The next message in this Saturn chat will start a fresh native $ENGINE session so newly connected MCP tools can be loaded without restarting the Saturn chat."
+\`\`\`$followup"
     status="success"
   else
-    final_text="Native MCP command failed: \`$command_display\`
+    final_text="Native CLI command failed: \`$command_display\`
 
 \`\`\`text
 $output
@@ -577,8 +591,8 @@ $output
   exit "$exit_code"
 }
 
-if [[ "$NATIVE_SLASH_COMMAND" == "mcp" ]]; then
-  emit_native_mcp_turn
+if [[ "$NATIVE_SLASH_COMMAND" == "native" ]]; then
+  emit_native_command_turn
 fi
 
 # ─── Build CLI args + run ─────────────────────────────────────────────────────

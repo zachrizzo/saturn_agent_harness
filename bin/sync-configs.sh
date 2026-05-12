@@ -44,29 +44,44 @@ def for_target(target):
 if os.path.exists(claude_config):
     with open(claude_config) as f:
         cc = json.load(f)
-    cc.setdefault("mcpServers", {})
-    # Rebuild from mcps.json (preserve any entries not managed here? No — be strict, single source of truth)
-    new_mcps = {}
+    existing_mcps = cc.get("mcpServers", {})
+    if not isinstance(existing_mcps, dict):
+        existing_mcps = {}
+    # Upsert Saturn-managed entries while preserving MCP servers the CLI,
+    # plugins, or the user manage directly.
+    new_mcps = dict(existing_mcps)
     for name, s in for_target("claude").items():
         if s["type"] == "local":
             entry = {"type": "stdio", "command": s["command"][0], "args": s["command"][1:]}
             if "env" in s:
                 entry["env"] = s["env"]
+            if "alwaysLoad" in s:
+                entry["alwaysLoad"] = bool(s["alwaysLoad"])
             new_mcps[name] = entry
         elif s["type"] == "remote":
             url = s["url"]
             # Claude's HTTP MCPs go under plugin namespacing for plugin-managed ones; here we add as direct http/sse
-            new_mcps[name] = {"type": "http", "url": url}
+            entry = {"type": "http", "url": url}
+            if "alwaysLoad" in s:
+                entry["alwaysLoad"] = bool(s["alwaysLoad"])
+            new_mcps[name] = entry
     cc["mcpServers"] = new_mcps
     with open(claude_config, "w") as f:
         json.dump(cc, f, indent=2)
-    print(f"  ✓ Claude Code: {len(new_mcps)} servers → {claude_config}")
+    print(f"  ✓ Claude Code: synced {len(for_target('claude'))} Saturn servers, preserved {max(len(existing_mcps) - len(for_target('claude')), 0)} existing → {claude_config}")
 else:
     print(f"  ⚠ Claude config not found at {claude_config}, skipping")
 
 # ─── Codex (~/.codex/config.toml [mcp_servers.*]) ─────
 if os.path.exists(codex_config):
-    # Line-based removal of any [mcp_servers.*] or [mcp_servers.*.env] section.
+    codex_servers = for_target("codex")
+    managed_sections = set()
+    for name in codex_servers:
+        managed_sections.add(f"mcp_servers.{name}")
+        managed_sections.add(f"mcp_servers.{name}.env")
+
+    # Line-based removal of Saturn-managed [mcp_servers.*] sections only.
+    # Native/user/plugin-managed MCP config stays intact.
     # A new section header starts with '[' at column 0.
     with open(codex_config) as f:
         lines = f.readlines()
@@ -78,7 +93,7 @@ if os.path.exists(codex_config):
         m = section_re.match(line)
         if m:
             section_name = m.group(1)
-            in_mcp_section = section_name.startswith("mcp_servers.") or section_name == "mcp_servers"
+            in_mcp_section = section_name in managed_sections
             if in_mcp_section:
                 continue
             kept.append(line)
@@ -91,7 +106,7 @@ if os.path.exists(codex_config):
     cleaned = "".join(kept).rstrip() + "\n"
 
     new_blocks = []
-    for name, s in for_target("codex").items():
+    for name, s in codex_servers.items():
         if s["type"] == "local":
             cmd = s["command"][0]
             args = s["command"][1:]
@@ -108,7 +123,7 @@ if os.path.exists(codex_config):
     with open(codex_config, "w") as f:
         f.write(cleaned)
         f.writelines(new_blocks)
-    print(f"  ✓ Codex: {len(new_blocks)} servers → {codex_config}")
+    print(f"  ✓ Codex: synced {len(new_blocks)} Saturn servers, preserved native/user MCP config → {codex_config}")
 else:
     print(f"  ⚠ Codex config not found at {codex_config}, skipping")
 
