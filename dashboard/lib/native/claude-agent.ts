@@ -37,6 +37,7 @@ export async function listClaudeSlashCommands(args: {
       cwd: args.cwd,
       model: provider.model,
       env: provider.env,
+      pathToClaudeCodeExecutable: provider.pathToClaudeCodeExecutable,
       settings: provider.settings,
       settingSources: provider.settingSources,
       mcpServers: provider.mcpServers,

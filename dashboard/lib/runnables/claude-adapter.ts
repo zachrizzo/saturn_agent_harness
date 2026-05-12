@@ -21,6 +21,7 @@ import type { CLI } from "../clis";
 import { toBedrockId } from "../claude-models";
 import { readBedrockConfig } from "../bedrock-auth";
 import { binDir } from "../paths";
+import { resolveClaudeExecutable } from "../native/claude-executable";
 
 type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -199,7 +200,7 @@ function hasPreferredPluginMcpServer(mcpServers: McpServers | undefined): boolea
   );
 }
 
-export async function claudeProviderOptions(cli: CLI, model?: string): Promise<Pick<Options, "env" | "model" | "settingSources" | "settings" | "mcpServers">> {
+export async function claudeProviderOptions(cli: CLI, model?: string): Promise<Pick<Options, "env" | "model" | "settingSources" | "settings" | "mcpServers" | "pathToClaudeCodeExecutable">> {
   const env: Record<string, string | undefined> = { ...process.env };
   let effectiveModel = model;
   let settingSources: SettingSource[] | undefined;
@@ -235,7 +236,9 @@ export async function claudeProviderOptions(cli: CLI, model?: string): Promise<P
     env.ENABLE_CLAUDEAI_MCP_SERVERS = env.ENABLE_CLAUDEAI_MCP_SERVERS || "0";
   }
 
-  return { env, model: effectiveModel, settingSources, settings, mcpServers };
+  const pathToClaudeCodeExecutable = await resolveClaudeExecutable();
+
+  return { env, model: effectiveModel, settingSources, settings, mcpServers, pathToClaudeCodeExecutable };
 }
 
 function roleLabel(role: NeutralMessage["role"]): string {
@@ -360,6 +363,7 @@ export class ClaudeAdapter implements RunnableAdapter {
           resume: handle.native_session_id,
           model: provider.model,
           env: provider.env,
+          pathToClaudeCodeExecutable: provider.pathToClaudeCodeExecutable,
           settings: provider.settings,
           mcpServers: provider.mcpServers,
           settingSources: provider.settingSources,

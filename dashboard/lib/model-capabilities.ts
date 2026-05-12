@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import type { CLI } from "./clis";
 import { isBedrockCli, isLocalClaudeCli, isPersonalClaudeCli, normalizeCli } from "./clis";
+import { resolveClaudeExecutable } from "./native/claude-executable";
 import {
   isModelReasoningEffort,
   normalizeReasoningEffortForCli,
@@ -36,7 +37,8 @@ export async function claudeCliReasoningEfforts(): Promise<ModelReasoningEffort[
   const now = Date.now();
   if (claudeEffortCache && claudeEffortCache.expiresAt > now) return claudeEffortCache.efforts;
   try {
-    const { stdout, stderr } = await execFileAsync("claude", ["--help"], {
+    const executable = await resolveClaudeExecutable();
+    const { stdout, stderr } = await execFileAsync(executable ?? "claude", ["--help"], {
       timeout: 2500,
       maxBuffer: 512 * 1024,
     });

@@ -42,6 +42,15 @@ function emit(obj) {
   process.stdout.write(`${JSON.stringify(obj)}\n`);
 }
 
+function emitNativeRequest(method, params, resolution) {
+  emit({
+    type: "native.request",
+    method,
+    params,
+    resolution,
+  });
+}
+
 function normalizeItem(item) {
   if (!item || typeof item !== "object") return item;
   const typeMap = {
@@ -129,22 +138,30 @@ function emitThreadStarted(thread) {
 
 function handleServerRequest(message) {
   if (message.method === "item/tool/requestUserInput") {
-    sendRaw({ id: message.id, result: answerUserInputRequest(message.params?.questions) });
+    const result = answerUserInputRequest(message.params?.questions);
+    emitNativeRequest(message.method, { questions: message.params?.questions ?? [] }, { mode: "auto", result });
+    sendRaw({ id: message.id, result });
     return;
   }
 
   if (message.method === "item/commandExecution/requestApproval") {
-    sendRaw({ id: message.id, result: { decision: "decline" } });
+    const result = { decision: "decline" };
+    emitNativeRequest(message.method, message.params ?? {}, { mode: "auto", result });
+    sendRaw({ id: message.id, result });
     return;
   }
 
   if (message.method === "item/fileChange/requestApproval") {
-    sendRaw({ id: message.id, result: { decision: "decline" } });
+    const result = { decision: "decline" };
+    emitNativeRequest(message.method, message.params ?? {}, { mode: "auto", result });
+    sendRaw({ id: message.id, result });
     return;
   }
 
   if (message.method === "item/permissions/requestApproval") {
-    sendRaw({ id: message.id, result: { permissions: {}, scope: "turn" } });
+    const result = { permissions: {}, scope: "turn" };
+    emitNativeRequest(message.method, message.params ?? {}, { mode: "auto", result });
+    sendRaw({ id: message.id, result });
     return;
   }
 

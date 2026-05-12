@@ -43,6 +43,10 @@ function run(cmd, args, cwd) {
   };
 }
 
+function jsonBlock(value) {
+  return `\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\``;
+}
+
 class CodexAppServer {
   constructor() {
     this.child = spawn("codex", ["app-server", "--listen", "stdio://"], {
@@ -261,7 +265,43 @@ async function debugConfig(args) {
       server.request("config/read", { includeLayers: true, cwd: args.cwd }).catch((error) => ({ error: error.message })),
       server.request("configRequirements/read").catch((error) => ({ error: error.message })),
     ]);
-    return `## Native Codex Config\n\n\`\`\`json\n${JSON.stringify({ config, requirements }, null, 2)}\n\`\`\``;
+    return `## Native Codex Config\n\n${jsonBlock({ config, requirements })}`;
+  });
+}
+
+async function permissions(args) {
+  return withServer(async (server) => {
+    const [config, requirements] = await Promise.all([
+      server.request("config/read", { includeLayers: true, cwd: args.cwd }).catch((error) => ({ error: error.message })),
+      server.request("configRequirements/read").catch((error) => ({ error: error.message })),
+    ]);
+    const cfg = config?.config || {};
+    const summary = {
+      approvalPolicy: cfg.approval_policy ?? cfg.approvalPolicy ?? null,
+      sandboxPolicy: cfg.sandbox_policy ?? cfg.sandboxPolicy ?? cfg.sandbox ?? null,
+      trustLevel: cfg.trust_level ?? cfg.trustLevel ?? null,
+      defaultPermissions: cfg.default_permissions ?? cfg.defaultPermissions ?? null,
+      permissions: cfg.permissions ?? null,
+      requirements: requirements?.requirements ?? requirements,
+      layers: config?.layers ?? undefined,
+    };
+    return `## Native Codex Permissions\n\nSaturn is reading this from Codex's native app-server config surface.\n\n${jsonBlock(summary)}`;
+  });
+}
+
+async function cleanBackgroundTerminals(args) {
+  if (!args.threadId) return "No native Codex thread exists yet. Send one normal Codex message first, then use `/clean` or `/stop`.";
+  return withServer(async (server) => {
+    await server.request("thread/resume", {
+      threadId: args.threadId,
+      cwd: args.cwd,
+      excludeTurns: true,
+      persistExtendedHistory: true,
+    });
+    const result = await server
+      .request("thread/backgroundTerminals/clean", { threadId: args.threadId }, 30000)
+      .catch((error) => ({ error: error.message }));
+    return `## Native Codex Background Terminals\n\nRequested native background-terminal cleanup for thread \`${args.threadId}\`.\n\n${jsonBlock(result ?? { ok: true })}`;
   });
 }
 
@@ -394,11 +434,12 @@ async function main() {
       return "Started a fresh native Codex context for the next Saturn chat turn.";
     case "permissions":
     case "approvals":
-      return "Native Codex permissions are currently governed by Saturn's app-server turn policy. The slash command is listed; approval dialogs are the next bridge piece.";
+      return permissions(args);
     case "stop":
     case "clean":
+      return cleanBackgroundTerminals(args);
     case "ps":
-      return "Saturn manages background terminals through its existing session controls. Native Codex background-terminal controls are listed here and will be wired to the session UI controls next.";
+      return "Native Codex exposes background-terminal cleanup through the app-server bridge here. Use `/clean` to ask Codex to clean background terminals for this native thread.";
     default:
       return settingsOnly(args.command);
   }

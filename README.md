@@ -234,9 +234,10 @@ Saturn keeps the chat UI, but lets each backend own its own capability registry:
 
 - Codex chat turns run through `codex app-server`, the same native application protocol used for Codex app surfaces.
 - Codex model and skill discovery come from native app-server methods such as `model/list` and `skills/list`.
-- Codex native slash commands such as `/model`, `/mcp`, `/apps`, `/plugins`, `/goal`, `/compact`, `/resume`, `/diff`, `/status`, and `/debug-config` are listed in the chat composer and routed to native app-server-backed handlers where a structured API exists.
-- Claude slash-command discovery comes from the Claude Agent SDK initialization surface when the Claude binary is available to the dashboard process.
+- Codex native slash commands such as `/model`, `/mcp`, `/apps`, `/plugins`, `/goal`, `/compact`, `/resume`, `/diff`, `/permissions`, `/status`, and `/debug-config` are listed in the chat composer and routed to native app-server-backed handlers where a structured API exists.
+- Claude slash-command discovery comes from the Claude Agent SDK initialization surface. Saturn resolves `claude` from the dashboard environment, common Homebrew/npm paths, and `CLAUDE_CODE_EXECUTABLE`/`CLAUDE_CODE_PATH` before falling back to the SDK-bundled binary.
 - Filesystem scans remain as compatibility fallbacks for older or unavailable CLIs.
+- `bin/check-native-bridge.mjs` verifies the native slash registry, Codex app-server command handlers, and Claude executable resolution guardrails.
 
 In a chat, `/native <args>` still runs the selected backend's CLI subcommand directly and renders its output in the thread. Treat it as a diagnostic escape hatch for capabilities that do not yet expose a structured app-server or SDK method.
 
