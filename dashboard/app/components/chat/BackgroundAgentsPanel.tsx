@@ -53,7 +53,7 @@ export function BackgroundAgentsPanel({
             <circle cx="12" cy="7" r="3" />
             <path d="M5 21a7 7 0 0 1 14 0" />
           </svg>
-          No background agents for this chat.
+          No agent activity for this chat.
         </div>
       </div>
     );
@@ -61,7 +61,7 @@ export function BackgroundAgentsPanel({
 
   return (
     <div className="insp-agents-pane">
-      <div className="insp-agents-summary" aria-label="Background agent summary">
+      <div className="insp-agents-summary" aria-label="Agent activity summary">
         <div>
           <span>Running</span>
           <strong>{counts.running}</strong>
@@ -76,7 +76,7 @@ export function BackgroundAgentsPanel({
         </div>
       </div>
 
-      <div className="insp-agents-list" aria-label="Background agents">
+      <div className="insp-agents-list" aria-label="Agent activity">
         {orderedRows.map((row) => {
           const active = selected ? rowKey(row) === rowKey(selected) : false;
           const stopping = isStopping(row);
@@ -132,7 +132,7 @@ export function BackgroundAgentsPanel({
             <span className={`background-agent-dot ${selected.status}`} aria-hidden="true" />
             <div>
               <h3>{selected.title}</h3>
-              <p>{selected.kind === "session" ? "Background chat continuation" : "Background sub-agent"}</p>
+              <p>{selected.kind === "session" ? "Background chat continuation" : "Native sub-agent"}</p>
             </div>
           </div>
           <div className="kv-stack">

@@ -85,20 +85,13 @@ function subAgentTitleFromInput(input: unknown): string {
   return "Sub-agent";
 }
 
-function isBackgroundAgentToolUse(event: Extract<StreamEvent, { kind: "tool_use" }>): boolean {
-  if (event.name !== "Agent") return false;
-  const input = asRecord(event.input);
-  const raw = asRecord(event.raw);
-  return input.background === true
-    || (raw.type === "system" && raw.subtype === "task_started" && raw.task_type === "local_agent");
-}
-
 function backgroundAgentStatus(
   result: Extract<StreamEvent, { kind: "tool_result" }> | undefined,
 ): BackgroundAgentStatus {
   if (!result) return "run";
   const content = asRecord(result.content);
   const status = typeof content.status === "string" ? content.status : "";
+  if (status === "running" || status === "in_progress" || status === "pending") return "run";
   if (status === "canceled" || status === "cancelled" || status === "stopped") return "stop";
   return result.isError ? "err" : "ok";
 }
@@ -121,15 +114,22 @@ export function backgroundSubAgentRows(
   const toolUses = new Map<string, Extract<StreamEvent, { kind: "tool_use" }>>();
   const results = new Map<string, Extract<StreamEvent, { kind: "tool_result" }>>();
   const activityOrderById = new Map<string, number>();
+  const claudeToolUseAliases = new Map<string, string>();
 
   for (const agent of Object.values(agents)) {
     rowsById.set(agent.id, agent);
   }
   events.forEach((event, index) => {
     if (event.kind === "tool_use" && event.name === "Agent") {
+      const input = asRecord(event.input);
+      const linkedToolUseId = typeof input.tool_use_id === "string" ? input.tool_use_id : "";
+      const raw = asRecord(event.raw);
+      if (raw.type === "system" && raw.subtype === "task_started" && raw.task_type === "local_agent" && linkedToolUseId) {
+        claudeToolUseAliases.set(linkedToolUseId, event.id);
+      }
       toolUses.set(event.id, event);
       activityOrderById.set(event.id, index);
-      if (isBackgroundAgentToolUse(event) && !rowsById.has(event.id)) {
+      if (!rowsById.has(event.id)) {
         rowsById.set(event.id, { id: event.id, title: subAgentTitleFromInput(event.input) });
       }
     }
@@ -140,6 +140,10 @@ export function backgroundSubAgentRows(
       }
     }
   });
+
+  for (const [toolUseId, taskId] of claudeToolUseAliases) {
+    if (rowsById.has(toolUseId) && rowsById.has(taskId)) rowsById.delete(toolUseId);
+  }
 
   return Array.from(rowsById.values()).map((agent) => {
     const toolUse = toolUses.get(agent.id);
