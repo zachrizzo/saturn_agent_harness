@@ -202,6 +202,13 @@ elif [[ "$PLAN_ACTION" == "approve" && "$CURRENT_PLAN_STATUS" == "awaiting_appro
   CODEX_COLLAB_MODE="default"
 fi
 
+# Codex app-server is the native application protocol behind the Codex UI. Use
+# it for normal chat turns too, so Saturn wraps native capabilities instead of
+# re-creating them around `codex exec`.
+if [[ "$ENGINE" == "codex" && -z "$CODEX_COLLAB_MODE" ]]; then
+  CODEX_COLLAB_MODE="default"
+fi
+
 # ─── Gather agent + previous-turn context ─────────────────────────────────────
 AGENT_PROMPT="$(jq -r '.agent_snapshot.prompt // ""' "$META_FILE")"
 AGENT_CWD="$(jq -r '.agent_snapshot.cwd // ""' "$META_FILE")"

@@ -10,6 +10,7 @@ import { claudeContextWindow, fallbackClaudeModels } from "@/lib/claude-models";
 import { normalizeCli } from "@/lib/clis";
 import { readBedrockConfig } from "@/lib/bedrock-auth";
 import { claudeCliReasoningEfforts, reasoningEffortsForCliModel } from "@/lib/model-capabilities";
+import { listCodexModels } from "@/lib/native/codex-app-server";
 
 export const dynamic = "force-dynamic";
 
@@ -133,6 +134,23 @@ async function getPersonalClaudeModels(): Promise<Model[]> {
 }
 
 async function getCodexModels(): Promise<Model[]> {
+  try {
+    const nativeModels = await listCodexModels();
+    const models = nativeModels
+      .filter((m) => !m.hidden)
+      .map((m) => ({
+        id: m.id,
+        name: m.displayName ?? m.model ?? m.id,
+        defaultReasoningEffort: isModelReasoningEffort(m.defaultReasoningEffort) ? m.defaultReasoningEffort : undefined,
+        supportedReasoningEfforts: normalizeSupportedReasoningEfforts(
+          m.supportedReasoningEfforts?.map((effort) => effort.reasoningEffort),
+        ),
+      }));
+    if (models.length > 0) return models;
+  } catch {
+    // Compatibility fallback for older Codex installs without app-server.
+  }
+
   try {
     const cachePath = path.join(os.homedir(), ".codex", "models_cache.json");
     const raw = await fs.readFile(cachePath, "utf8");

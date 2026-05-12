@@ -228,9 +228,16 @@ This writes:
 
 Each server entry in `mcps.json` has a `targets` array controlling which CLIs receive it. Saturn preserves MCP servers that were added directly by Claude Code, Codex, plugins, or the user. Claude Code entries can set `"alwaysLoad": true` when a small server should bypass tool-search deferral.
 
-### Native CLI pass-through
+### Native CLI bridge
 
-In a chat, send `/native <args>` to run the selected backend's CLI subcommand directly and render its output in the thread. This is the escape hatch for new Claude Code or Codex capabilities that Saturn does not model yet.
+Saturn keeps the chat UI, but lets each backend own its own capability registry:
+
+- Codex chat turns run through `codex app-server`, the same native application protocol used for Codex app surfaces.
+- Codex model and skill discovery come from native app-server methods such as `model/list` and `skills/list`.
+- Claude slash-command discovery comes from the Claude Agent SDK initialization surface when the Claude binary is available to the dashboard process.
+- Filesystem scans remain as compatibility fallbacks for older or unavailable CLIs.
+
+In a chat, `/native <args>` still runs the selected backend's CLI subcommand directly and renders its output in the thread. Treat it as a diagnostic escape hatch for capabilities that do not yet expose a structured app-server or SDK method.
 
 Examples:
 

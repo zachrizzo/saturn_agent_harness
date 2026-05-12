@@ -199,7 +199,7 @@ function hasPreferredPluginMcpServer(mcpServers: McpServers | undefined): boolea
   );
 }
 
-async function providerOptions(cli: CLI, model?: string): Promise<Pick<Options, "env" | "model" | "settingSources" | "settings" | "mcpServers">> {
+export async function claudeProviderOptions(cli: CLI, model?: string): Promise<Pick<Options, "env" | "model" | "settingSources" | "settings" | "mcpServers">> {
   const env: Record<string, string | undefined> = { ...process.env };
   let effectiveModel = model;
   let settingSources: SettingSource[] | undefined;
@@ -339,7 +339,7 @@ export class ClaudeAdapter implements RunnableAdapter {
     internal.abort = abort;
     const model = overrides?.model ?? internal.model;
     const allowedTools = overrides?.allowedTools ?? internal.allowedTools;
-    const provider = await providerOptions(internal.cli, model);
+    const provider = await claudeProviderOptions(internal.cli, model);
     const reasoningEffort = await resolveReasoningEffortForCliModel(
       internal.cli,
       provider.model ?? model,

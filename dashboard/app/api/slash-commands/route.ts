@@ -3,6 +3,8 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { isClaudeCli, normalizeCli } from "@/lib/clis";
+import { listClaudeSlashCommands } from "@/lib/native/claude-agent";
+import { listCodexSkills } from "@/lib/native/codex-app-server";
 
 export const dynamic = "force-dynamic";
 
@@ -368,7 +370,32 @@ async function getCodexItems(): Promise<DiscoveredItem[]> {
   return result;
 }
 
-async function getClaudeCommands(): Promise<SlashCommand[]> {
+function discoveryCwd(): string {
+  return process.env.AUTOMATIONS_ROOT ?? process.cwd();
+}
+
+async function getClaudeCommands(cli: string): Promise<SlashCommand[]> {
+  try {
+    const commands = await listClaudeSlashCommands({ cli, cwd: discoveryCwd() });
+    if (commands.length > 0) {
+      return commands.map((command) => {
+        const name = command.name.replace(/^\//, "");
+        return {
+          name,
+          label: `/${name}`,
+          description: command.description || `Invoke ${name}`,
+          kind: "command" as const,
+          clis: ["claude-bedrock", "claude-personal", "claude-local"],
+          transform: "replace" as const,
+          instruction: `/${name}`,
+        };
+      });
+    }
+  } catch {
+    // Fall through to the filesystem-based compatibility scan for machines
+    // where the Claude binary is not available to the dashboard process.
+  }
+
   const items = await getClaudeItems();
   return Promise.all(
     items.map(async ({ filePath, name, kind }) => {
@@ -387,6 +414,24 @@ async function getClaudeCommands(): Promise<SlashCommand[]> {
 }
 
 async function getCodexCommands(): Promise<SlashCommand[]> {
+  try {
+    const skills = await listCodexSkills(discoveryCwd());
+    if (skills.length > 0) {
+      return skills.map((skill) => ({
+        name: skill.name,
+        label: `/${skill.name}`,
+        description: skill.shortDescription || skill.description || `Use Codex skill ${skill.name}`,
+        kind: "skill" as const,
+        clis: ["codex"],
+        transform: "literal" as const,
+        instruction: `$${skill.name}`,
+      }));
+    }
+  } catch {
+    // Fall through to the legacy scan so the menu still works when Codex is
+    // not installed or app-server is temporarily unavailable.
+  }
+
   const items = await getCodexItems();
   return Promise.all(
     items.map(async ({ filePath, name, kind }) => {
@@ -415,9 +460,15 @@ export async function GET(request: Request) {
     cli === "codex"
       ? await getCodexCommands()
       : isClaudeCli(cli)
-        ? await getClaudeCommands()
+        ? await getClaudeCommands(cli)
         : [];
-  const commands = [...BUILTIN_COMMANDS, ...discoveredCommands].filter((c) => c.clis.includes(cli));
+  const commands: SlashCommand[] = [];
+  const seen = new Set<string>();
+  for (const command of [...BUILTIN_COMMANDS, ...discoveredCommands]) {
+    if (!command.clis.includes(cli) || seen.has(command.name)) continue;
+    seen.add(command.name);
+    commands.push(command);
+  }
 
   return NextResponse.json({ commands });
 }
