@@ -4,6 +4,7 @@ import type { WriteStream } from "node:fs";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { spawn } from "child_process";
+import { scriptCmd } from "./shell-script";
 import { binDir, sessionsRoot } from "./paths";
 import { isOrchestrator } from "./session-utils";
 import { mintToken } from "./mcp/auth";
@@ -333,7 +334,8 @@ export async function spawnTurn(
   extraEnv.TASK_SESSION_ID = sessionId;
 
   const earlyStderr = await createReadyAppendStream(path.join(sessionsRoot(), sessionId, "stderr.log"));
-  const proc = spawn(script, [sessionId], {
+  const [spawnCmd, spawnArgs] = scriptCmd(script, [sessionId]);
+  const proc = spawn(spawnCmd, spawnArgs, {
     detached: true,
     stdio: ["pipe", "ignore", earlyStderr],
     env: {

@@ -7,6 +7,7 @@
 
 import { promises as fs } from "node:fs";
 import { spawn, execFile } from "node:child_process";
+import { scriptCmd } from "./shell-script";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -346,7 +347,8 @@ async function runSliceProcess(params: {
   const pidsFile = path.join(params.sliceDir, "pids.json");
 
   const exitCode = await new Promise<number>((resolve) => {
-    const proc = spawn(scriptPath, [], {
+    const [spawnCmd, spawnArgs] = scriptCmd(scriptPath, []);
+    const proc = spawn(spawnCmd, spawnArgs, {
       detached: false,
       stdio: ["pipe", "ignore", "ignore"],
       env: {

@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import { scriptCmd } from "./shell-script";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { jobsFile, runsRoot, agentsFile, sessionsRoot } from "./paths";
@@ -1184,7 +1185,8 @@ export async function triggerJob(name: string, _model?: string): Promise<string>
   // cli-dispatch.sh (called by run-job.sh) handles Bedrock alias expansion and
   // CLAUDE_CODE_USE_BEDROCK injection internally via to_bedrock_id(). No need
   // to touch jobs.json here — doing so would corrupt the UI with Bedrock IDs.
-  const proc = spawn(scriptPath, [name], { detached: true, stdio: "ignore" });
+  const [spawnCmd, spawnArgs] = scriptCmd(scriptPath, [name]);
+  const proc = spawn(spawnCmd, spawnArgs, { detached: true, stdio: "ignore" });
   proc.unref();
 
   return new Date().toISOString().slice(0, 19).replace(/:/g, "-");
