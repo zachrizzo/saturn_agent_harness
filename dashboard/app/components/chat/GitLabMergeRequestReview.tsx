@@ -35,12 +35,22 @@ const MR_URL_STORAGE_PREFIX = "saturn.gitlabMergeRequest.url";
 const MR_FILES_WIDTH_STORAGE_PREFIX = "saturn.gitlabMergeRequest.filesWidth";
 const MR_FILES_HEIGHT_STORAGE_PREFIX = "saturn.gitlabMergeRequest.filesHeight";
 const MR_FILE_VIEW_COLLAPSED_STORAGE_PREFIX = "saturn.gitlabMergeRequest.fileViewCollapsed";
+const MR_REVIEW_CACHE_DB = "saturn.gitlabMergeRequest.reviewCache";
+const MR_REVIEW_CACHE_STORE = "reviews";
+const MR_REVIEW_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const FILE_PANEL_MIN_WIDTH = 180;
 const FILE_PANEL_MAX_WIDTH = 520;
 const FILE_PANEL_MIN_DIFF_WIDTH = 320;
 const FILE_PANEL_MIN_HEIGHT = 96;
 const FILE_PANEL_MAX_HEIGHT = 360;
 const FILE_PANEL_DEFAULT_HEIGHT = 150;
+
+type CachedMergeRequestReview = {
+  key: string;
+  url: string;
+  cachedAt: number;
+  data: GitLabMergeRequestReviewData;
+};
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -70,6 +80,74 @@ function normalizeUrl(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) return "";
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
+function reviewCacheKey(cacheKey: string | undefined, url: string): string {
+  return `${cacheKey || "global"}:${url}`;
+}
+
+function openReviewCacheDb(): Promise<IDBDatabase | null> {
+  if (typeof window === "undefined" || !("indexedDB" in window)) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const request = window.indexedDB.open(MR_REVIEW_CACHE_DB, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(MR_REVIEW_CACHE_STORE)) {
+        db.createObjectStore(MR_REVIEW_CACHE_STORE, { keyPath: "key" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => resolve(null);
+    request.onblocked = () => resolve(null);
+  });
+}
+
+async function deleteCachedReview(key: string): Promise<void> {
+  const db = await openReviewCacheDb();
+  if (!db) return;
+  await new Promise<void>((resolve) => {
+    const tx = db.transaction(MR_REVIEW_CACHE_STORE, "readwrite");
+    tx.objectStore(MR_REVIEW_CACHE_STORE).delete(key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => resolve();
+    tx.onabort = () => resolve();
+  });
+  db.close();
+}
+
+async function readCachedReview(cacheKey: string | undefined, url: string): Promise<GitLabMergeRequestReviewData | null> {
+  const key = reviewCacheKey(cacheKey, url);
+  const db = await openReviewCacheDb();
+  if (!db) return null;
+  const entry = await new Promise<CachedMergeRequestReview | undefined>((resolve) => {
+    const tx = db.transaction(MR_REVIEW_CACHE_STORE, "readonly");
+    const request = tx.objectStore(MR_REVIEW_CACHE_STORE).get(key) as IDBRequest<CachedMergeRequestReview | undefined>;
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => resolve(undefined);
+    tx.onerror = () => resolve(undefined);
+    tx.onabort = () => resolve(undefined);
+  });
+  db.close();
+  if (!entry || entry.url !== url || !entry.data || !Array.isArray(entry.data.diffs)) return null;
+  if (Date.now() - entry.cachedAt > MR_REVIEW_CACHE_TTL_MS) {
+    void deleteCachedReview(key);
+    return null;
+  }
+  return entry.data;
+}
+
+async function writeCachedReview(cacheKey: string | undefined, url: string, data: GitLabMergeRequestReviewData): Promise<void> {
+  const key = reviewCacheKey(cacheKey, url);
+  const db = await openReviewCacheDb();
+  if (!db) return;
+  await new Promise<void>((resolve) => {
+    const tx = db.transaction(MR_REVIEW_CACHE_STORE, "readwrite");
+    tx.objectStore(MR_REVIEW_CACHE_STORE).put({ key, url, cachedAt: Date.now(), data } satisfies CachedMergeRequestReview);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => resolve();
+    tx.onabort = () => resolve();
+  });
+  db.close();
 }
 
 function fileFlags(file: GitLabMergeRequestDiffFile): string[] {
@@ -630,6 +708,7 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
   const filePanelHeightRef = useRef(filePanelHeight);
   const suppressNextRowClickRef = useRef(false);
   const restoredStorageKeyRef = useRef<string | null>(null);
+  const loadRequestIdRef = useRef(0);
 
   const review = state.status === "ok" ? state.data : null;
   const storageKey = useMemo(
@@ -775,12 +854,16 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
     setFilesCollapsed(!wideLayout);
   }, [filesTouched, review, wideLayout]);
 
-  const loadMergeRequestUrl = useCallback(async (rawUrl: string, persist = true) => {
+  const loadMergeRequestUrl = useCallback(async (rawUrl: string, persist = true, options: { force?: boolean } = {}) => {
     const url = normalizeUrl(rawUrl);
     if (!url) {
       setState({ status: "error", message: "Enter a GitLab merge request URL." });
       return;
     }
+
+    const requestId = loadRequestIdRef.current + 1;
+    loadRequestIdRef.current = requestId;
+    const isCurrentRequest = () => loadRequestIdRef.current === requestId;
 
     setDraftUrl(url);
     setState({ status: "loading" });
@@ -793,15 +876,32 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
     setSearchQuery("");
     setExpandedContext(new Set());
     try {
+      if (!options.force) {
+        const cached = await readCachedReview(cacheKey, url);
+        if (cached) {
+          if (!isCurrentRequest()) return;
+          setState({ status: "ok", data: cached });
+          setUrlEditorOpen(false);
+          if (persist) {
+            window.localStorage.setItem(storageKey, url);
+            window.localStorage.setItem(fileViewCollapsedStorageKey, "0");
+            setFileViewCollapsed(false);
+          }
+          return;
+        }
+      }
+
       const res = await fetch(`/api/gitlab/merge-request?url=${encodeURIComponent(url)}`, {
         cache: "no-store",
       });
+      if (!isCurrentRequest()) return;
       const data = await res.json().catch(() => null) as (GitLabMergeRequestReviewData & { error?: string; hint?: string }) | null;
       if (!res.ok) {
         const message = [data?.error || `GitLab returned HTTP ${res.status}`, data?.hint].filter(Boolean).join(" ");
         throw new Error(message);
       }
       if (!data || !Array.isArray(data.diffs)) throw new Error("GitLab response did not include diff data.");
+      void writeCachedReview(cacheKey, url, data);
       setState({ status: "ok", data });
       setUrlEditorOpen(false);
       if (persist) {
@@ -810,15 +910,25 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
         setFileViewCollapsed(false);
       }
     } catch (err) {
+      if (!isCurrentRequest()) return;
       setState({ status: "error", message: err instanceof Error ? err.message : "Could not load that merge request." });
     }
-  }, [fileViewCollapsedStorageKey, storageKey]);
+  }, [cacheKey, fileViewCollapsedStorageKey, storageKey]);
 
   useEffect(() => {
     if (restoredStorageKeyRef.current === storageKey) return;
     restoredStorageKeyRef.current = storageKey;
     const cachedUrl = window.localStorage.getItem(storageKey)?.trim();
-    if (!cachedUrl) return;
+    if (!cachedUrl) {
+      loadRequestIdRef.current += 1;
+      setDraftUrl("");
+      setState({ status: "idle" });
+      setUrlEditorOpen(true);
+      setSelectedPath(null);
+      setSelectedRows(new Set());
+      setPinStatus(null);
+      return;
+    }
     void loadMergeRequestUrl(cachedUrl, false);
   }, [loadMergeRequestUrl, storageKey]);
 
@@ -829,7 +939,7 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
 
   const refreshMergeRequest = () => {
     if (!review) return;
-    void loadMergeRequestUrl(review.sourceUrl || review.webUrl || draftUrl, false);
+    void loadMergeRequestUrl(review.sourceUrl || review.webUrl || draftUrl, false, { force: true });
   };
 
   const contextForScope = () => {

@@ -564,6 +564,18 @@ h1, h2, h3, h4, h5, h6 {
   background: var(--text-subtle);
 }
 
+.prose-dashboard ol {
+  list-style: decimal;
+  padding-left: 1.25rem;
+  margin: 0.35rem 0;
+}
+.prose-dashboard ol li {
+  padding: 0.2rem 0;
+}
+.prose-dashboard ol li::marker {
+  color: var(--text-subtle);
+}
+
 .prose-dashboard a {
   color: var(--accent);
   text-decoration: none;

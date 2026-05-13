@@ -1060,6 +1060,16 @@ export function ChatView({
     scrollEl.scrollTo({ top: Math.max(0, targetHeight - scrollEl.clientHeight), behavior });
   }, [getChatScrollElement]);
 
+  const pinToBottomAfterRender = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      if (!mountedRef.current) return;
+      scrollToEnd("auto");
+      window.requestAnimationFrame(() => {
+        if (mountedRef.current) scrollToEnd("auto");
+      });
+    });
+  }, [scrollToEnd]);
+
   const turnCount = meta.turns.length;
   const chatStreamInitializing = (turnCount > 0 || Boolean(pendingMessage))
     && initialBottomReadySessionRef.current !== sessionId;
@@ -1778,6 +1788,7 @@ export function ChatView({
     setAutoScroll(true);
     setAtBottom(true);
     atBottomRef.current = true;
+    pinToBottomAfterRender();
 
     try {
       const res = await fetch(
@@ -1818,7 +1829,7 @@ export function ChatView({
     } finally {
       finishExclusiveAction(seq, controller);
     }
-  }, [beginExclusiveAction, beginMutation, finishExclusiveAction, isCurrentAction, refreshSessionSnapshot, sessionId, showApiFailure]);
+  }, [beginExclusiveAction, beginMutation, finishExclusiveAction, isCurrentAction, pinToBottomAfterRender, refreshSessionSnapshot, sessionId, showApiFailure]);
 
   const runSubAgentInBackground = useCallback(async (id: string, title: string) => {
     setBackgroundSubAgents((current) => ({
@@ -1969,13 +1980,7 @@ export function ChatView({
     setAutoScroll(true);
     setAtBottom(true);
     atBottomRef.current = true;
-    window.requestAnimationFrame(() => {
-      if (!mountedRef.current) return;
-      scrollToEnd("auto");
-      window.requestAnimationFrame(() => {
-        if (mountedRef.current) scrollToEnd("auto");
-      });
-    });
+    pinToBottomAfterRender();
 
     try {
       const res = await fetch(
@@ -2024,7 +2029,7 @@ export function ChatView({
     } finally {
       finishExclusiveAction(seq, controller);
     }
-  }, [beginExclusiveAction, beginMutation, finishExclusiveAction, isCurrentAction, refreshSessionSnapshot, scrollToEnd, sessionId, showApiFailure]);
+  }, [beginExclusiveAction, beginMutation, finishExclusiveAction, isCurrentAction, pinToBottomAfterRender, refreshSessionSnapshot, sessionId, showApiFailure]);
 
   const approvePlan = () => {
     void sendMessage(
