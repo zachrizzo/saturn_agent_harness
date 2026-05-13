@@ -594,6 +594,11 @@ const markdownComponents: Components = {
       {children}
     </a>
   ),
+  table: ({ children, ...props }) => (
+    <div className="markdown-table-scroll" tabIndex={0}>
+      <table {...props}>{children}</table>
+    </div>
+  ),
 };
 
 function MarkdownPreview({ content }: { content: string }) {

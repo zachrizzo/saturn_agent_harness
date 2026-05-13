@@ -714,6 +714,11 @@ function markdownComponents(sessionId?: string, onOpenFile?: (path: string) => v
       if (mermaidSource) return <MermaidDiagram chart={mermaidSource} />;
       return <pre {...props}>{children}</pre>;
     },
+    table: ({ children, ...props }: React.TableHTMLAttributes<HTMLTableElement>) => (
+      <div className="markdown-table-scroll" tabIndex={0}>
+        <table {...props}>{children}</table>
+      </div>
+    ),
     code: ({ className, children, ...props }: React.HTMLAttributes<HTMLElement> & { className?: string }) => {
       const text = String(children).replace(/\n$/, "");
       const isBlock = Boolean(className) || text.includes("\n");

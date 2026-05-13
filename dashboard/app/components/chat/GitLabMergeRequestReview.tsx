@@ -34,6 +34,7 @@ type Props = {
 const MR_URL_STORAGE_PREFIX = "saturn.gitlabMergeRequest.url";
 const MR_FILES_WIDTH_STORAGE_PREFIX = "saturn.gitlabMergeRequest.filesWidth";
 const MR_FILES_HEIGHT_STORAGE_PREFIX = "saturn.gitlabMergeRequest.filesHeight";
+const MR_FILE_VIEW_COLLAPSED_STORAGE_PREFIX = "saturn.gitlabMergeRequest.fileViewCollapsed";
 const FILE_PANEL_MIN_WIDTH = 180;
 const FILE_PANEL_MAX_WIDTH = 520;
 const FILE_PANEL_MIN_DIFF_WIDTH = 320;
@@ -300,6 +301,11 @@ function MarkdownComment({ body, instanceUrl }: { body: string; instanceUrl: str
         {children}
       </a>
     ),
+    table: ({ children, ...props }) => (
+      <div className="markdown-table-scroll" tabIndex={0}>
+        <table {...props}>{children}</table>
+      </div>
+    ),
   }), [instanceUrl]);
 
   return (
@@ -430,6 +436,9 @@ function MergeRequestDiff({
 export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoComposer, onAttachToComposer, onPinContext }: Props) {
   const filePanelWidthStorageKey = cacheKey ? `${MR_FILES_WIDTH_STORAGE_PREFIX}:${cacheKey}` : MR_FILES_WIDTH_STORAGE_PREFIX;
   const filePanelHeightStorageKey = cacheKey ? `${MR_FILES_HEIGHT_STORAGE_PREFIX}:${cacheKey}` : MR_FILES_HEIGHT_STORAGE_PREFIX;
+  const fileViewCollapsedStorageKey = cacheKey
+    ? `${MR_FILE_VIEW_COLLAPSED_STORAGE_PREFIX}:${cacheKey}`
+    : MR_FILE_VIEW_COLLAPSED_STORAGE_PREFIX;
   const [draftUrl, setDraftUrl] = useState("");
   const [state, setState] = useState<ReviewState>({ status: "idle" });
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -439,6 +448,7 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
   const [searchQuery, setSearchQuery] = useState("");
   const [filesCollapsed, setFilesCollapsed] = useState(false);
   const [filesTouched, setFilesTouched] = useState(false);
+  const [fileViewCollapsed, setFileViewCollapsed] = useState(false);
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
   const [filePanelWidth, setFilePanelWidth] = useState(() => defaultFilePanelWidth(panelWidth));
   const [filePanelHeight, setFilePanelHeight] = useState(FILE_PANEL_DEFAULT_HEIGHT);
@@ -465,6 +475,7 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
   const scopedAdditions = selectedFile?.additions ?? review?.additions ?? 0;
   const scopedDeletions = selectedFile?.deletions ?? review?.deletions ?? 0;
   const scopedFiles = selectedFile ? 1 : review?.files ?? 0;
+  const fileViewLabel = selectedFile?.newPath ?? "All changed files";
   const wideLayout = (panelWidth ?? 0) >= 760;
   const reviewStyle = {
     "--mr-files-width": `${filePanelWidth}px`,
@@ -528,6 +539,10 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
     // Only reload saved sizes when the chat-specific storage keys change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filePanelWidthStorageKey, filePanelHeightStorageKey]);
+
+  useEffect(() => {
+    setFileViewCollapsed(window.localStorage.getItem(fileViewCollapsedStorageKey) === "1");
+  }, [fileViewCollapsedStorageKey]);
 
   useEffect(() => {
     const stopResize = () => {
@@ -608,11 +623,15 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
       if (!data || !Array.isArray(data.diffs)) throw new Error("GitLab response did not include diff data.");
       setState({ status: "ok", data });
       setUrlEditorOpen(false);
-      if (persist) window.localStorage.setItem(storageKey, url);
+      if (persist) {
+        window.localStorage.setItem(storageKey, url);
+        window.localStorage.setItem(fileViewCollapsedStorageKey, "0");
+        setFileViewCollapsed(false);
+      }
     } catch (err) {
       setState({ status: "error", message: err instanceof Error ? err.message : "Could not load that merge request." });
     }
-  }, [storageKey]);
+  }, [fileViewCollapsedStorageKey, storageKey]);
 
   useEffect(() => {
     if (restoredStorageKeyRef.current === storageKey) return;
@@ -625,6 +644,11 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
   const loadMergeRequest = async (event?: FormEvent<HTMLFormElement>) => {
     event?.preventDefault();
     await loadMergeRequestUrl(draftUrl);
+  };
+
+  const refreshMergeRequest = () => {
+    if (!review) return;
+    void loadMergeRequestUrl(review.sourceUrl || review.webUrl || draftUrl, false);
   };
 
   const contextForScope = () => {
@@ -683,6 +707,14 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
   const toggleFiles = () => {
     setFilesTouched(true);
     setFilesCollapsed((current) => !current);
+  };
+
+  const toggleFileView = () => {
+    setFileViewCollapsed((current) => {
+      const next = !current;
+      window.localStorage.setItem(fileViewCollapsedStorageKey, next ? "1" : "0");
+      return next;
+    });
   };
 
   const startFilePanelResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -908,6 +940,9 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
                 <button type="button" className="insp-mr-button quiet" onClick={() => setUrlEditorOpen(true)}>
                   Change MR
                 </button>
+                <button type="button" className="insp-mr-button quiet" onClick={refreshMergeRequest}>
+                  Refresh
+                </button>
                 <button type="button" className="insp-mr-button primary" onClick={addToChat}>
                   {selectedFile ? "Add file to chat" : "Add MR to chat"}
                 </button>
@@ -919,18 +954,42 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
                 >
                   {pinning ? "Pinning..." : "Pin for agent"}
                 </button>
+                <button type="button" className="insp-mr-button quiet" onClick={toggleFileView}>
+                  {fileViewCollapsed ? "Show file view" : "Hide file view"}
+                </button>
                 {pinStatus && <span className="insp-mr-pin-status">{pinStatus}</span>}
               </div>
             </div>
           </details>
 
-          <div
-            className={`insp-mr-review ${wideLayout ? "wide" : ""} ${filesCollapsed ? "files-collapsed" : ""}`.trim()}
-            style={reviewStyle}
-          >
+          {fileViewCollapsed ? (
+            <div className="insp-mr-review-collapsed">
+              <div className="insp-mr-review-collapsed-copy">
+                <strong>{fileViewLabel}</strong>
+                <span>
+                  {formatCount(scopedFiles)} {scopedFiles === 1 ? "file" : "files"}
+                  {" · "}+{formatCount(scopedAdditions)} -{formatCount(scopedDeletions)}
+                  {selectedRows.size > 0 && ` · ${selectedRows.size.toLocaleString()} selected`}
+                </span>
+              </div>
+              <button type="button" className="insp-mr-button quiet" onClick={refreshMergeRequest}>
+                Refresh
+              </button>
+              <button type="button" className="insp-mr-button primary" onClick={toggleFileView}>
+                Show file view
+              </button>
+            </div>
+          ) : (
+            <div
+              className={`insp-mr-review ${wideLayout ? "wide" : ""} ${filesCollapsed ? "files-collapsed" : ""}`.trim()}
+              style={reviewStyle}
+            >
             <div className="insp-mr-diff-controls">
               <button type="button" className="insp-mr-button quiet" onClick={toggleFiles}>
                 {filesCollapsed ? `Show files (${review.files})` : "Hide files"}
+              </button>
+              <button type="button" className="insp-mr-button quiet" onClick={refreshMergeRequest}>
+                Refresh
               </button>
               <div className="insp-mr-search-wrap">
                 <input
@@ -964,6 +1023,9 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
                   </button>
                 </>
               )}
+              <button type="button" className="insp-mr-button quiet" onClick={toggleFileView}>
+                Hide view
+              </button>
             </div>
 
             {!filesCollapsed && (
@@ -1030,7 +1092,8 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
                 onEnterRowSelection={enterRowSelection}
               />
             </div>
-          </div>
+            </div>
+          )}
         </>
       )}
     </div>

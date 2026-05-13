@@ -1115,14 +1115,41 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 /* GFM tables — rendered as real HTML tables via remark-gfm. */
+.prose-dashboard .markdown-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  margin: 0.6rem 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.prose-dashboard .markdown-table-scroll:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 24%, transparent);
+  outline-offset: 2px;
+}
+
 .prose-dashboard table {
   border-collapse: collapse;
-  width: 100%;
-  margin: 0.6rem 0;
+  min-width: 100%;
+  width: max-content;
+  margin: 0;
   font-size: 12.5px;
+}
+
+.prose-dashboard > table {
   display: block;
+  max-width: 100%;
+  margin: 0.6rem 0;
   overflow-x: auto;
 }
+
+.prose-dashboard .markdown-table-scroll table {
+  display: table;
+  overflow: visible;
+}
+
 .prose-dashboard thead {
   background: var(--bg-subtle);
 }
@@ -10053,6 +10080,39 @@ html[data-sidebar-collapsed="1"] .app-sidebar {
   font-size: 10.5px;
 }
 
+.insp-mr-review-collapsed {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 92%, var(--accent) 3%), color-mix(in srgb, var(--bg) 88%, var(--bg-elev)));
+}
+
+.insp-mr-review-collapsed-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.insp-mr-review-collapsed-copy strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11.5px;
+  font-weight: 720;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.insp-mr-review-collapsed-copy span {
+  color: var(--text-subtle);
+  font-size: 10.5px;
+}
+
 .insp-mr-review {
   display: grid;
   grid-template-rows: auto minmax(86px, var(--mr-files-height, 150px)) 8px minmax(0, 1fr);
@@ -10074,7 +10134,7 @@ html[data-sidebar-collapsed="1"] .app-sidebar {
 .insp-mr-diff-controls {
   display: grid;
   grid-column: 1 / -1;
-  grid-template-columns: auto minmax(120px, 1fr) auto auto auto;
+  grid-template-columns: auto auto minmax(120px, 1fr) auto auto auto auto;
   align-items: center;
   gap: 8px;
   min-width: 0;
