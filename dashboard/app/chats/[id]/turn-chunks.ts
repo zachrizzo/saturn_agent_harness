@@ -143,17 +143,6 @@ function nextUnclaimedSlice<T extends EventSlice>(
   return undefined;
 }
 
-function latestUnclaimedOpenSlice<T extends EventSlice>(
-  slices: T[],
-  consumed: Set<EventSlice>,
-): T | undefined {
-  for (let i = slices.length - 1; i >= 0; i--) {
-    const slice = slices[i];
-    if (!consumed.has(slice) && !slice.hasResult) return slice;
-  }
-  return undefined;
-}
-
 export function buildTurnChunks(
   meta: Pick<SessionMeta, "turns" | "status">,
   events: StreamEvent[],
@@ -189,32 +178,19 @@ export function buildTurnChunks(
 
   if (saturnSlices.length > 0) {
     const slicesByTurnId = new Map(saturnSlices.map((slice) => [slice.turnId!, slice]));
-    const consumedSaturnSlices = new Set<EventSlice>();
     const leadingLegacySlices = buildLegacyCompatibilitySlices(events, 0, saturnSlices[0].start);
     let leadingLegacyCursor = 0;
     const result: TurnChunk[] = [];
 
     meta.turns.forEach((t, i) => {
       const turnId = turnIdFromMetaTurn(t);
+      const isUnkeyedRunningTail = i === meta.turns.length - 1 && meta.status === "running" && !turnId;
       let slice = turnId ? slicesByTurnId.get(turnId) : undefined;
-      if (slice) {
-        consumedSaturnSlices.add(slice);
-      } else if (leadingLegacyCursor < leadingLegacySlices.length) {
+      if (!slice && !isUnkeyedRunningTail && leadingLegacyCursor < leadingLegacySlices.length) {
         // Compatibility only: old sessions may have stream events before the
-        // first dashboard-owned turn marker. Modern turns never use this path.
+        // first dashboard-owned turn marker. Never use unmatched historical
+        // events for a live optimistic tail turn; it has no stable key yet.
         slice = leadingLegacySlices[leadingLegacyCursor++];
-      } else if (i === meta.turns.length - 1 && meta.status === "running") {
-        // Optimistic client turns briefly exist before the server snapshot with
-        // the new turn_id arrives. Only attach a new open Saturn slice that
-        // starts after the previous turn's slice; otherwise a partial or stale
-        // event snapshot can make the previous reply look like the new one.
-        const previousTurnId = i > 0 ? turnIdFromMetaTurn(meta.turns[i - 1]) : undefined;
-        const previousSlice = previousTurnId ? slicesByTurnId.get(previousTurnId) : undefined;
-        const openSlice = latestUnclaimedOpenSlice(saturnSlices, consumedSaturnSlices);
-        if (openSlice && (!previousTurnId || (previousSlice && openSlice.start > previousSlice.start))) {
-          slice = openSlice;
-          consumedSaturnSlices.add(slice);
-        }
       }
       if (shouldMaterializeTurn(i)) result.push(makeChunk(t, i, slice));
     });
@@ -240,6 +216,7 @@ export function buildTurnChunks(
     const t = meta.turns[i];
     const isLast = i === meta.turns.length - 1;
     const sid = nativeSessionIdFromMetaTurn(t);
+    const isUnkeyedRunningTail = isLast && meta.status === "running" && !sid;
 
     let slice: LegacyEventSlice | undefined;
 
@@ -247,15 +224,11 @@ export function buildTurnChunks(
       const consumed = consumedBySid.get(sid) ?? 0;
       slice = slicesBySid.get(sid)?.[consumed];
       if (slice) consumedBySid.set(sid, consumed + 1);
-    } else if (isLast && meta.status === "running" && allSlices.length > 0) {
-      // The turn stub is written before run-turn.sh fills cli_session_id.
-      // Attach the newest unclaimed native slice so live output is visible,
-      // but only if it is still open. Otherwise an optimistic new turn can
-      // briefly render the previous completed assistant reply until refresh.
-      slice = latestUnclaimedOpenSlice(allSlices, consumedSlices);
-    } else {
+    } else if (!isUnkeyedRunningTail) {
       // Compatibility only: sessions written before dashboard turn ids must be
       // assigned chronologically because native CLIs can reuse session ids.
+      // The live optimistic tail is intentionally excluded so it cannot show a
+      // stale earlier assistant slice while waiting for its own stream marker.
       slice = nextUnclaimedSlice(allSlices, consumedSlices, legacyCursor);
     }
 

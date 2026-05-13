@@ -2593,6 +2593,14 @@ html[data-chat-inspector-collapsed="1"] .chat-shell .chat-scroll-bottom-button {
 
 /* ─── Chat: tool chips ──────────────────────────────────────────────────── */
 
+.tool-chip-wrap {
+  position: relative;
+  display: inline-flex;
+  max-width: 100%;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
 .tool-chip {
   display: inline-flex;
   align-items: center;
@@ -2668,6 +2676,111 @@ html[data-chat-inspector-collapsed="1"] .chat-shell .chat-scroll-bottom-button {
   border-color: var(--accent);
   background: var(--accent-soft);
 }
+
+.tool-chip-tooltip {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  z-index: 80;
+  display: grid;
+  gap: 8px;
+  width: min(520px, calc(100vw - 48px));
+  max-height: min(360px, 56vh);
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-elev) 96%, var(--bg));
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.18);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.45;
+  opacity: 0;
+  overflow: auto;
+  pointer-events: none;
+  transform: translateY(3px);
+  visibility: hidden;
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease,
+    visibility 0s linear 120ms;
+}
+
+.tool-chip-wrap:hover .tool-chip-tooltip {
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
+  transition-delay: 3s, 3s, 3s;
+}
+
+.tool-chip-wrap:focus-within .tool-chip-tooltip {
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
+  transition-delay: 600ms, 600ms, 600ms;
+}
+
+.tool-chip-tooltip-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.tool-chip-tooltip-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-chip-tooltip-status {
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.tool-chip-tooltip-status.ok { color: var(--success); background: color-mix(in srgb, var(--success) 12%, transparent); }
+.tool-chip-tooltip-status.err { color: var(--fail); background: color-mix(in srgb, var(--fail) 12%, transparent); }
+.tool-chip-tooltip-status.run { color: var(--running); background: color-mix(in srgb, var(--running) 14%, transparent); }
+
+.tool-chip-tooltip-section {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tool-chip-tooltip-label {
+  color: var(--text-subtle);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.tool-chip-tooltip code {
+  display: block;
+  max-height: 138px;
+  overflow: auto;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .tool-row {
   display: grid;
   gap: 5px;
@@ -6899,7 +7012,8 @@ html[data-chat-inspector-collapsed="1"] .chat-shell .chat-scroll-bottom-button {
   padding: 7px 12px;
   position: sticky;
   left: 0;
-  z-index: 3;
+  top: 0;
+  z-index: 8;
 }
 
 .file-viewer-diff-section + .file-viewer-diff-file,

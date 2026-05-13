@@ -1508,7 +1508,7 @@ export function ChatView({
     }
   }, [bedrockAuthPrompt, bedrockAuthPrompt?.profile, bedrockAuthPrompt?.region, recoverAfterBedrockAuthReady]);
 
-  const doFork = async (message: string, atTurn?: number) => {
+  const doFork = async (atTurn?: number) => {
     const { controller, seq } = beginExclusiveAction();
     try {
       const res = await fetch(
@@ -1516,7 +1516,7 @@ export function ChatView({
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ message, at_turn: atTurn }),
+          body: JSON.stringify({ at_turn: atTurn }),
           signal: controller.signal,
         },
       );
@@ -1537,19 +1537,8 @@ export function ChatView({
     }
   };
 
-  const promptFork = (atTurn?: number) => {
-    const message = window.prompt(
-      typeof atTurn === "number"
-        ? "Fork from this response: what should the next message in the new branch be?"
-        : "Fork: what should the first message in the new branch be?",
-    );
-    const trimmed = message?.trim();
-    if (!trimmed) return;
-    doFork(trimmed, atTurn);
-  };
-
   const forkAfterAssistantResponse = (turnIndex: number) => {
-    promptFork(turnIndex + 1);
+    void doFork(turnIndex + 1);
   };
 
   const doEdit = async (
@@ -2204,7 +2193,7 @@ export function ChatView({
                 variant="ghost"
                 disabled={sessionBusy}
                 title="Fork this conversation into a new session"
-                onClick={() => promptFork()}
+                onClick={() => void doFork()}
               >
                 Fork
               </Button>

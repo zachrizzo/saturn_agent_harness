@@ -52,6 +52,18 @@ function clipPreview(value: string, maxLength: number): string {
   return `${value.slice(0, Math.max(0, maxLength - 3))}...`;
 }
 
+function detailText(value: unknown, maxLength = 1_200): string {
+  if (value === undefined || value === null || value === "") return "—";
+  let raw: string | undefined;
+  try {
+    raw = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  } catch {
+    raw = String(value);
+  }
+  if (!raw) return "—";
+  return clipPreview(raw, maxLength);
+}
+
 /** Short human preview of a tool's input. Kept deterministic so the chip
  *  doesn't change width mid-stream. */
 function previewArgs(name: string, input: unknown): string {
@@ -83,22 +95,39 @@ function previewArgs(name: string, input: unknown): string {
 
 export function ToolChip({ tool, active, onClick }: Props) {
   const args = previewArgs(tool.name, tool.input);
+  const detailId = `tool-detail-${tool.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
   return (
-    <button
-      type="button"
-      className={`tool-chip ${active ? "active" : ""}`.trim()}
-      onClick={onClick}
-      title={args || tool.name}
-    >
-      <span className="ic">
-        <ToolIcon name={tool.name} />
+    <span className="tool-chip-wrap">
+      <button
+        type="button"
+        className={`tool-chip ${active ? "active" : ""}`.trim()}
+        onClick={onClick}
+        aria-describedby={detailId}
+      >
+        <span className="ic">
+          <ToolIcon name={tool.name} />
+        </span>
+        <span className="name">{tool.name}</span>
+        {args ? <span className="args">{args}</span> : null}
+        <span className={`status-pill ${tool.status}`}>
+          {tool.status === "run" && <span className="status-spinner" aria-hidden="true" />}
+          {STATUS_LABEL[tool.status]}
+        </span>
+      </button>
+      <span id={detailId} role="tooltip" className="tool-chip-tooltip">
+        <span className="tool-chip-tooltip-head">
+          <span className="tool-chip-tooltip-name">{tool.name}</span>
+          <span className={`tool-chip-tooltip-status ${tool.status}`}>{STATUS_LABEL[tool.status]}</span>
+        </span>
+        <span className="tool-chip-tooltip-section">
+          <span className="tool-chip-tooltip-label">Input</span>
+          <code>{detailText(tool.input)}</code>
+        </span>
+        <span className="tool-chip-tooltip-section">
+          <span className="tool-chip-tooltip-label">{tool.status === "err" ? "Result · error" : "Result"}</span>
+          <code>{detailText(tool.result)}</code>
+        </span>
       </span>
-      <span className="name">{tool.name}</span>
-      {args ? <span className="args">{args}</span> : null}
-      <span className={`status-pill ${tool.status}`}>
-        {tool.status === "run" && <span className="status-spinner" aria-hidden="true" />}
-        {STATUS_LABEL[tool.status]}
-      </span>
-    </button>
+    </span>
   );
 }

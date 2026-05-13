@@ -1,7 +1,8 @@
-// POST /api/sessions/[id]/fork { at_turn?, message }
+// POST /api/sessions/[id]/fork { at_turn?, message? }
 // Creates a new session seeded with the parent session's transcript up to
-// at_turn (default: all turns). The fork starts a new conversation by sending
-// `message` as the first user turn, with prior turns replayed as context.
+// at_turn (default: all turns). If `message` is provided, the fork starts a
+// new turn immediately. Otherwise, the copied chat opens idle so the user can
+// choose the next message from that point.
 
 import { NextRequest, NextResponse } from "next/server";
 import path from "node:path";
@@ -28,10 +29,7 @@ export async function POST(
     at_turn?: number;
     message?: string;
   };
-
-  if (!message?.trim()) {
-    return NextResponse.json({ error: "message required" }, { status: 400 });
-  }
+  const nextMessage = message?.trim();
 
   const parentMetaFile = path.join(sessionsRoot(), parentId, "meta.json");
   let parentMeta: SessionMeta;
@@ -46,7 +44,14 @@ export async function POST(
     typeof at_turn === "number" && at_turn >= 0 && at_turn <= parentMeta.turns.length
       ? at_turn
       : parentMeta.turns.length;
-  const carriedTurns = parentMeta.turns.slice(0, cutoff);
+  const carriedTurns = parentMeta.turns.slice(0, cutoff).map((turn) => {
+    // The copied chat should be an independent branch. Dropping the native CLI
+    // session id forces the first new message in the fork to replay the copied
+    // transcript into a fresh native conversation instead of appending to the
+    // parent's underlying Claude/Codex thread.
+    const { cli_session_id: _cliSessionId, ...copiedTurn } = turn;
+    return copiedTurn;
+  });
 
   const forkId = randomUUID();
   const forkDir = path.join(sessionsRoot(), forkId);
@@ -57,7 +62,7 @@ export async function POST(
     agent_id: parentMeta.agent_id,
     agent_snapshot: parentMeta.agent_snapshot,
     started_at: new Date().toISOString(),
-    status: "running",
+    status: nextMessage ? "running" : "idle",
     turns: carriedTurns,
     forked_from: { session_id: parentId, at_turn: cutoff },
   };
@@ -98,16 +103,18 @@ export async function POST(
   }
   await fs.writeFile(path.join(forkDir, "stream.jsonl"), carriedStream, "utf8");
 
-  // Use last carried turn's cli/model as defaults for the first fork turn.
-  const last = carriedTurns[carriedTurns.length - 1];
-  const cli = normalizeCli(last?.cli ?? parentMeta.agent_snapshot?.cli ?? DEFAULT_CLI);
-  const model = last?.model ?? parentMeta.agent_snapshot?.model;
-  const reasoningEffort =
-    last?.reasoningEffort ??
-    parentMeta.agent_snapshot?.reasoningEfforts?.[cli] ??
-    parentMeta.agent_snapshot?.reasoningEffort;
+  if (nextMessage) {
+    // Use last carried turn's cli/model as defaults for the first fork turn.
+    const last = carriedTurns[carriedTurns.length - 1];
+    const cli = normalizeCli(last?.cli ?? parentMeta.agent_snapshot?.cli ?? DEFAULT_CLI);
+    const model = last?.model ?? parentMeta.agent_snapshot?.model;
+    const reasoningEffort =
+      last?.reasoningEffort ??
+      parentMeta.agent_snapshot?.reasoningEfforts?.[cli] ??
+      parentMeta.agent_snapshot?.reasoningEffort;
 
-  await spawnTurn(forkId, cli, model, message, parentMeta.agent_snapshot, undefined, reasoningEffort);
+    await spawnTurn(forkId, cli, model, nextMessage, parentMeta.agent_snapshot, undefined, reasoningEffort);
+  }
 
   return NextResponse.json({
     session_id: forkId,
