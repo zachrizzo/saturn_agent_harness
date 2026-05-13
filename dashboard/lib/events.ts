@@ -169,6 +169,8 @@ export function toEvents(obj: Record<string, unknown>): StreamEvent[] {
       const totalTokens = tokenBreakdownFromRaw(obj).total;
       return [{ kind: "result", success: true, totalTokens, numTurns: 1, raw: obj }];
     }
+    case "native.request":
+      return parseNativeRequestEvent(obj);
     case "plan.delta":
       return [];
     case "user": {
@@ -218,6 +220,30 @@ export function toEvents(obj: Record<string, unknown>): StreamEvent[] {
     default:
       return [{ kind: "other", type, raw: obj }];
   }
+}
+
+function parseNativeRequestEvent(obj: Record<string, unknown>): StreamEvent[] {
+  const method = stringValue(obj.method) ?? "native.request";
+  const id = stringValue(obj.request_id) ?? `native:${method}`;
+  return [
+    {
+      kind: "tool_use",
+      id,
+      name: "NativeRequest",
+      input: {
+        method,
+        params: obj.params,
+      },
+      raw: obj,
+    },
+    {
+      kind: "tool_result",
+      toolUseId: id,
+      content: obj.resolution,
+      isError: false,
+      raw: obj,
+    },
+  ];
 }
 
 function parseSystemEvent(obj: Record<string, unknown>): StreamEvent[] {

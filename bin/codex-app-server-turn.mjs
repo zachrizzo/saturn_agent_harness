@@ -42,9 +42,13 @@ function emit(obj) {
   process.stdout.write(`${JSON.stringify(obj)}\n`);
 }
 
+let nativeRequestSeq = 0;
+
 function emitNativeRequest(method, params, resolution) {
+  nativeRequestSeq += 1;
   emit({
     type: "native.request",
+    request_id: `native-request-${nativeRequestSeq}`,
     method,
     params,
     resolution,

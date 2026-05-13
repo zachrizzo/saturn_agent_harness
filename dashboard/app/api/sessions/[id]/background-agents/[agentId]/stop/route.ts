@@ -8,6 +8,7 @@ import { parseStreamJsonl } from "@/lib/events";
 import { readBedrockConfig } from "@/lib/bedrock-auth";
 import { getSessionMeta, sessionDir } from "@/lib/runs";
 import { binDir } from "@/lib/paths";
+import { resolveClaudeExecutable } from "@/lib/native/claude-executable";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -152,7 +153,10 @@ async function runClaudeTaskStop(args: {
   if (isPersonal) commandArgs.push("--setting-sources", "project,local");
 
   const prompt = `Stop the background task now. Use TaskStop with task_id ${JSON.stringify(args.taskId)}. Do not perform any other work.`;
-  const result = await runCommand("claude", commandArgs, prompt, {
+  const claude = await resolveClaudeExecutable();
+  if (!claude) throw new Error("Claude Code executable not found");
+
+  const result = await runCommand(claude, commandArgs, prompt, {
     ...process.env,
     ...(isBedrock && bedrock ? {
       CLAUDE_CODE_USE_BEDROCK: "1",
@@ -192,7 +196,7 @@ async function runCodexCloseAgent(args: {
   if (args.cwd) commandArgs.push("--cwd", args.cwd);
 
   const prompt = `Close the background agent with id ${JSON.stringify(args.agentId)} now. Use close_agent. Do not perform any other work.`;
-  const result = await runCommand("node", commandArgs, prompt, process.env, 30_000);
+  const result = await runCommand(process.execPath, commandArgs, prompt, process.env, 30_000);
   if (result.code !== 0) {
     throw new Error(result.stderr.trim() || `codex close_agent exited ${result.signal ?? result.code}`);
   }

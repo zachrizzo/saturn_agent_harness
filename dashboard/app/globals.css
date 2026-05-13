@@ -5769,6 +5769,77 @@ html[data-chat-inspector-collapsed="1"] .chat-shell .chat-scroll-bottom-button {
 .insp-agent-detail-actions .terminal-primary-button {
   text-decoration: none;
 }
+.insp-agent-transcript {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-subtle);
+  overflow: hidden;
+}
+.insp-agent-transcript-head {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 10.5px;
+  font-weight: 650;
+}
+.insp-agent-transcript-head span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.insp-agent-transcript-list {
+  max-height: 360px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px;
+}
+.insp-agent-transcript-message {
+  min-width: 0;
+  border-left: 2px solid var(--border-strong);
+  padding: 1px 0 1px 8px;
+}
+.insp-agent-transcript-message.assistant {
+  border-left-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+}
+.insp-agent-transcript-message.tool {
+  border-left-color: color-mix(in srgb, var(--warn) 65%, var(--border));
+}
+.insp-agent-transcript-message.user {
+  border-left-color: color-mix(in srgb, var(--success) 55%, var(--border));
+}
+.insp-agent-transcript-role {
+  color: var(--text-subtle);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.insp-agent-transcript-text {
+  margin-top: 2px;
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.insp-agent-transcript-empty {
+  padding: 10px;
+  color: var(--text-subtle);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.insp-agent-transcript-empty.error {
+  color: var(--fail);
+}
 
 /* Tool list (left side of tool pane) */
 .insp-tool-list {
