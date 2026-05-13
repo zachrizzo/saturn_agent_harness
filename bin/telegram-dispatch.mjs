@@ -166,11 +166,15 @@ while (true) {
     });
 
     for (const update of updates.result || []) {
-      state.offset = Math.max(state.offset || 0, update.update_id);
-      await saveState();
-      handleUpdate(update).catch((err) => {
+      try {
+        await handleUpdate(update);
+        state.offset = Math.max(state.offset || 0, update.update_id);
+        await saveState();
+      } catch (err) {
         console.error("[telegram-dispatch] update failed", err);
-      });
+        await sleep(1000);
+        break;
+      }
     }
   } catch (err) {
     console.error("[telegram-dispatch] poll failed", err);
@@ -923,12 +927,14 @@ async function dispatchMessage(chatId, text, attachments = []) {
 }
 
 function buildCreateSessionBody(chat, message) {
+  const timeoutSeconds = chat.timeout_seconds ?? numberOrUndefined(process.env.SATURN_ADHOC_TIMEOUT_SECONDS);
   const body = {
     message,
     cli: chat.cli || process.env.SATURN_CLI || undefined,
     model: chat.model || process.env.SATURN_MODEL || undefined,
     reasoningEffort: chat.reasoningEffort || process.env.SATURN_REASONING_EFFORT || undefined,
     mcpTools: chat.mcpTools,
+    timeout_seconds: timeoutSeconds,
   };
 
   const agentId = chat.agent_id || process.env.SATURN_AGENT_ID;
@@ -949,7 +955,7 @@ function buildCreateSessionBody(chat, message) {
       prompt: chat.prompt || process.env.SATURN_ADHOC_PROMPT || defaultPrompt,
       cwd: effectiveProjectCwd(chat),
       allowedTools: chat.allowedTools ?? csv(process.env.SATURN_ADHOC_ALLOWED_TOOLS),
-      timeout_seconds: chat.timeout_seconds || numberOrUndefined(process.env.SATURN_ADHOC_TIMEOUT_SECONDS),
+      timeout_seconds: timeoutSeconds,
     },
   };
 }

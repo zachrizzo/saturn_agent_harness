@@ -34,6 +34,28 @@ function asRecord(value: unknown): AnyRecord {
   return (value && typeof value === "object" ? value : {}) as AnyRecord;
 }
 
+function isAssistantTextDelta(event: StreamEvent): event is Extract<StreamEvent, { kind: "assistant_text" }> {
+  return event.kind === "assistant_text" && asRecord(event.raw).type === "text";
+}
+
+export function coalesceAssistantTextDeltas(events: StreamEvent[]): StreamEvent[] {
+  const out: StreamEvent[] = [];
+
+  for (const event of events) {
+    const previous = out[out.length - 1];
+    if (previous && isAssistantTextDelta(previous) && isAssistantTextDelta(event)) {
+      out[out.length - 1] = {
+        ...previous,
+        text: `${previous.text}${event.text}`,
+      };
+      continue;
+    }
+    out.push(event);
+  }
+
+  return out;
+}
+
 function num(value: unknown): number {
   return typeof value === "number" ? value : 0;
 }
@@ -118,7 +140,7 @@ export function parseStreamJsonl(raw: string): StreamEvent[] {
     }
     for (const ev of toEvents(obj)) events.push(ev);
   }
-  return events;
+  return coalesceAssistantTextDeltas(events);
 }
 
 export function toEvents(obj: Record<string, unknown>): StreamEvent[] {
@@ -225,25 +247,28 @@ export function toEvents(obj: Record<string, unknown>): StreamEvent[] {
 function parseNativeRequestEvent(obj: Record<string, unknown>): StreamEvent[] {
   const method = stringValue(obj.method) ?? "native.request";
   const id = stringValue(obj.request_id) ?? `native:${method}`;
-  return [
-    {
-      kind: "tool_use",
-      id,
-      name: "NativeRequest",
-      input: {
-        method,
-        params: obj.params,
-      },
-      raw: obj,
+  const events: StreamEvent[] = [{
+    kind: "tool_use",
+    id,
+    name: "NativeRequest",
+    input: {
+      method,
+      params: obj.params,
     },
-    {
+    raw: obj,
+  }];
+
+  if (Object.hasOwn(obj, "resolution")) {
+    events.push({
       kind: "tool_result",
       toolUseId: id,
       content: obj.resolution,
       isError: false,
       raw: obj,
-    },
-  ];
+    });
+  }
+
+  return events;
 }
 
 function parseSystemEvent(obj: Record<string, unknown>): StreamEvent[] {

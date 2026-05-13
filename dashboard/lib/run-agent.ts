@@ -14,6 +14,9 @@ import { getAdapter } from "./runnables/registry";
 import type { NeutralEvent, NeutralMessage } from "./runnables/types";
 import { DEFAULT_CLI, normalizeCli } from "./clis";
 import { readAppSettings, type AppSettings } from "./settings";
+import { isOrchestrator } from "./session-utils";
+import { mintToken } from "./mcp/auth";
+import { ORCHESTRATOR_MCP_TOOLS } from "./turn";
 
 export type RunAgentOptions = {
   /** ID of a saved agent in agents.json. Mutually exclusive with adhoc. */
@@ -103,6 +106,42 @@ function resolveReasoningEffort(
   return override ?? agent.reasoningEfforts?.[cli] ?? agent.reasoningEffort;
 }
 
+function saturnBaseUrl(): string {
+  return `http://127.0.0.1:${process.env.PORT ?? "3737"}`;
+}
+
+function saturnSystemAppend(agent: Agent, sessionId: string): string {
+  const baseUrl = saturnBaseUrl();
+  const cwd = agent.cwd ?? process.cwd();
+  return [
+    agent.prompt,
+    `## Saturn App CLI
+
+You can use the local \`saturn\` CLI to inspect and manage Saturn tasks, agents, slices, scheduled jobs, memory, and prior chats. All commands print JSON.
+
+Command: saturn
+Base URL: ${baseUrl}
+Your identity: ${sessionId}
+
+Useful commands:
+
+\`\`\`
+saturn tasks list --status open --linked-session-id "${sessionId}"
+saturn tasks claim <task-id> --json '{"claimed_by":"${sessionId}"}'
+saturn tasks update <task-id> --json '{"status":"done","notes":"...","actor":"${sessionId}"}'
+saturn sessions list --q "search terms" --limit 10
+saturn sessions get "${sessionId}"
+saturn memory recall --json '{"message":"...","cwd":"${cwd}"}'
+saturn memory list --q "search terms" --scope project --cwd "${cwd}"
+\`\`\`
+
+Claim tasks before working on them. Release claimed tasks when done.`,
+    `## Saturn Slice Workflow
+
+This run can use the local \`orchestrator\` MCP server to coordinate saved swarms and specialist slice agents. Prefer \`run_slice_graph\` when a saved workflow graph fits the task, use \`dispatch_slice\` for one-off specialist calls, and synthesize results for the user instead of dumping raw tool JSON.`,
+  ].filter((part) => part.trim()).join("\n\n---\n\n");
+}
+
 export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
   if (!opts.message.trim()) throw new Error("runAgent: message required");
 
@@ -119,9 +158,19 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
   const cli = resolveCli(agent, opts.cli);
   const model = resolveModel(agent, cli, opts.model);
   const reasoningEffort = resolveReasoningEffort(agent, cli, opts.reasoningEffort);
-  const allowedTools = opts.allowedTools ?? agent.allowedTools;
+  const baseAllowedTools = opts.allowedTools ?? agent.allowedTools;
   const sessionId = opts.sessionId ?? `runAgent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const turnId = randomUUID();
+  const orchestratorUrl = `${saturnBaseUrl()}/api/mcp/orchestrator/${sessionId}?token=${mintToken(sessionId)}`;
+  const mcpServers = {
+    orchestrator: {
+      type: "http",
+      url: orchestratorUrl,
+    },
+  };
+  const allowedTools = baseAllowedTools?.length || isOrchestrator(agent)
+    ? [...new Set([...(baseAllowedTools ?? []), ...ORCHESTRATOR_MCP_TOOLS])]
+    : baseAllowedTools;
 
   let settings: MemorySettings | undefined;
   try {
@@ -159,8 +208,9 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
     model,
     reasoningEffort,
     cwd: agent.cwd,
-    systemPrompt: agent.prompt,
+    systemPrompt: saturnSystemAppend(agent, sessionId),
     allowedTools,
+    mcpServers,
   });
 
   if (opts.injections?.length) {

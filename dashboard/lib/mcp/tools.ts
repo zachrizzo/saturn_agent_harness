@@ -19,14 +19,20 @@ import {
 } from "@/lib/runs";
 import { listSlices } from "@/lib/slices";
 import { binDir, sessionsRoot } from "@/lib/paths";
-import { isOrchestrator, sliceFilterForOrchestrator } from "@/lib/session-utils";
+import {
+  effectiveOrchestratorLimits,
+  effectiveSwarmAgent,
+  sliceFilterForOrchestrator,
+} from "@/lib/session-utils";
 import { withSessionMetaLock } from "@/lib/session-meta-lock";
 import { markSessionRunnerFailed } from "@/lib/session-lifecycle";
 import {
   readBudget,
   checkBudget,
+  reserveSliceCall,
   stopBudget,
   type BudgetLimits,
+  type BudgetRemaining,
 } from "@/lib/budget";
 import {
   executeSlice,
@@ -35,7 +41,7 @@ import {
   type SliceExecutionContext,
   type SliceExecuteResult,
 } from "@/lib/slice-executor";
-import type { Agent, OrchestratorBudget, SessionMeta, SliceGraph, SliceGraphNode } from "@/lib/runs";
+import type { Agent, SessionMeta, SliceGraph, SliceGraphNode } from "@/lib/runs";
 import { checkAndIncrementRecursion, decrementRecursion } from "./recursion";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -50,11 +56,6 @@ async function loadAgentAndMeta(
   return { agent, meta: session.meta };
 }
 
-const CHAT_SWARM_BUDGET: OrchestratorBudget = {
-  max_total_tokens: 300000,
-  max_slice_calls: 30,
-  max_recursion_depth: 1,
-};
 const ORCHESTRATOR_GRAPH_NODE_ID = "__orchestrator__";
 
 function syncJobCron(name: string): void {
@@ -62,34 +63,6 @@ function syncJobCron(name: string): void {
   const proc = spawn(register, [name], { detached: true, stdio: "ignore" });
   proc.on("error", () => {});
   proc.unref();
-}
-
-function effectiveSwarmAgent(agent: Agent, meta: SessionMeta): Agent {
-  const overrideSlices = meta.overrides?.slices_available;
-  if (isOrchestrator(agent)) {
-    return overrideSlices !== undefined ? { ...agent, slices_available: overrideSlices } : agent;
-  }
-
-  return {
-    ...agent,
-    kind: "orchestrator",
-    slices_available: overrideSlices ?? agent.slices_available ?? "*",
-    can_create_custom_slices: agent.can_create_custom_slices ?? false,
-    allowed_mutations: agent.allowed_mutations ?? ["read-only", "writes-scratch", "writes-source"],
-    budget: agent.budget ?? CHAT_SWARM_BUDGET,
-    on_budget_exceeded: agent.on_budget_exceeded ?? "report-partial",
-    on_slice_failure: agent.on_slice_failure ?? "continue",
-  };
-}
-
-function effectiveLimits(agent: Agent, overrides?: OrchestratorBudget): BudgetLimits {
-  const base = agent.budget ?? {};
-  const over = overrides ?? {};
-  return {
-    max_total_tokens: over.max_total_tokens ?? base.max_total_tokens,
-    max_slice_calls: over.max_slice_calls ?? base.max_slice_calls,
-    max_recursion_depth: over.max_recursion_depth ?? base.max_recursion_depth,
-  };
 }
 
 function compactTitle(value: string): string {
@@ -514,6 +487,10 @@ async function applyFailurePolicy(
   return result;
 }
 
+function usesOrchestratorTools(allowedTools: string[] | undefined): boolean {
+  return Array.isArray(allowedTools) && allowedTools.some((tool) => tool.startsWith("mcp__orchestrator__"));
+}
+
 // ─── list_slices ──────────────────────────────────────────────────────────────
 
 export async function handleListSlices(sessionId: string): Promise<object> {
@@ -543,36 +520,39 @@ export async function handleListSlices(sessionId: string): Promise<object> {
 async function gateForDispatch(
   sessionId: string,
   limits: BudgetLimits,
-  options?: { skipRecursion?: boolean },
+  options?: { enforceRecursion?: boolean },
 ): Promise<
   | { blocked: object }
-  | { blocked: null; release: () => Promise<void> }
+  | { blocked: null; release: () => Promise<void>; remaining: BudgetRemaining }
 > {
-  const check = await checkBudget(sessionId, limits);
-  if (!check.ok) {
+  let release = async () => {};
+  if (options?.enforceRecursion && limits.max_recursion_depth !== undefined) {
+    const maxDepth = limits.max_recursion_depth;
+    const recursion = await checkAndIncrementRecursion(sessionId, maxDepth);
+    if (!recursion.allowed) {
+      return {
+        blocked: {
+          status: "recursion_limit_exceeded",
+          current_depth: recursion.currentDepth,
+          max_depth: maxDepth,
+        },
+      };
+    }
+    release = () => decrementRecursion(sessionId);
+  }
+
+  const reservation = await reserveSliceCall(sessionId, limits);
+  if (!reservation.ok) {
+    await release();
     return {
       blocked: {
         status: "budget_exceeded",
-        reason: check.reason,
-        remaining_budget: check.remaining,
+        reason: reservation.reason,
+        remaining_budget: reservation.remaining,
       },
     };
   }
-  if (options?.skipRecursion) {
-    return { blocked: null, release: async () => {} };
-  }
-  const maxDepth = limits.max_recursion_depth ?? 3;
-  const recursion = await checkAndIncrementRecursion(sessionId, maxDepth);
-  if (!recursion.allowed) {
-    return {
-      blocked: {
-        status: "recursion_limit_exceeded",
-        current_depth: recursion.currentDepth,
-        max_depth: maxDepth,
-      },
-    };
-  }
-  return { blocked: null, release: () => decrementRecursion(sessionId) };
+  return { blocked: null, release, remaining: reservation.remaining };
 }
 
 export async function handleDispatchSlice(
@@ -587,31 +567,34 @@ export async function handleDispatchSlice(
   const { agent, meta } = await loadAgentAndMeta(sessionId);
   const effectiveAgent = effectiveSwarmAgent(agent, meta);
   const availableSlices = sliceFilterForOrchestrator(await listSlices(), effectiveAgent);
-  if (!availableSlices.some((slice) => slice.id === params.slice_id)) {
+  const selectedSlice = availableSlices.find((slice) => slice.id === params.slice_id);
+  if (!selectedSlice) {
     return {
       status: "forbidden",
       error: `slice is not available to this chat: ${params.slice_id}`,
     };
   }
 
-  const limits = effectiveLimits(effectiveAgent, meta.overrides?.budget);
+  const limits = effectiveOrchestratorLimits(effectiveAgent, meta.overrides?.budget);
 
   const gate = await gateForDispatch(sessionId, limits, {
-    skipRecursion: params.internal_skip_recursion_gate === true,
+    enforceRecursion: params.internal_skip_recursion_gate !== true && usesOrchestratorTools(selectedSlice.allowedTools),
   });
   if (gate.blocked) return gate.blocked;
 
   try {
-    const run = () =>
+    const run = (sliceCallReserved = true) =>
       executeSlice({
         sessionId,
         sliceId: params.slice_id,
         inputs: params.inputs,
         executionContext: params.execution_context,
         cwdOverride: effectiveAgent.cwd,
+        budgetOverride: gate.remaining.tokens !== undefined ? { max_tokens: gate.remaining.tokens } : undefined,
+        sliceCallReserved,
       });
     const first = await run();
-    const result = await applyFailurePolicy(sessionId, effectiveAgent, first, run);
+    const result = await applyFailurePolicy(sessionId, effectiveAgent, first, () => run(false));
     const after = await checkBudget(sessionId, limits);
     return { ...result, remaining_budget: after.remaining };
   } finally {
@@ -907,20 +890,24 @@ export async function handleDispatchCustomSlice(
     }
   }
 
-  const limits = effectiveLimits(effectiveAgent, meta.overrides?.budget);
-  const gate = await gateForDispatch(sessionId, limits);
+  const limits = effectiveOrchestratorLimits(effectiveAgent, meta.overrides?.budget);
+  const gate = await gateForDispatch(sessionId, limits, {
+    enforceRecursion: usesOrchestratorTools(params.spec.allowedTools),
+  });
   if (gate.blocked) return gate.blocked;
 
   try {
-    const run = () =>
+    const run = (sliceCallReserved = true) =>
       executeCustomSlice({
         sessionId,
         spec: params.spec,
         inputs: params.inputs,
         cwdOverride: effectiveAgent.cwd,
+        budgetOverride: gate.remaining.tokens !== undefined ? { max_tokens: gate.remaining.tokens } : undefined,
+        sliceCallReserved,
       });
     const first = await run();
-    const result = await applyFailurePolicy(sessionId, effectiveAgent, first, run);
+    const result = await applyFailurePolicy(sessionId, effectiveAgent, first, () => run(false));
     const after = await checkBudget(sessionId, limits);
     return { ...result, remaining_budget: after.remaining };
   } finally {
@@ -933,7 +920,7 @@ export async function handleDispatchCustomSlice(
 export async function handleGetBudget(sessionId: string): Promise<object> {
   const { agent, meta } = await loadAgentAndMeta(sessionId);
   const effectiveAgent = effectiveSwarmAgent(agent, meta);
-  const limits = effectiveLimits(effectiveAgent, meta.overrides?.budget);
+  const limits = effectiveOrchestratorLimits(effectiveAgent, meta.overrides?.budget);
   const budget = await readBudget(sessionId);
   const check = await checkBudget(sessionId, limits);
   return {

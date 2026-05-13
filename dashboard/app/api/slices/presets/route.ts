@@ -37,7 +37,7 @@ export async function POST() {
         required: ["focus"],
       },
       sandbox: { mode: "none", net: "deny" },
-      budget: { max_tokens: 4000, timeout_seconds: 60 },
+      budget: { timeout_seconds: 60 },
       io_schema: {
         output: {
           type: "object",
@@ -73,7 +73,7 @@ export async function POST() {
         required: ["focus"],
       },
       sandbox: { mode: "none", net: "deny" },
-      budget: { max_tokens: 8000, timeout_seconds: 180 },
+      budget: { timeout_seconds: 180 },
       io_schema: {
         output: {
           type: "object",
@@ -116,7 +116,7 @@ export async function POST() {
         required: ["focus"],
       },
       sandbox: { mode: "none", net: "deny" },
-      budget: { max_tokens: 8000, timeout_seconds: 180 },
+      budget: { timeout_seconds: 180 },
       io_schema: {
         output: { type: "object", properties: { findings: { type: "array" } } },
       },
@@ -142,7 +142,7 @@ export async function POST() {
         required: ["focus"],
       },
       sandbox: { mode: "none", net: "deny" },
-      budget: { max_tokens: 4000, timeout_seconds: 120 },
+      budget: { timeout_seconds: 120 },
       io_schema: {
         output: { type: "object", properties: { findings: { type: "array" } } },
       },
@@ -168,7 +168,7 @@ export async function POST() {
         required: ["focus"],
       },
       sandbox: { mode: "none", net: "deny" },
-      budget: { max_tokens: 5000, timeout_seconds: 120 },
+      budget: { timeout_seconds: 120 },
       io_schema: {
         output: { type: "object", properties: { findings: { type: "array" } } },
       },
@@ -194,7 +194,7 @@ export async function POST() {
         required: ["focus"],
       },
       sandbox: { mode: "none", net: "deny" },
-      budget: { max_tokens: 5000, timeout_seconds: 120 },
+      budget: { timeout_seconds: 120 },
       io_schema: {
         output: { type: "object", properties: { findings: { type: "array" } } },
       },
@@ -220,7 +220,7 @@ export async function POST() {
         required: ["focus"],
       },
       sandbox: { mode: "none", net: "allow" },
-      budget: { max_tokens: 8000, timeout_seconds: 180 },
+      budget: { timeout_seconds: 180 },
       tags: ["research", "web"],
     },
     {
@@ -243,7 +243,7 @@ export async function POST() {
         required: ["focus"],
       },
       sandbox: { mode: "none", net: "deny" },
-      budget: { max_tokens: 10000, timeout_seconds: 240 },
+      budget: { timeout_seconds: 240 },
       tags: ["analysis"],
     },
     {
@@ -266,7 +266,7 @@ export async function POST() {
         required: ["focus"],
       },
       sandbox: { mode: "worktree", net: "deny" },
-      budget: { max_tokens: 20000, timeout_seconds: 300 },
+      budget: { timeout_seconds: 300 },
       tags: ["implementation", "typescript"],
     },
     {
@@ -289,7 +289,7 @@ export async function POST() {
         required: ["focus"],
       },
       sandbox: { mode: "none", net: "deny" },
-      budget: { max_tokens: 4000, timeout_seconds: 120 },
+      budget: { timeout_seconds: 120 },
       io_schema: {
         output: { type: "object", properties: { findings: { type: "array" } } },
       },

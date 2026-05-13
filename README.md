@@ -126,7 +126,7 @@ For manual terminal testing, Bedrock, Personal, and local can be run side-by-sid
 | Terminal | Command | Backend |
 |---|---|---|
 | Terminal 1 | `CLAUDE_CODE_USE_BEDROCK=1 AWS_PROFILE=$(jq -r '.bedrockProfile // "sondermind-development-new"' settings.json) AWS_REGION=$(jq -r '.bedrockRegion // "us-east-1"' settings.json) claude` | AWS Bedrock |
-| Terminal 2 | `unset CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN; claude --setting-sources project,local` | Claude Personal |
+| Terminal 2 | `unset CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN; claude --setting-sources user,project,local` | Claude Personal |
 | Terminal 3 | `claude-local` | LM Studio via LiteLLM proxy |
 
 Switch model for a local session:

@@ -47,7 +47,7 @@ const NAV: NavItem[] = [
 
 export type RecentChatItem = {
   id: string;
-  /** Headline shown in the sidebar — the first user message of the session. */
+  /** Headline shown in the sidebar — the latest user message of the session. */
   title: string;
   /** Underlying agent name (saved agent name or "Ad-hoc"). Used as a small
    *  secondary label so the user still knows which agent produced the chat. */

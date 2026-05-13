@@ -23,7 +23,9 @@ export const dynamic = "force-dynamic";
  */
 function applyOrchestratorDefaultsForPatch(patch: Partial<Agent>): string | null {
   if (patch.kind !== "orchestrator") return null;
-  if (!isPlainObject(patch.budget)) {
+  if (patch.budget === undefined) {
+    patch.budget = {};
+  } else if (!isPlainObject(patch.budget)) {
     return "budget must be an object when kind is 'orchestrator'";
   }
   if (patch.can_create_custom_slices === undefined) {

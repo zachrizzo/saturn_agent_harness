@@ -72,7 +72,7 @@ async function readAuthStatus(): Promise<ClaudeAuthStatus> {
   try {
     const { stdout } = await execFileAsync(
       "claude",
-      ["--setting-sources", "project,local", "auth", "status", "--json"],
+      ["--setting-sources", "user,project,local", "auth", "status", "--json"],
       {
         cwd: projectRoot(),
         env: personalClaudeEnv(),
@@ -105,7 +105,7 @@ async function readAuthStatus(): Promise<ClaudeAuthStatus> {
 }
 
 function loginCommand(mode: "claudeai" | "console", email: string | undefined, sso: boolean): string {
-  const authArgs = ["--setting-sources", "project,local", "auth", "login", mode === "console" ? "--console" : "--claudeai"];
+  const authArgs = ["--setting-sources", "user,project,local", "auth", "login", mode === "console" ? "--console" : "--claudeai"];
   if (email) authArgs.push("--email", email);
   if (sso) authArgs.push("--sso");
 

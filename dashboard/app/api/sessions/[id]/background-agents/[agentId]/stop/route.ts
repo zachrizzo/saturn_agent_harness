@@ -150,7 +150,7 @@ async function runClaudeTaskStop(args: {
       },
     }));
   }
-  if (isPersonal) commandArgs.push("--setting-sources", "project,local");
+  if (isPersonal) commandArgs.push("--setting-sources", "user,project,local");
 
   const prompt = `Stop the background task now. Use TaskStop with task_id ${JSON.stringify(args.taskId)}. Do not perform any other work.`;
   const claude = await resolveClaudeExecutable();

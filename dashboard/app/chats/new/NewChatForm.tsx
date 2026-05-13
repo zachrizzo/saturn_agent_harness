@@ -266,6 +266,7 @@ export function NewChatForm({ initialAgentId }: Props) {
                         type="number"
                         value={overrideMaxTokens}
                         onChange={(e) => setOverrideMaxTokens(e.target.value)}
+                        placeholder="Unlimited"
                       />
                     </div>
                     <div className="space-y-1">
@@ -276,6 +277,7 @@ export function NewChatForm({ initialAgentId }: Props) {
                         type="number"
                         value={overrideMaxCalls}
                         onChange={(e) => setOverrideMaxCalls(e.target.value)}
+                        placeholder="Unlimited"
                       />
                     </div>
                   </div>

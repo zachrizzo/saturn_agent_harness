@@ -7,11 +7,13 @@ import { DEFAULT_BEDROCK_PROFILE, DEFAULT_BEDROCK_REGION } from "./bedrock-confi
 
 export type MemoryRetrievalMode = "keyword" | "semantic" | "hybrid";
 export type MemoryProvider = "openai-compatible" | "bedrock" | "local-http" | "disabled";
+export type ClaudePermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk" | "auto";
 
 export type AppSettings = {
   defaultCli: CLI;
   defaultModels: Partial<Record<CLI, string>>;
   defaultReasoningEfforts: Partial<Record<CLI, ModelReasoningEffort>>;
+  claudePermissionMode: ClaudePermissionMode;
   defaultMcpTools: boolean;
   hiddenMcpImageServers: string[];
   bedrockProfile: string;
@@ -35,11 +37,20 @@ export type AppSettings = {
 
 const VALID_MEMORY_RETRIEVAL_MODES: MemoryRetrievalMode[] = ["keyword", "semantic", "hybrid"];
 const VALID_MEMORY_PROVIDERS: MemoryProvider[] = ["openai-compatible", "bedrock", "local-http", "disabled"];
+const VALID_CLAUDE_PERMISSION_MODES: ClaudePermissionMode[] = [
+  "default",
+  "acceptEdits",
+  "bypassPermissions",
+  "plan",
+  "dontAsk",
+  "auto",
+];
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   defaultCli: DEFAULT_CLI,
   defaultModels: {},
   defaultReasoningEfforts: {},
+  claudePermissionMode: "bypassPermissions",
   defaultMcpTools: false,
   hiddenMcpImageServers: [],
   bedrockProfile: DEFAULT_BEDROCK_PROFILE,
@@ -127,6 +138,12 @@ function cleanMemoryProvider(value: unknown): MemoryProvider {
     : "disabled";
 }
 
+function cleanClaudePermissionMode(value: unknown): ClaudePermissionMode {
+  return typeof value === "string" && VALID_CLAUDE_PERMISSION_MODES.includes(value as ClaudePermissionMode)
+    ? value as ClaudePermissionMode
+    : DEFAULT_APP_SETTINGS.claudePermissionMode;
+}
+
 export function normalizeAppSettings(input: unknown): AppSettings {
   const rec = input && typeof input === "object" && !Array.isArray(input)
     ? input as Record<string, unknown>
@@ -160,6 +177,7 @@ export function normalizeAppSettings(input: unknown): AppSettings {
     defaultCli,
     defaultModels: cleanStringMap(rec.defaultModels),
     defaultReasoningEfforts: cleanEffortMap(rec.defaultReasoningEfforts),
+    claudePermissionMode: cleanClaudePermissionMode(rec.claudePermissionMode),
     defaultMcpTools: typeof rec.defaultMcpTools === "boolean" ? rec.defaultMcpTools : DEFAULT_APP_SETTINGS.defaultMcpTools,
     hiddenMcpImageServers: cleanStringList(rec.hiddenMcpImageServers),
     bedrockProfile,

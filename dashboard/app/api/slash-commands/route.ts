@@ -531,13 +531,13 @@ async function getCodexItems(): Promise<DiscoveredItem[]> {
   return result;
 }
 
-function discoveryCwd(): string {
-  return process.env.AUTOMATIONS_ROOT ?? process.cwd();
+function discoveryCwd(requestedCwd?: string | null): string {
+  return requestedCwd?.trim() || process.env.AUTOMATIONS_ROOT || process.cwd();
 }
 
-async function getClaudeCommands(cli: string): Promise<SlashCommand[]> {
+async function getClaudeCommands(cli: string, cwd: string): Promise<SlashCommand[]> {
   try {
-    const commands = await listClaudeSlashCommands({ cli, cwd: discoveryCwd() });
+    const commands = await listClaudeSlashCommands({ cli, cwd });
     if (commands.length > 0) {
       return commands.map((command) => {
         const name = command.name.replace(/^\//, "");
@@ -574,9 +574,9 @@ async function getClaudeCommands(cli: string): Promise<SlashCommand[]> {
   );
 }
 
-async function getCodexCommands(): Promise<SlashCommand[]> {
+async function getCodexCommands(cwd: string): Promise<SlashCommand[]> {
   try {
-    const skills = await listCodexSkills(discoveryCwd());
+    const skills = await listCodexSkills(cwd);
     if (skills.length > 0) {
       return skills.map((skill) => ({
         name: skill.name,
@@ -616,12 +616,13 @@ async function getCodexCommands(): Promise<SlashCommand[]> {
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const cli = normalizeCli(searchParams.get("cli"));
+  const cwd = discoveryCwd(searchParams.get("cwd"));
 
   const discoveredCommands =
     cli === "codex"
-      ? await getCodexCommands()
+      ? await getCodexCommands(cwd)
       : isClaudeCli(cli)
-        ? await getClaudeCommands(cli)
+        ? await getClaudeCommands(cli, cwd)
         : [];
   const commands: SlashCommand[] = [];
   const seen = new Set<string>();

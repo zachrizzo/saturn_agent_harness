@@ -31,6 +31,8 @@ export type SliceExecuteInput = {
   budgetOverride?: { timeout_seconds?: number; max_tokens?: number };
   /** cwd override — typically the orchestrator session's cwd. */
   cwdOverride?: string;
+  /** True when the orchestrator budget gate has already counted this slice call. */
+  sliceCallReserved?: boolean;
 };
 
 export type SliceExecuteTokens = { input: number; output: number; total: number };
@@ -69,7 +71,10 @@ export type CustomSliceExecuteInput = {
   /** Only used for logging / the index entry. */
   inputs?: Record<string, unknown>;
   executionContext?: SliceExecutionContext;
+  budgetOverride?: { timeout_seconds?: number; max_tokens?: number };
   cwdOverride?: string;
+  /** True when the orchestrator budget gate has already counted this slice call. */
+  sliceCallReserved?: boolean;
 };
 
 export type SliceExecutionContext = {
@@ -80,6 +85,13 @@ export type SliceExecutionContext = {
   upstream_node_ids?: string[];
   downstream_node_ids?: string[];
 };
+
+function hasBudgetOverride(
+  budgetOverride: { timeout_seconds?: number; max_tokens?: number } | undefined,
+  key: "timeout_seconds" | "max_tokens",
+): boolean {
+  return Boolean(budgetOverride && Object.prototype.hasOwnProperty.call(budgetOverride, key));
+}
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -535,9 +547,9 @@ async function writeSliceResult(
   await fs.writeFile(metaPath, JSON.stringify(meta, null, 2), "utf8");
 }
 
-async function recordBudget(sessionId: string, totalTokens: number): Promise<void> {
+async function recordBudget(sessionId: string, totalTokens: number, sliceCalls: number): Promise<void> {
   try {
-    await updateBudget(sessionId, { tokens_used: totalTokens, slice_calls: 1 });
+    await updateBudget(sessionId, { tokens_used: totalTokens, slice_calls: sliceCalls });
   } catch {
     /* non-fatal */
   }
@@ -593,10 +605,12 @@ ${JSON.stringify(req.inputs, null, 2)}
     return failure(slice_run_id, `sandbox setup failed: ${(err as Error).message}`);
   }
 
-  const timeout_seconds =
-    req.budgetOverride?.timeout_seconds ?? slice.budget?.timeout_seconds ?? 180;
-  const maxTokens =
-    req.budgetOverride?.max_tokens ?? slice.budget?.max_tokens;
+  const timeout_seconds = hasBudgetOverride(req.budgetOverride, "timeout_seconds")
+    ? req.budgetOverride?.timeout_seconds ?? 180
+    : slice.budget?.timeout_seconds ?? 180;
+  const maxTokens = hasBudgetOverride(req.budgetOverride, "max_tokens")
+    ? req.budgetOverride?.max_tokens
+    : slice.budget?.max_tokens;
 
   const queuedAt = new Date().toISOString();
   await appendIndex(req.sessionId, {
@@ -672,7 +686,7 @@ ${JSON.stringify(req.inputs, null, 2)}
     outcome.durationMs
   );
   await cleanupWorktreeOnFailure(slice.sandbox.mode, sandbox, outcome.exitCode);
-  await recordBudget(req.sessionId, tokens.total);
+  await recordBudget(req.sessionId, tokens.total, req.sliceCallReserved ? 0 : 1);
   await writeSliceResult(sliceDir, {
     slice_id: slice.id,
     status,
@@ -729,8 +743,12 @@ export async function executeCustomSlice(
     return failure(slice_run_id, `sandbox setup failed: ${(err as Error).message}`);
   }
 
-  const timeout_seconds = req.spec.budget?.timeout_seconds ?? 180;
-  const maxTokens = req.spec.budget?.max_tokens;
+  const timeout_seconds = hasBudgetOverride(req.budgetOverride, "timeout_seconds")
+    ? req.budgetOverride?.timeout_seconds ?? 180
+    : req.spec.budget?.timeout_seconds ?? 180;
+  const maxTokens = hasBudgetOverride(req.budgetOverride, "max_tokens")
+    ? req.budgetOverride?.max_tokens
+    : req.spec.budget?.max_tokens;
 
   const queuedAt = new Date().toISOString();
   await appendIndex(req.sessionId, {
@@ -774,7 +792,7 @@ export async function executeCustomSlice(
     outcome.durationMs
   );
   await cleanupWorktreeOnFailure(sandboxSpec.mode, sandbox, outcome.exitCode);
-  await recordBudget(req.sessionId, tokens.total);
+  await recordBudget(req.sessionId, tokens.total, req.sliceCallReserved ? 0 : 1);
   await writeSliceResult(sliceDir, {
     slice_id: "__custom__",
     status,

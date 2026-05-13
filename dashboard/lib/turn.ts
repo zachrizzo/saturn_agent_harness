@@ -17,7 +17,7 @@ import { readAppSettings, type AppSettings } from "./settings";
 import { markSessionIfRunnerExited, markSessionRunnerFailed } from "./session-lifecycle";
 
 // MCP tools added to allowedTools when a session has an explicit tool allow-list.
-const ORCHESTRATOR_MCP_TOOLS = [
+export const ORCHESTRATOR_MCP_TOOLS = [
   "mcp__orchestrator__list_swarms",
   "mcp__orchestrator__dispatch_swarm",
   "mcp__orchestrator__list_jobs",
@@ -197,6 +197,7 @@ export async function spawnTurn(
   const isBedrock = isBedrockCli(normalizedCli);
   const isPersonal = isPersonalClaudeCli(normalizedCli);
   const bedrockConfig = isBedrock ? await readBedrockConfig() : undefined;
+  const appSettings = await readAppSettings().catch(() => undefined);
   const localModel = model ?? "gemma4:26b-it-q4_K_M";
   const localSmallModel = "gemma4:4b";
 
@@ -224,6 +225,7 @@ export async function spawnTurn(
     CLI: normalizedCli,  // preserve UI-facing backend; run-turn.sh maps Claude-family backends to the claude binary
     MODEL: effectiveModel ?? "",
     REASONING_EFFORT: effectiveReasoningEffort ?? "",
+    CLAUDE_PERMISSION_MODE: appSettings?.claudePermissionMode ?? "bypassPermissions",
     ...(await prepareMemoryEnv(sessionId, message, agentSnapshot)),
     ...(planAction ? { SATURN_PLAN_ACTION: planAction } : {}),
     ...(opts.steered ? { SATURN_STEER_TURN: "1" } : {}),
@@ -251,7 +253,7 @@ export async function spawnTurn(
       ANTHROPIC_API_KEY: "",
       ANTHROPIC_BASE_URL: "",
       ANTHROPIC_AUTH_TOKEN: "",
-      CLAUDE_SETTING_SOURCES: "project,local",
+      CLAUDE_SETTING_SOURCES: "user,project,local",
     } : {}),
   };
 

@@ -13,6 +13,7 @@ import {
   type ModelReasoningEffort,
 } from "./models";
 import { toBedrockId } from "./claude-models";
+import { listCodexModels } from "./native/codex-app-server";
 
 const execFileAsync = promisify(execFile);
 const HELP_CACHE_MS = 5 * 60 * 1000;
@@ -73,6 +74,21 @@ async function codexDefaultModel(): Promise<string | undefined> {
 
 async function codexModelReasoningEfforts(model: string | undefined): Promise<ModelReasoningEffort[]> {
   const effectiveModel = model || await codexDefaultModel();
+  try {
+    const models = await listCodexModels();
+    const found = effectiveModel
+      ? models.find((entry) => entry.id === effectiveModel || entry.model === effectiveModel)
+      : models.find((entry) => entry.isDefault);
+    if (found) {
+      return normalizeSupportedReasoningEfforts(
+        found.supportedReasoningEfforts?.map((entry) => entry.reasoningEffort),
+      );
+    }
+  } catch {
+    // Fall back to Codex's on-disk cache when the native app-server is absent
+    // or temporarily unavailable.
+  }
+
   if (!effectiveModel) return [];
   try {
     const cachePath = path.join(os.homedir(), ".codex", "models_cache.json");

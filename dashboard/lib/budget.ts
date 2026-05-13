@@ -42,6 +42,14 @@ export type BudgetCheckResult =
       remaining: BudgetRemaining;
     };
 
+export type BudgetReservationResult =
+  | { ok: true; remaining: BudgetRemaining; budget: Budget }
+  | {
+      ok: false;
+      reason: "tokens" | "slice_calls" | "stop";
+      remaining: BudgetRemaining;
+    };
+
 function budgetPath(sessionId: string): string {
   return path.join(sessionsRoot(), sessionId, "budget.json");
 }
@@ -179,6 +187,42 @@ export async function checkBudget(
     return { ok: false, reason: "slice_calls", remaining };
   }
   return { ok: true, remaining };
+}
+
+export async function reserveSliceCall(
+  sessionId: string,
+  limits: BudgetLimits
+): Promise<BudgetReservationResult> {
+  const p = budgetPath(sessionId);
+  await fs.mkdir(path.dirname(p), { recursive: true });
+  await acquireLock(sessionId);
+  try {
+    const current = await readBudget(sessionId);
+    const remaining = computeRemaining(current, limits);
+
+    if (current.stop) return { ok: false, reason: "stop", remaining };
+    if (
+      limits.max_total_tokens !== undefined &&
+      current.tokens_used >= limits.max_total_tokens
+    ) {
+      return { ok: false, reason: "tokens", remaining };
+    }
+    if (
+      limits.max_slice_calls !== undefined &&
+      current.slice_calls + 1 > limits.max_slice_calls
+    ) {
+      return { ok: false, reason: "slice_calls", remaining };
+    }
+
+    const next: Budget = {
+      ...current,
+      slice_calls: current.slice_calls + 1,
+    };
+    await fs.writeFile(p, JSON.stringify(next, null, 2), "utf8");
+    return { ok: true, remaining: computeRemaining(next, limits), budget: next };
+  } finally {
+    await releaseLock(sessionId);
+  }
 }
 
 export async function stopBudget(sessionId: string, reason: string): Promise<void> {

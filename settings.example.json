@@ -3,6 +3,7 @@
   "defaultCli": "claude-bedrock",
   "defaultModels": {},
   "defaultReasoningEfforts": {},
+  "claudePermissionMode": "bypassPermissions",
   "defaultMcpTools": false,
   "bedrockProfile": "sondermind-development-new",
   "bedrockRegion": "us-east-1",

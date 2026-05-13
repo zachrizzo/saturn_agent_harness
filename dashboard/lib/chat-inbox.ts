@@ -13,7 +13,7 @@ export type InboxTag = {
 
 export type InboxSession = {
   id: string;
-  /** Headline used everywhere the session is listed — usually the first user
+  /** Headline used everywhere the session is listed — usually the latest user
    *  message, never "Ad-hoc chat". */
   title: string;
   /** Underlying agent name (e.g. "Code Review Swarm" or "Ad-hoc"). Kept so we

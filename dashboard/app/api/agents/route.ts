@@ -15,7 +15,9 @@ export const dynamic = "force-dynamic";
  */
 function applyOrchestratorDefaults(body: Partial<Agent>): string | null {
   if (body.kind !== "orchestrator") return null;
-  if (!isPlainObject(body.budget)) {
+  if (body.budget === undefined) {
+    body.budget = {};
+  } else if (!isPlainObject(body.budget)) {
     return "budget must be an object when kind is 'orchestrator'";
   }
   if (body.can_create_custom_slices === undefined) {

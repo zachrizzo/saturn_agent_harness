@@ -30,6 +30,7 @@ type CreateSessionBody = {
   cwd?: string;
   mcpTools?: boolean;
   reasoningEffort?: ModelReasoningEffort;
+  timeout_seconds?: number;
   adhoc_config?: {
     cli?: CLI;
     model?: string;
@@ -37,6 +38,7 @@ type CreateSessionBody = {
     prompt?: string;
     cwd?: string;
     allowedTools?: string[];
+    timeout_seconds?: number;
   };
   overrides?: SessionMeta["overrides"];
 };
@@ -64,6 +66,7 @@ function adhocAgent(config: CreateSessionBody["adhoc_config"]): Agent {
     reasoningEffort: config?.reasoningEffort,
     reasoningEfforts: config?.reasoningEffort ? { [cli]: config.reasoningEffort } : undefined,
     allowedTools: config?.allowedTools,
+    timeout_seconds: config?.timeout_seconds,
     created_at: now,
     updated_at: now,
   };
@@ -184,7 +187,12 @@ export async function POST(req: NextRequest) {
   const cwdOverride = typeof body.cwd === "string" && body.cwd.trim()
     ? body.cwd.trim()
     : undefined;
-  const sessionAgent: Agent = cwdOverride ? { ...agent, cwd: cwdOverride } : agent;
+  const timeoutSeconds = body.timeout_seconds ?? body.adhoc_config?.timeout_seconds;
+  const sessionAgent: Agent = {
+    ...agent,
+    ...(cwdOverride ? { cwd: cwdOverride } : {}),
+    ...(timeoutSeconds ? { timeout_seconds: timeoutSeconds } : {}),
+  };
 
   const cli = normalizeCli(body.cli ?? body.adhoc_config?.cli ?? sessionAgent.defaultCli ?? sessionAgent.cli ?? DEFAULT_CLI);
   const model = body.model ?? body.adhoc_config?.model ?? sessionAgent.models?.[cli] ?? sessionAgent.model;
@@ -201,6 +209,12 @@ export async function POST(req: NextRequest) {
   const overrideError = validateSessionOverrides(body.overrides);
   if (overrideError) {
     return NextResponse.json({ error: overrideError }, { status: 400 });
+  }
+  const timeoutError =
+    validatePositiveInteger(body.timeout_seconds, "timeout_seconds") ??
+    validatePositiveInteger(body.adhoc_config?.timeout_seconds, "adhoc_config.timeout_seconds");
+  if (timeoutError) {
+    return NextResponse.json({ error: timeoutError }, { status: 400 });
   }
   const allowedToolsError = validateStringArray(body.adhoc_config?.allowedTools, "adhoc_config.allowedTools");
   if (allowedToolsError) {

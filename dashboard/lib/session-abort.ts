@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { parseStreamJsonl, type StreamEvent } from "./events";
+import { coalesceAssistantTextDeltas, parseStreamJsonl, type StreamEvent } from "./events";
 import { sessionDir, type SessionMeta } from "./runs";
 import { withSessionMetaLock } from "./session-meta-lock";
 
@@ -83,7 +83,7 @@ function eventsForTurn(streamRaw: string, turnId?: string): StreamEvent[] {
 }
 
 function assistantTextForTurn(streamRaw: string, turnId?: string): string {
-  return eventsForTurn(streamRaw, turnId)
+  return coalesceAssistantTextDeltas(eventsForTurn(streamRaw, turnId))
     .filter((ev): ev is Extract<StreamEvent, { kind: "assistant_text" }> => ev.kind === "assistant_text")
     .map((ev) => ev.text.trim())
     .filter(Boolean)

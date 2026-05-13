@@ -26,9 +26,13 @@ export type BackgroundActivityRow = {
   title: string;
   status: BackgroundAgentStatus;
   kind: "session" | "agent";
+  provider?: "claude" | "codex" | "unknown";
   startedAt?: string;
   updatedAt?: string;
   activityOrder?: number;
+  inspectAvailable?: boolean;
+  stopAvailable?: boolean;
+  transcriptAvailable?: boolean;
 };
 
 export function backgroundStatusLabel(status: BackgroundAgentStatus): string {

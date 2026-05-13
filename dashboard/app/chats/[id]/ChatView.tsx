@@ -11,7 +11,7 @@ import { toClaudeAlias } from "@/lib/claude-models";
 import { toEvents, getTokenBreakdown } from "@/lib/events";
 import { Button, Chip } from "@/app/components/ui";
 import { MessageBubble } from "@/app/components/chat/MessageBubble";
-import { Composer, type ComposerHandle } from "@/app/components/chat/Composer";
+import { Composer, type ComposerContextAttachment, type ComposerHandle } from "@/app/components/chat/Composer";
 import { Inspector, type InspectorTabKey, type InspectorTool } from "@/app/components/chat/Inspector";
 import { ToolSelectionProvider } from "@/app/components/chat/tool-selection";
 import {
@@ -58,6 +58,19 @@ type BedrockAuthPrompt = {
 
 type BackgroundRunSnapshotPayload = BackgroundRunSnapshot & {
   session_id: string;
+};
+
+type NativeAgentSummary = {
+  id: string;
+  provider?: BackgroundActivityRow["provider"];
+  status?: string;
+  title?: string;
+  stopAvailable?: boolean;
+  transcriptAvailable?: boolean;
+};
+
+type NativeAgentsResponse = {
+  agents?: NativeAgentSummary[];
 };
 
 const STREAM_EVENT_FLUSH_MS = 250;
@@ -363,6 +376,54 @@ function titleFromSteerMessage(message: string): string {
   return firstLine.length > 120 ? `${firstLine.slice(0, 117)}...` : firstLine;
 }
 
+function nativeAgentStatus(status: string | undefined): BackgroundActivityRow["status"] {
+  if (status === "running") return "run";
+  if (status === "failed") return "err";
+  if (status === "stopped") return "stop";
+  return "ok";
+}
+
+function nativeAgentRowsFromResponse(body: NativeAgentsResponse): BackgroundActivityRow[] {
+  return (body.agents ?? []).map((agent, index) => {
+    const status = nativeAgentStatus(agent.status);
+    return {
+      id: agent.id,
+      title: agent.title?.trim() || "Native sub-agent",
+      status,
+      kind: "agent" as const,
+      provider: agent.provider,
+      activityOrder: index,
+      inspectAvailable: false,
+      stopAvailable: agent.stopAvailable ?? status === "run",
+      transcriptAvailable: agent.transcriptAvailable ?? true,
+    };
+  });
+}
+
+function mergeAgentActivityRows(
+  transcriptRows: BackgroundActivityRow[],
+  nativeRows: BackgroundActivityRow[],
+): BackgroundActivityRow[] {
+  const byKey = new Map<string, BackgroundActivityRow>();
+  for (const row of transcriptRows) byKey.set(backgroundActivityDismissKey(row), row);
+
+  for (const nativeRow of nativeRows) {
+    const key = backgroundActivityDismissKey(nativeRow);
+    const transcriptRow = byKey.get(key);
+    byKey.set(key, {
+      ...transcriptRow,
+      ...nativeRow,
+      title: nativeRow.title || transcriptRow?.title || "Native sub-agent",
+      startedAt: nativeRow.startedAt ?? transcriptRow?.startedAt,
+      updatedAt: nativeRow.updatedAt ?? transcriptRow?.updatedAt,
+      activityOrder: nativeRow.activityOrder ?? transcriptRow?.activityOrder,
+      inspectAvailable: transcriptRow?.inspectAvailable ?? nativeRow.inspectAvailable,
+    });
+  }
+
+  return Array.from(byKey.values());
+}
+
 function resumeChip(mode: unknown): { label: string; title: string; variant: "success" | "warn" | "default" } | null {
   if (mode === "native") {
     return { label: "native resume", title: "This turn resumed the CLI-native conversation.", variant: "success" };
@@ -467,6 +528,7 @@ export function ChatView({
   const [bedrockAuthPrompt, setBedrockAuthPrompt] = useState<BedrockAuthPrompt | null>(null);
   const [visibleTurnCount, setVisibleTurnCount] = useState(INITIAL_VISIBLE_TURNS);
   const [backgroundSubAgents, setBackgroundSubAgents] = useState<Record<string, BackgroundSubAgent>>({});
+  const [nativeAgentRows, setNativeAgentRows] = useState<BackgroundActivityRow[]>([]);
   const [stoppingBackgroundAgents, setStoppingBackgroundAgents] = useState<Set<string>>(() => new Set());
   const [backgroundRunSnapshots, setBackgroundRunSnapshots] = useState<Record<string, BackgroundRunSnapshot>>({});
   const [stoppingBackgroundRuns, setStoppingBackgroundRuns] = useState<Set<string>>(() => new Set());
@@ -711,6 +773,34 @@ export function ChatView({
       setVisibleEventsPartial(Boolean(data.visibleEventsPartial ?? data.eventsPartial));
     } catch {}
   }, [applySessionSnapshot, eventsPartial, sessionId]);
+
+  const refreshNativeAgents = useCallback(async () => {
+    if (!mountedRef.current) return;
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/native-agents`, {
+        cache: "no-store",
+      });
+      if (!res.ok) return;
+      const body = await res.json().catch(() => ({})) as NativeAgentsResponse;
+      if (mountedRef.current) setNativeAgentRows(nativeAgentRowsFromResponse(body));
+    } catch {}
+  }, [sessionId]);
+
+  useEffect(() => {
+    setNativeAgentRows([]);
+    void refreshNativeAgents();
+  }, [refreshNativeAgents]);
+
+  useEffect(() => {
+    const hasRunningNativeAgent = nativeAgentRows.some((row) => row.status === "run");
+    if (meta.status !== "running" && !streaming && !hasRunningNativeAgent) return;
+    const initial = window.setTimeout(() => { void refreshNativeAgents(); }, 500);
+    const interval = window.setInterval(() => { void refreshNativeAgents(); }, BACKGROUND_RUN_POLL_MS);
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(interval);
+    };
+  }, [meta.status, nativeAgentRows, refreshNativeAgents, streaming]);
 
   // Client-side navigation can reuse an older App Router payload. Do one cheap
   // no-store snapshot after mount so the opened chat converges without a manual
@@ -1552,6 +1642,7 @@ export function ChatView({
     role: "user" | "assistant" | "tool" | "context",
     text: string,
     turnIndex?: number,
+    label?: string,
   ) => {
     const trimmed = text.trim();
     if (!trimmed) return;
@@ -1562,7 +1653,7 @@ export function ChatView({
         body: JSON.stringify({
           role,
           text: trimmed,
-          label: role === "assistant" ? "Assistant response" : role === "user" ? "User message" : "Pinned context",
+          label: label || (role === "assistant" ? "Assistant response" : role === "user" ? "User message" : "Pinned context"),
           source_turn: turnIndex,
         }),
       });
@@ -1584,6 +1675,14 @@ export function ChatView({
   const insertIntoComposer = useCallback((text: string) => {
     composerRef.current?.insertText(text);
   }, []);
+
+  const attachContextToComposer = useCallback((attachment: ComposerContextAttachment) => {
+    composerRef.current?.addContextAttachment(attachment);
+  }, []);
+
+  const pinInspectorContext = useCallback((text: string, label: string) => (
+    pinContext("context", text, undefined, label)
+  ), [pinContext]);
 
   const openInspectorTab = useCallback((key: InspectorTabKey) => {
     inspectorTabRequestId.current += 1;
@@ -1725,8 +1824,12 @@ export function ChatView({
 
   const showBackgroundSubAgent = useCallback((id: string) => {
     const tool = tools.find((item) => item.id === id);
-    if (tool) setActiveToolId(id);
-    openInspectorTab("tool");
+    if (tool) {
+      setActiveToolId(id);
+      openInspectorTab("tool");
+      return;
+    }
+    openInspectorTab("agents");
   }, [openInspectorTab, tools]);
 
   const stopBackgroundSubAgent = useCallback(async (id: string) => {
@@ -1740,7 +1843,7 @@ export function ChatView({
         const failure = await apiFailure(res, "Stop background agent failed");
         alert(failure.message);
       }
-      await refreshSessionSnapshot();
+      await Promise.all([refreshSessionSnapshot(), refreshNativeAgents()]);
     } catch (err) {
       alert(err instanceof Error ? err.message : "Failed to stop background agent");
     } finally {
@@ -1750,7 +1853,7 @@ export function ChatView({
         return next;
       });
     }
-  }, [refreshSessionSnapshot, sessionId]);
+  }, [refreshNativeAgents, refreshSessionSnapshot, sessionId]);
 
   const stopBackgroundRun = useCallback(async (id: string) => {
     setStoppingBackgroundRuns((current) => new Set(current).add(id));
@@ -1947,6 +2050,16 @@ export function ChatView({
     () => backgroundSubAgentRows(backgroundSubAgents, renderedEvents),
     [backgroundSubAgents, renderedEvents],
   );
+  const transcriptAgentRows = useMemo<BackgroundActivityRow[]>(
+    () => backgroundRows.map((row) => ({
+      ...row,
+      kind: "agent" as const,
+      inspectAvailable: true,
+      stopAvailable: row.status === "run",
+      transcriptAvailable: false,
+    })),
+    [backgroundRows],
+  );
   const backgroundRunRows = useMemo<BackgroundActivityRow[]>(() => (
     (meta.background_runs ?? []).map((run, index) => {
       const snapshot = backgroundRunSnapshots[run.session_id];
@@ -1964,9 +2077,9 @@ export function ChatView({
   const backgroundActivityRows = useMemo<BackgroundActivityRow[]>(
     () => sortBackgroundActivityRows([
       ...backgroundRunRows,
-      ...backgroundRows.map((row) => ({ ...row, kind: "agent" as const })),
+      ...mergeAgentActivityRows(transcriptAgentRows, nativeAgentRows),
     ]),
-    [backgroundRows, backgroundRunRows],
+    [backgroundRunRows, nativeAgentRows, transcriptAgentRows],
   );
   const visibleBackgroundActivityRows = useMemo(
     () => backgroundActivityRows.filter((row) => (
@@ -1988,7 +2101,7 @@ export function ChatView({
   const stopBackgroundActivity = useCallback((row: BackgroundActivityRow) => {
     if (row.kind === "session") {
       void stopBackgroundRun(row.id);
-    } else {
+    } else if (row.stopAvailable !== false) {
       void stopBackgroundSubAgent(row.id);
     }
   }, [stopBackgroundRun, stopBackgroundSubAgent]);
@@ -2319,6 +2432,8 @@ export function ChatView({
           referencedFiles={referencedFiles}
           fileOpenRequest={fileOpenRequest}
           onInsertIntoComposer={insertIntoComposer}
+          onAttachToComposer={attachContextToComposer}
+          onPinContext={pinInspectorContext}
           onClose={() => setMobileInspectorOpen(false)}
           requestedTab={inspectorTabRequest}
         />

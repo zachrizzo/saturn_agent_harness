@@ -15,7 +15,7 @@ import { readBudget, updateBudget } from "../budget";
  * so atomically increments the depth counter.
  *
  * @param sessionId   The session whose budget.json tracks recursion.
- * @param maxDepth    The orchestrator's configured max_recursion_depth (default 3).
+ * @param maxDepth    The orchestrator's configured max_recursion_depth.
  * @returns `{ allowed: true, currentDepth }` when the call may proceed;
  *          `{ allowed: false, currentDepth }` when the cap would be exceeded.
  */

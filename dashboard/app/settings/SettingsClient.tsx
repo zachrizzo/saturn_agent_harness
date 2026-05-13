@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { CLI } from "@/lib/runs";
-import type { AppSettings } from "@/lib/settings";
+import type { AppSettings, ClaudePermissionMode } from "@/lib/settings";
 import type { Model, ModelReasoningEffort } from "@/lib/models";
 import { formatModelOption, formatReasoningEffort, reasoningEffortOptionsForCli } from "@/lib/models";
 import type { WorkingDirectoryEntry } from "@/lib/working-directories";
@@ -20,6 +20,18 @@ type Props = {
 };
 
 const CLIS: CLI[] = [...CLI_VALUES];
+const CLAUDE_PERMISSION_OPTIONS: Array<{
+  value: ClaudePermissionMode;
+  label: string;
+  description: string;
+}> = [
+  { value: "bypassPermissions", label: "Bypass", description: "No prompts; matches current Saturn long-run behavior." },
+  { value: "auto", label: "Auto", description: "Claude Code classifies tool requests when available." },
+  { value: "acceptEdits", label: "Accept edits", description: "Auto-accept file edits and common filesystem work." },
+  { value: "default", label: "Ask", description: "Native prompt-before-action mode; non-interactive turns may stop for approval." },
+  { value: "dontAsk", label: "Deny unapproved", description: "Only pre-approved tools run." },
+  { value: "plan", label: "Plan", description: "Read-only planning by default." },
+];
 
 type ClaudePersonalAuthStatus = {
   loggedIn: boolean;
@@ -465,7 +477,7 @@ export function SettingsClient({ initialSettings, workingDirectories, mcpServers
           })}
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_260px]">
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_260px_260px]">
           <label className="block space-y-1.5">
             <span className="text-[11px] text-muted uppercase tracking-wider">Default working directory</span>
             <DirPicker
@@ -473,6 +485,23 @@ export function SettingsClient({ initialSettings, workingDirectories, mcpServers
               onChange={updateCwd}
               className="w-full"
             />
+          </label>
+          <label className="block space-y-1.5 rounded-lg border border-border bg-bg-subtle px-4 py-3">
+            <span className="text-[11px] text-muted uppercase tracking-wider">Claude permission mode</span>
+            <Select
+              value={settings.claudePermissionMode}
+              onChange={(e) => setSettings((prev) => ({
+                ...prev,
+                claudePermissionMode: e.target.value as ClaudePermissionMode,
+              }))}
+            >
+              {CLAUDE_PERMISSION_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </Select>
+            <span className="block text-[11px] text-subtle">
+              {CLAUDE_PERMISSION_OPTIONS.find((option) => option.value === settings.claudePermissionMode)?.description}
+            </span>
           </label>
           <label className="flex items-center gap-3 rounded-lg border border-border bg-bg-subtle px-4 py-3">
             <input

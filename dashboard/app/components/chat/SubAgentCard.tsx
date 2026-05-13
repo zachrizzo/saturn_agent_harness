@@ -3,7 +3,7 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { StreamEvent } from "@/lib/events";
+import { coalesceAssistantTextDeltas, type StreamEvent } from "@/lib/events";
 import { ToolChip } from "./ToolChip";
 
 const MARKDOWN_PLUGINS = [remarkGfm];
@@ -88,7 +88,7 @@ function buildToolRows(subEvents: StreamEvent[]): ToolRow[] {
 }
 
 function getSubAgentTexts(subEvents: StreamEvent[]): string[] {
-  return subEvents
+  return coalesceAssistantTextDeltas(subEvents)
     .filter((ev) => ev.kind === "assistant_text")
     .map((ev) => (ev as Extract<StreamEvent, { kind: "assistant_text" }>).text)
     .filter(Boolean);

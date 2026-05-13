@@ -1,7 +1,7 @@
 // Client-safe utilities for SessionMeta and Agent — no Node.js built-ins.
 // NOTE: slices.ts imports node:fs at runtime, but we only need its types here.
 // `import type` is erased at compile time so it won't leak fs into client bundles.
-import type { CLI, SessionMeta, Agent } from "./runs";
+import type { CLI, SessionMeta, Agent, OrchestratorBudget } from "./runs";
 import type { Slice } from "./slices";
 import { DEFAULT_CLI, normalizeCli } from "./clis";
 
@@ -31,21 +31,25 @@ export function agentModelForCli(agent: Agent, cli: CLI): string | undefined {
 
 /**
  * Pick the display title for a session. Priority:
- *   1. First user message, matching the inbox/sidebar chat naming.
- *   2. Agent name if there are no turns yet.
- *   3. "New chat" as a last-resort fallback.
+ *   1. Latest user message, matching the inbox/sidebar chat naming.
+ *   2. Pending message during initial navigation before the turn stub exists.
+ *   3. Explicit override, used only when no user message has been recorded.
+ *   4. Agent name if there are no turns yet.
+ *   5. "New chat" as a last-resort fallback.
  */
 export function sessionTitle(s: SessionMeta, pendingMessage?: string): string {
-  const override = s.title_override?.replace(/\s+/g, " ").trim();
-  if (override) return compactSessionTitle(override);
-
   const turns = s.turns ?? [];
-  for (const t of turns) {
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const t = turns[i];
     const msg = t?.user_message?.replace(/\s+/g, " ").trim();
     if (msg) return compactSessionTitle(msg);
   }
+
   const pending = pendingMessage?.replace(/\s+/g, " ").trim();
   if (pending) return compactSessionTitle(pending);
+
+  const override = s.title_override?.replace(/\s+/g, " ").trim();
+  if (override) return compactSessionTitle(override);
 
   const name = s.agent_snapshot?.name;
   if (name && !isAdHocAgentName(name)) return name;
@@ -64,6 +68,34 @@ function isAdHocAgentName(value: string): boolean {
 
 export function isOrchestrator(agent: Agent | undefined): boolean {
   return agent?.kind === "orchestrator";
+}
+
+export function effectiveSwarmAgent(agent: Agent, meta?: SessionMeta): Agent {
+  const overrideSlices = meta?.overrides?.slices_available;
+  if (isOrchestrator(agent)) {
+    return overrideSlices !== undefined ? { ...agent, slices_available: overrideSlices } : agent;
+  }
+
+  return {
+    ...agent,
+    kind: "orchestrator",
+    slices_available: overrideSlices ?? agent.slices_available ?? "*",
+    can_create_custom_slices: agent.can_create_custom_slices ?? false,
+    allowed_mutations: agent.allowed_mutations ?? ["read-only", "writes-scratch", "writes-source"],
+    budget: agent.budget ?? {},
+    on_budget_exceeded: agent.on_budget_exceeded ?? "report-partial",
+    on_slice_failure: agent.on_slice_failure ?? "continue",
+  };
+}
+
+export function effectiveOrchestratorLimits(agent: Agent, overrides?: OrchestratorBudget): OrchestratorBudget {
+  const base = agent.budget ?? {};
+  const over = overrides ?? {};
+  return {
+    max_total_tokens: over.max_total_tokens ?? base.max_total_tokens,
+    max_slice_calls: over.max_slice_calls ?? base.max_slice_calls,
+    max_recursion_depth: over.max_recursion_depth ?? base.max_recursion_depth,
+  };
 }
 
 export function sliceInputsValid(

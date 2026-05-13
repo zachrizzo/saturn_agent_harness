@@ -38,7 +38,7 @@ export default async function ChatSessionPage({
   ]);
   if (!session) notFound();
 
-  // ?m= carries the first user message when navigating immediately after
+  // ?m= carries the initial user message when navigating immediately after
   // session creation, before run-turn.sh has had time to write the turn stub.
   const pendingMessage = sp.m ? String(sp.m) : undefined;
 

@@ -21,13 +21,17 @@ SATURN_TRANSCRIPT_SH_LOADED=1
 #
 #   Assistant: <final_text, truncated>
 #
-# Defaults: keep the last 12 turns; truncate any field longer than 16K chars.
+# Defaults: keep all turns; truncate any field longer than 16K chars.
 # Aborted turns get an explicit "[interrupted]" marker; turns with no
 # final_text get a "[no final assistant response recorded]" placeholder.
 saturn_build_transcript_text() {
   local meta_file="$1"
-  local max_turns="${2:-${SATURN_TRANSCRIPT_MAX_TURNS:-12}}"
+  local max_turns="${2:-${SATURN_TRANSCRIPT_MAX_TURNS:-0}}"
   local max_chars="${3:-${SATURN_TRANSCRIPT_FIELD_MAX_CHARS:-16000}}"
+
+  case "$max_turns" in
+    ""|0|all|ALL|none|NONE|unlimited|UNLIMITED) max_turns=0 ;;
+  esac
 
   jq -r --argjson max_turns "$max_turns" --argjson max_chars "$max_chars" '
     def trunc($n):
@@ -36,7 +40,7 @@ saturn_build_transcript_text() {
       else .
       end;
     (.turns | length) as $total
-    | (.turns | if length > $max_turns then .[(length - $max_turns):] else . end) as $turns
+    | (.turns | if $max_turns > 0 and length > $max_turns then .[(length - $max_turns):] else . end) as $turns
     | ($total - ($turns | length)) as $offset
     | $turns
     | to_entries[]

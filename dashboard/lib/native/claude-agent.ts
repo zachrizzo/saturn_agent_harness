@@ -33,7 +33,6 @@ export async function listClaudeSlashCommands(args: {
   const session = query({
     prompt: emptyPrompt(),
     options: {
-      maxTurns: 1,
       cwd: args.cwd,
       model: provider.model,
       env: provider.env,

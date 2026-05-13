@@ -5,15 +5,22 @@ import { useRouter } from "next/navigation";
 
 type Props = {
   chatId: string;
+  allowAll: boolean;
 };
 
-export function DispatchConnectionActions({ chatId }: Props): JSX.Element {
+export function DispatchConnectionActions({ chatId, allowAll }: Props): JSX.Element {
   const router = useRouter();
   const [removing, setRemoving] = useState(false);
 
   const removeConnection = async () => {
     const confirmed = window.confirm(
-      `Remove Telegram chat ${chatId} from Dispatch? This clears its session mapping, queue, and per-chat routing settings.`,
+      [
+        `Forget Telegram chat ${chatId} in Dispatch?`,
+        "This clears its session mapping, queue, and per-chat routing settings.",
+        allowAll
+          ? "Open access is enabled, so this chat can reconnect by messaging the bot again."
+          : "This does not edit the LaunchAgent allowlist; reinstall the bridge to revoke a locked-mode chat id.",
+      ].join("\n\n"),
     );
     if (!confirmed) return;
 
@@ -43,9 +50,9 @@ export function DispatchConnectionActions({ chatId }: Props): JSX.Element {
       className="btn text-[12px] py-1 px-2.5 text-[var(--fail)]"
       onClick={removeConnection}
       disabled={removing}
-      title="Remove this Telegram connection"
+      title="Forget this Telegram connection"
     >
-      {removing ? "Removing..." : "Remove"}
+      {removing ? "Forgetting..." : "Forget"}
     </button>
   );
 }

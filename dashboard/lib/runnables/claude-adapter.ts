@@ -18,6 +18,7 @@ import type { ModelReasoningEffort } from "../models";
 import { resolveReasoningEffortForCliModel } from "../model-capabilities";
 import { isBedrockCli, isLocalClaudeCli, isPersonalClaudeCli, normalizeCli } from "../clis";
 import type { CLI } from "../clis";
+import { readAppSettings, type ClaudePermissionMode } from "../settings";
 import { toBedrockId } from "../claude-models";
 import { readBedrockConfig } from "../bedrock-auth";
 import { binDir } from "../paths";
@@ -30,6 +31,7 @@ type ClaudeInternal = {
   cwd?: string;
   systemPrompt?: string;
   allowedTools?: string[];
+  mcpServers?: McpServers;
   model?: string;
   reasoningEffort?: ModelReasoningEffort;
   abort?: AbortController;
@@ -228,7 +230,7 @@ export async function claudeProviderOptions(cli: CLI, model?: string): Promise<P
     delete env.ANTHROPIC_API_KEY;
     delete env.ANTHROPIC_BASE_URL;
     delete env.ANTHROPIC_AUTH_TOKEN;
-    settingSources = ["project", "local"];
+    settingSources = ["user", "project", "local"];
   }
 
   const mcpServers = isLocalClaudeCli(cli) ? undefined : await readEnabledPluginMcpServers(env);
@@ -239,6 +241,35 @@ export async function claudeProviderOptions(cli: CLI, model?: string): Promise<P
   const pathToClaudeCodeExecutable = await resolveClaudeExecutable();
 
   return { env, model: effectiveModel, settingSources, settings, mcpServers, pathToClaudeCodeExecutable };
+}
+
+function claudeCodeSystemPrompt(append?: string): Options["systemPrompt"] {
+  const trimmed = append?.trim();
+  return trimmed
+    ? { type: "preset", preset: "claude_code", append: trimmed }
+    : { type: "preset", preset: "claude_code" };
+}
+
+function mergeMcpServers(...configs: Array<McpServers | undefined>): McpServers | undefined {
+  const merged: McpServers = {};
+  for (const config of configs) {
+    if (!config) continue;
+    Object.assign(merged, config);
+  }
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+async function readClaudePermissionMode(): Promise<ClaudePermissionMode> {
+  const settings = await readAppSettings().catch(() => undefined);
+  return settings?.claudePermissionMode ?? "bypassPermissions";
+}
+
+function effectiveClaudePermissionMode(
+  requested: ClaudePermissionMode,
+  allowedTools: string[] | undefined,
+): ClaudePermissionMode {
+  if (allowedTools?.length && requested !== "plan") return "dontAsk";
+  return requested;
 }
 
 function roleLabel(role: NeutralMessage["role"]): string {
@@ -322,6 +353,7 @@ export class ClaudeAdapter implements RunnableAdapter {
       cwd: opts.cwd,
       systemPrompt: opts.systemPrompt,
       allowedTools: opts.allowedTools,
+      mcpServers: opts.mcpServers as McpServers | undefined,
       model: opts.model,
       reasoningEffort: opts.reasoningEffort,
     };
@@ -343,6 +375,8 @@ export class ClaudeAdapter implements RunnableAdapter {
     const model = overrides?.model ?? internal.model;
     const allowedTools = overrides?.allowedTools ?? internal.allowedTools;
     const provider = await claudeProviderOptions(internal.cli, model);
+    const permissionMode = effectiveClaudePermissionMode(await readClaudePermissionMode(), allowedTools);
+    const mcpServers = mergeMcpServers(provider.mcpServers, internal.mcpServers);
     const reasoningEffort = await resolveReasoningEffortForCliModel(
       internal.cli,
       provider.model ?? model,
@@ -365,14 +399,14 @@ export class ClaudeAdapter implements RunnableAdapter {
           env: provider.env,
           pathToClaudeCodeExecutable: provider.pathToClaudeCodeExecutable,
           settings: provider.settings,
-          mcpServers: provider.mcpServers,
+          mcpServers,
           settingSources: provider.settingSources,
           effort: reasoningEffort,
           cwd: internal.cwd,
-          systemPrompt: internal.systemPrompt,
+          systemPrompt: claudeCodeSystemPrompt(internal.systemPrompt),
           allowedTools,
-          permissionMode: "bypassPermissions",
-          allowDangerouslySkipPermissions: true,
+          permissionMode,
+          ...(permissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } : {}),
           abortController: abort,
         },
       });
@@ -528,6 +562,7 @@ export class ClaudeAdapter implements RunnableAdapter {
       cwd: opts.cwd,
       systemPrompt: opts.systemPrompt,
       allowedTools: opts.allowedTools,
+      mcpServers: opts.mcpServers as McpServers | undefined,
       model: opts.model,
       reasoningEffort: opts.reasoningEffort,
     };

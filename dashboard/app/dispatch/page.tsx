@@ -184,7 +184,7 @@ function setupActions(activeKey: SetupKey, overview: DispatchOverview): JSX.Elem
     return (
       <WizardAction
         title="Install the Dispatch bridge"
-        body="Paste the BotFather token once. Saturn installs a local LaunchAgent that accepts messages from every Telegram chat that can reach this bot."
+        body="Paste the BotFather token once. Saturn installs a local LaunchAgent; use open access for quick setup or the advanced section to restrict chat ids."
       >
         {setupInstallPanel("open", overview)}
       </WizardAction>
@@ -195,7 +195,9 @@ function setupActions(activeKey: SetupKey, overview: DispatchOverview): JSX.Elem
     <WizardAction
       title={overview.service.running ? "Try it in Telegram" : overview.service.loaded ? "Start the LaunchAgent" : "Install and start the LaunchAgent"}
       body={overview.service.running
-        ? "Open the bot and send /start or a normal task. Any Telegram chat can connect because open access is enabled."
+        ? overview.plist.allowAll
+          ? "Open the bot and send /start or a normal task. Any Telegram chat can connect because open access is enabled."
+          : "Open the bot from an allowed Telegram chat and send /start or a normal task."
         : overview.service.loaded
           ? "The service is loaded but not running. Restart it, then refresh this page."
           : "The service is not loaded yet. Install the bridge first."}
@@ -288,21 +290,21 @@ function SetupWizard({
                     : "Add token in install values"}
               />
               <SetupCheck
-                done={overview.plist.allowAll}
+                done={overview.plist.tokenConfigured && (overview.plist.allowAll || overview.plist.allowedChatCount > 0)}
                 label="Chat access"
                 detail={overview.plist.allowAll
                   ? "All Telegram chats can connect"
                   : overview.plist.allowedChatCount > 0
-                    ? `${overview.plist.allowedChatCount} chats are allowed; reinstall for all chats`
+                    ? `${overview.plist.allowedChatCount} chat${overview.plist.allowedChatCount === 1 ? "" : "s"} allowed`
                     : "Install the bridge to allow all chats"}
               />
               <SetupCheck
-                done={overview.service.running && overview.plist.allowAll}
+                done={overview.service.running && overview.plist.tokenConfigured && (overview.plist.allowAll || overview.plist.allowedChatCount > 0)}
                 label="Bridge service"
-                detail={overview.service.running && overview.plist.allowAll
+                detail={overview.service.running && overview.plist.tokenConfigured && (overview.plist.allowAll || overview.plist.allowedChatCount > 0)
                   ? `Running${overview.service.pid ? ` as pid ${overview.service.pid}` : ""}`
                   : overview.service.running
-                    ? "Running, but not in all-chat mode"
+                    ? "Running, but access is not configured"
                     : overview.service.error ?? "Not running"}
               />
             </div>
@@ -345,7 +347,7 @@ function ActiveConnections({ overview }: { overview: DispatchOverview }): JSX.El
                     <Link href={href} className="btn btn-primary text-[12px] py-1 px-2.5">
                       Open
                     </Link>
-                    <DispatchConnectionActions chatId={chat.chatId} />
+                    <DispatchConnectionActions chatId={chat.chatId} allowAll={overview.plist.allowAll} />
                   </div>
                 </div>
                 <div className="dispatch-session-row-meta mt-3 grid gap-2 md:grid-cols-[170px_minmax(0,1fr)_150px] text-[12px]">
@@ -494,6 +496,7 @@ function DispatchDashboard({
 }): JSX.Element {
   const queueTotal = overview.state.chats.reduce((total, chat) => total + chat.queueLength, 0);
   const activeChatCount = overview.state.chats.filter((chat) => chat.sessionId || chat.pendingSessionId).length;
+  const accessLabel = overview.plist.allowAll ? "Open access" : "Restricted";
 
   return (
     <div className="dispatch-page space-y-6">
@@ -506,7 +509,7 @@ function DispatchDashboard({
           </p>
         </div>
         <div className="dispatch-dashboard-actions">
-          {statusChip(true, "Ready")}
+          {statusChip(true, accessLabel)}
           <Link href="/chats" className="btn btn-primary text-[12px] py-1.5 px-3">Open chats</Link>
           <Link href="/agents" className="btn text-[12px] py-1.5 px-3">Manage agents</Link>
         </div>
@@ -563,11 +566,12 @@ export default async function DispatchPage() {
     listAgents().catch(() => []),
   ]);
 
-  const openAccessConfigured = overview.plist.tokenConfigured && overview.plist.allowAll;
+  const accessConfigured = overview.plist.tokenConfigured && (overview.plist.allowAll || overview.plist.allowedChatCount > 0);
+  const serviceReady = overview.service.running && accessConfigured;
   const setupChecks = [
     Boolean(overview.telegram.botUsername),
-    openAccessConfigured,
-    overview.service.running && openAccessConfigured,
+    accessConfigured,
+    serviceReady,
   ];
   const firstIncomplete = setupChecks.findIndex((done) => !done);
   const activeIndex = firstIncomplete === -1 ? setupChecks.length - 1 : firstIncomplete;
@@ -590,21 +594,23 @@ export default async function DispatchPage() {
       key: "bridge",
       number: "2",
       title: "Install bridge",
-      summary: openAccessConfigured
-        ? "All chats allowed"
-        : overview.plist.allowedChatCount > 0
-          ? "Currently restricted"
+      summary: accessConfigured
+        ? overview.plist.allowAll
+          ? "All chats allowed"
+          : `${overview.plist.allowedChatCount} chat${overview.plist.allowedChatCount === 1 ? "" : "s"} allowed`
+        : overview.plist.allowedChatCount > 0 && overview.plist.tokenConfigured
+          ? `${overview.plist.allowedChatCount} chat${overview.plist.allowedChatCount === 1 ? "" : "s"} allowed`
           : overview.plist.tokenConfigured
             ? "Token saved; enable all chats"
             : "Token not installed",
-      detail: "Install the local LaunchAgent in open access mode. Any Telegram chat that messages this bot can use Saturn.",
+      detail: "Install the local LaunchAgent. Open access is fastest to set up; restricted mode limits usage to selected chat ids.",
       state: stepState(1),
     },
     {
       key: "test",
       number: "3",
       title: "Test from Telegram",
-      summary: overview.service.running && openAccessConfigured
+      summary: serviceReady
         ? "Bridge ready"
         : overview.state.chats.length > 0
           ? `${overview.state.chats.length} connected chat${overview.state.chats.length === 1 ? "" : "s"}`

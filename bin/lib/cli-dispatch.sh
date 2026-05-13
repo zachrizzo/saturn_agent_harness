@@ -155,6 +155,48 @@ claude_effort_supported() {
   return 1
 }
 
+normalize_claude_permission_mode() {
+  case "${1:-}" in
+    default|acceptEdits|bypassPermissions|plan|dontAsk|auto) echo "$1" ;;
+    "") echo "" ;;
+    *) echo "bypassPermissions" ;;
+  esac
+}
+
+settings_claude_permission_mode() {
+  local settings_path="${AUTOMATIONS_ROOT:-}/settings.json"
+  if [[ -n "${CLAUDE_PERMISSION_MODE:-}" ]]; then
+    normalize_claude_permission_mode "$CLAUDE_PERMISSION_MODE"
+    return 0
+  fi
+  if [[ -n "$settings_path" && -f "$settings_path" ]]; then
+    local mode
+    mode="$(jq -r '.claudePermissionMode // empty' "$settings_path" 2>/dev/null || true)"
+    normalize_claude_permission_mode "$mode"
+    return 0
+  fi
+  echo ""
+}
+
+effective_claude_permission_mode() {
+  local requested
+  requested="$(normalize_claude_permission_mode "$(settings_claude_permission_mode)")"
+  local allowed_tools="${1:-}"
+
+  # Saturn treats an explicit allowedTools list as a restriction. Claude Code's
+  # bypass mode ignores allow rules, so locked agents use dontAsk unless the
+  # caller explicitly disables this guard.
+  if [[ "${SATURN_ALLOWED_TOOLS_RESTRICT:-1}" != "0" \
+      && -n "$allowed_tools" \
+      && ",$allowed_tools," != *",__SATURN_NO_TOOLS__,"* \
+      && "$requested" != "plan" ]]; then
+    echo "dontAsk"
+    return 0
+  fi
+
+  echo "${requested:-bypassPermissions}"
+}
+
 codex_effort_supported() {
   local model="$1"
   local effort="$2"
@@ -238,10 +280,12 @@ build_cli_args() {
         --output-format stream-json
         --verbose
       )
-      if [[ -n "${CLAUDE_PERMISSION_MODE:-}" ]]; then
-        RUN_ARGS+=(--permission-mode "$CLAUDE_PERMISSION_MODE")
-      else
+      local permission_mode
+      permission_mode="$(effective_claude_permission_mode "$allowed_tools")"
+      if [[ "$permission_mode" == "bypassPermissions" ]]; then
         RUN_ARGS+=(--dangerously-skip-permissions)
+      else
+        RUN_ARGS+=(--permission-mode "$permission_mode")
       fi
       if [[ -n "$session_id" ]]; then
         if [[ "$is_resume" == "yes" ]]; then
@@ -263,6 +307,9 @@ build_cli_args() {
       elif [[ -n "$allowed_tools" ]]; then
         RUN_ARGS+=(--allowedTools "$allowed_tools")
       fi
+      if [[ -n "${CLAUDE_APPEND_SYSTEM_PROMPT_FILE:-}" && -f "${CLAUDE_APPEND_SYSTEM_PROMPT_FILE:-}" ]]; then
+        RUN_ARGS+=(--append-system-prompt-file "$CLAUDE_APPEND_SYSTEM_PROMPT_FILE")
+      fi
       [[ -n "$resolved_model" ]] && RUN_ARGS+=(--model "$resolved_model")
       if [[ -n "$reasoning_effort" ]] && claude_effort_supported "$reasoning_effort"; then
         RUN_ARGS+=(--effort "$reasoning_effort")
@@ -277,7 +324,7 @@ build_cli_args() {
         export ANTHROPIC_AUTH_TOKEN="sk-local-proxy-key"
       elif [[ "$cli" == "claude-personal" ]]; then
         unset CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX ANTHROPIC_API_KEY ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN
-        RUN_ARGS+=(--setting-sources "${CLAUDE_SETTING_SOURCES:-project,local}")
+        RUN_ARGS+=(--setting-sources "${CLAUDE_SETTING_SOURCES:-user,project,local}")
       else
         # Bedrock (or default) path — inject AWS auth if not already set.
         setup_bedrock_env

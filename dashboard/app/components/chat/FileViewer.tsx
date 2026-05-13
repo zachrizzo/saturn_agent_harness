@@ -56,18 +56,18 @@ type DiffState =
   | { status: "ok"; data: DiffContent };
 
 type ViewMode = "preview" | "source" | "diff";
-type DiffLineKind = "add" | "del" | "ctx";
+export type DiffLineKind = "add" | "del" | "ctx";
 
 const MARKDOWN_PLUGINS = [remarkGfm];
 
-type ParsedDiffRow =
+export type ParsedDiffRow =
   | { kind: "section"; text: string }
   | { kind: "file"; text: string }
   | { kind: "meta"; text: string }
   | { kind: "hunk"; text: string }
   | { kind: "line"; lineKind: DiffLineKind; text: string; oldLine?: number; newLine?: number };
 
-type ParsedDiff = {
+export type ParsedDiff = {
   rows: ParsedDiffRow[];
   additions: number;
   deletions: number;
@@ -114,7 +114,7 @@ function formatDiffPath(raw: string): string {
   return raw.replace(/^diff --git\s+/, "");
 }
 
-function parseUnifiedDiff(diff: string): ParsedDiff {
+export function parseUnifiedDiff(diff: string): ParsedDiff {
   const rows: ParsedDiffRow[] = [];
   let oldLine = 0;
   let newLine = 0;
@@ -450,7 +450,7 @@ function DiffPreview({ state, onRetry }: { state: DiffState; onRetry: () => void
   );
 }
 
-function StructuredDiff({ parsed }: { parsed: ParsedDiff }) {
+export function StructuredDiff({ parsed }: { parsed: ParsedDiff }) {
   if (parsed.rows.length === 0) {
     return <EmptyPreview label="No textual diff is available for this file." />;
   }

@@ -56,6 +56,17 @@ type Attachment = {
   file?: File;
 };
 
+export type ComposerContextAttachment = {
+  label: string;
+  text: string;
+  detail?: string;
+  kind?: "context" | "gitlab-mr" | "web";
+};
+
+type ComposerContextAttachmentState = ComposerContextAttachment & {
+  localId: string;
+};
+
 type QueuedMessage = {
   text: string;
   cli: CLI;
@@ -114,6 +125,7 @@ export type ComposerHandle = {
   focus: () => void;
   setDraft: (text: string) => void;
   insertText: (text: string) => void;
+  addContextAttachment: (attachment: ComposerContextAttachment) => void;
   /** Returns files queued locally when no sessionId was provided at drop time */
   getPendingFiles: () => File[];
   clearPendingFiles: () => void;
@@ -159,6 +171,7 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
   }
   const [queued, setQueued] = useState<QueuedMessage[]>(() => initialQueueRef.current ?? []);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [contextAttachments, setContextAttachments] = useState<ComposerContextAttachmentState[]>([]);
   const attachmentsRef = useRef<Attachment[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -227,6 +240,7 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
     setQueued([]);
     setMessage("");
     setAttachments([]);
+    setContextAttachments([]);
     setSlashOpen(false);
     setSlashQuery("");
     setSlashTrigger(null);
@@ -372,6 +386,10 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
     });
   };
 
+  const removeContextAttachment = (localId: string) => {
+    setContextAttachments((prev) => prev.filter((attachment) => attachment.localId !== localId));
+  };
+
   useImperativeHandle(ref, () => ({
     focus: () => textareaRef.current?.focus(),
     setDraft: (text: string) => {
@@ -402,6 +420,21 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
         }, 0);
         return next;
       });
+    },
+    addContextAttachment: (attachment: ComposerContextAttachment) => {
+      const text = attachment.text.trim();
+      if (!text) return;
+      setContextAttachments((prev) => [
+        ...prev,
+        {
+          ...attachment,
+          text,
+          localId: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          kind: attachment.kind ?? "context",
+        },
+      ]);
+      setNotice(null);
+      setTimeout(() => textareaRef.current?.focus(), 0);
     },
     getPendingFiles: () => attachments.filter((a) => a.file && !a.error).map((a) => a.file!),
     clearPendingFiles: () => setAttachments((prev) => prev.filter((a) => !a.file)),
@@ -457,11 +490,13 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
 
   // Fetch slash commands when CLI changes
   useEffect(() => {
-    fetch(`/api/slash-commands?cli=${cli}`)
+    const params = new URLSearchParams({ cli });
+    if (cwd?.trim()) params.set("cwd", cwd.trim());
+    fetch(`/api/slash-commands?${params.toString()}`)
       .then((r) => r.json())
       .then((data) => setCommands(data.commands ?? []))
       .catch(() => {});
-  }, [cli]);
+  }, [cli, cwd]);
 
   useEffect(() => {
     if (!model || activeModelOptions.length === 0) return;
@@ -643,17 +678,28 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
   };
 
   const buildMessageWithAttachments = (base: string): string => {
+    const context = contextAttachments.filter((a) => a.text.trim());
     const ready = attachments.filter((a) => a.path && !a.error);
-    if (ready.length === 0) return base;
-    const lines = ready.map((a) => `- ${a.path}  (${a.name})`);
-    return `${base}\n\n[Attached files — read them with the Read tool]\n${lines.join("\n")}`;
+    let next = base;
+    if (context.length > 0) {
+      const blocks = context.map((a) => [
+        `### ${a.label}${a.detail ? ` (${a.detail})` : ""}`,
+        a.text,
+      ].join("\n"));
+      next = `${next}${next ? "\n\n" : ""}[Attached context]\n${blocks.join("\n\n")}`;
+    }
+    if (ready.length > 0) {
+      const lines = ready.map((a) => `- ${a.path}  (${a.name})`);
+      next = `${next}${next ? "\n\n" : ""}[Attached files — read them with the Read tool]\n${lines.join("\n")}`;
+    }
+    return next;
   };
 
   const anyUploading = attachments.some((a) => a.uploading);
 
   const submit = () => {
     const trimmed = message.trim();
-    if (!trimmed && attachments.filter((a) => !a.error).length === 0) return;
+    if (!trimmed && attachments.filter((a) => !a.error).length === 0 && contextAttachments.length === 0) return;
     if (anyUploading) return;
     if (trimmed === "/login") {
       if (cli === "claude-personal") {
@@ -691,6 +737,7 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
     // Clean up previews and clear attachments — they're now part of the sent message.
     attachments.forEach((a) => a.previewUrl && URL.revokeObjectURL(a.previewUrl));
     setAttachments([]);
+    setContextAttachments([]);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
   };
 
@@ -834,14 +881,14 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
     startAudioAnalysis();
   }, [isRecording, stopAudioAnalysis]);
 
-  const readyAttachmentCount = attachments.filter((a) => (a.path || a.file) && !a.error).length;
+  const readyAttachmentCount = attachments.filter((a) => (a.path || a.file) && !a.error).length + contextAttachments.length;
   const canSend = (!!message.trim() || readyAttachmentCount > 0) && !anyUploading;
   const selectedModel = findSelectedModel(activeModelOptions, cli, model);
   const effortOptions = reasoningEffortOptionsForCli(cli, selectedModel);
 
   const inner = (
     <div
-      className="relative rounded-2xl border border-border overflow-visible"
+      className="composer-card relative rounded-2xl border border-border overflow-visible"
       style={{ background: "var(--bg-elev)", boxShadow: "var(--shadow-lg)" }}
     >
         {/* Slash command popup */}
@@ -901,8 +948,31 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
         )}
 
         {/* Attachment chips */}
-        {attachments.length > 0 && (
+        {(contextAttachments.length > 0 || attachments.length > 0) && (
           <div className="px-4 pt-3 flex flex-wrap gap-2">
+            {contextAttachments.map((attachment) => (
+              <div
+                key={attachment.localId}
+                className="group relative flex items-center gap-2 pl-2 pr-6 py-1 rounded-lg border border-accent/30 bg-accent/10 text-[11px]"
+                title={attachment.text}
+              >
+                <svg className="w-3.5 h-3.5 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h8M8 12h8M8 17h5M5 4h14a1 1 0 011 1v14a1 1 0 01-1 1H5a1 1 0 01-1-1V5a1 1 0 011-1z" />
+                </svg>
+                <span className="max-w-[180px] truncate font-medium text-fg">{attachment.label}</span>
+                {attachment.detail && <span className="text-subtle">{attachment.detail}</span>}
+                <button
+                  type="button"
+                  onClick={() => removeContextAttachment(attachment.localId)}
+                  aria-label="Remove attached context"
+                  className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-bg-hover text-subtle hover:text-fg"
+                >
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            ))}
             {attachments.map((a) => (
               <div
                 key={a.localId}
@@ -998,7 +1068,7 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
         )}
 
         {/* Toolbar footer */}
-        <div className="flex items-center gap-1 px-3 py-2 border-t border-border">
+        <div className="composer-toolbar-row flex items-center gap-1 px-3 py-2 border-t border-border">
           {/* CLI pills */}
           {/* CLI picker — single active pill + popover */}
           <div className="relative" ref={cliPickerRef}>
@@ -1033,10 +1103,10 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
             )}
           </div>
 
-          <div className="h-3.5 w-px bg-border mx-1.5" />
+          <div className="composer-model-separator h-3.5 w-px bg-border mx-1.5" />
 
           {/* Model dropdown */}
-          <div className="relative flex items-center min-w-0 max-w-[130px]" title={selectedModel ? formatModelOption(selectedModel) : model}>
+          <div className="composer-model-control relative flex items-center min-w-0 max-w-[130px]" title={selectedModel ? formatModelOption(selectedModel) : model}>
             <select
               value={model}
               onChange={(e) => { didUserChoose.current = true; setModel(e.target.value); }}
@@ -1060,10 +1130,10 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
             </svg>
           </div>
 
-          <div className="h-3.5 w-px bg-border mx-1.5" />
+          <div className="composer-effort-separator h-3.5 w-px bg-border mx-1.5" />
 
           {/* Reasoning effort dropdown */}
-          <div className="relative flex items-center min-w-0 max-w-[100px]" title={`Reasoning: ${effortOptions.length ? formatReasoningEffort(reasoningEffort || undefined) : "Not supported by this model"}`}>
+          <div className="composer-effort-control relative flex items-center min-w-0 max-w-[100px]" title={`Reasoning: ${effortOptions.length ? formatReasoningEffort(reasoningEffort || undefined) : "Not supported by this model"}`}>
             <select
               value={reasoningEffort}
               onChange={(e) => {
@@ -1105,7 +1175,7 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              className="flex items-center justify-center w-7 h-7 rounded-lg text-muted hover:text-fg hover:bg-bg-hover transition-colors"
+              className="composer-secondary-action flex items-center justify-center w-7 h-7 rounded-lg text-muted hover:text-fg hover:bg-bg-hover transition-colors"
               title="Attach files (or drag/drop/paste)"
               aria-label="Attach files"
             >
@@ -1119,7 +1189,7 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
               type="button"
               onClick={toggleSTT}
               className={[
-                "flex items-center gap-1 w-7 h-7 justify-center rounded-lg transition-colors",
+                "composer-secondary-action flex items-center gap-1 w-7 h-7 justify-center rounded-lg transition-colors",
                 isRecording ? "text-[var(--fail)] hover:bg-bg-hover" : "text-muted hover:text-fg hover:bg-bg-hover",
               ].join(" ")}
               title={isRecording ? "Stop recording" : "Dictate (speech to text)"}
@@ -1141,6 +1211,81 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
               )}
             </button>
           )}
+
+          <details className="composer-compact-options">
+            <summary aria-label="Composer settings" title="Composer settings">
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7h10M18 7h2M4 17h2M10 17h10M8 5v4M16 15v4" />
+              </svg>
+            </summary>
+            <div className="composer-compact-options-menu">
+              <label className="composer-menu-field">
+                <span>Model</span>
+                <select
+                  value={model}
+                  onChange={(e) => { didUserChoose.current = true; setModel(e.target.value); }}
+                  disabled={disabled}
+                >
+                  {modelOptionsLoading && (
+                    <option value={model}>{model ? "Loading models..." : "Loading..."}</option>
+                  )}
+                  {!modelOptionsLoading && activeModelOptions.length === 0 && (
+                    <option value={model}>{model || "No models"}</option>
+                  )}
+                  {activeModelOptions.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {formatModelOption(m)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="composer-menu-field">
+                <span>Reasoning</span>
+                <select
+                  value={reasoningEffort}
+                  onChange={(e) => {
+                    didUserChoose.current = true;
+                    setReasoningEffort(e.target.value as ModelReasoningEffort | "");
+                  }}
+                  disabled={disabled || effortOptions.length === 0}
+                >
+                  <option value="">{effortOptions.length ? "Effort" : "No effort"}</option>
+                  {effortOptions.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {uploadsEnabled && (
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="composer-menu-action"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                  </svg>
+                  Attach files
+                </button>
+              )}
+              {sttSupported && (
+                <button
+                  type="button"
+                  onClick={() => { void toggleSTT(); }}
+                  className="composer-menu-action"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                    <line strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} x1="12" y1="19" x2="12" y2="23" />
+                    <line strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} x1="8" y1="23" x2="16" y2="23" />
+                  </svg>
+                  {isRecording ? "Stop dictation" : "Dictate"}
+                </button>
+              )}
+            </div>
+          </details>
 
           {/* queued indicator — only show inline badge for inline variant */}
           {queued.length > 0 && variant === "inline" && (
@@ -1168,6 +1313,80 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
             </button>
             {overflowOpen && (
               <div className="absolute bottom-full right-0 mb-1 z-50 w-52 rounded-lg border border-border bg-bg shadow-lg py-1">
+                <div className="composer-menu-mobile-only">
+                  <label className="composer-menu-field">
+                    <span>Model</span>
+                    <select
+                      value={model}
+                      onChange={(e) => { didUserChoose.current = true; setModel(e.target.value); }}
+                      disabled={disabled}
+                    >
+                      {modelOptionsLoading && (
+                        <option value={model}>{model ? "Loading models..." : "Loading..."}</option>
+                      )}
+                      {!modelOptionsLoading && activeModelOptions.length === 0 && (
+                        <option value={model}>{model || "No models"}</option>
+                      )}
+                      {activeModelOptions.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {formatModelOption(m)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="composer-menu-field">
+                    <span>Reasoning</span>
+                    <select
+                      value={reasoningEffort}
+                      onChange={(e) => {
+                        didUserChoose.current = true;
+                        setReasoningEffort(e.target.value as ModelReasoningEffort | "");
+                      }}
+                      disabled={disabled || effortOptions.length === 0}
+                    >
+                      <option value="">{effortOptions.length ? "Effort" : "No effort"}</option>
+                      {effortOptions.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {uploadsEnabled && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        fileInputRef.current?.click();
+                        setOverflowOpen(false);
+                      }}
+                      className="composer-menu-action"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                      </svg>
+                      Attach files
+                    </button>
+                  )}
+                  {sttSupported && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void toggleSTT();
+                        setOverflowOpen(false);
+                      }}
+                      className="composer-menu-action"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                        <line strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} x1="12" y1="19" x2="12" y2="23" />
+                        <line strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} x1="8" y1="23" x2="16" y2="23" />
+                      </svg>
+                      {isRecording ? "Stop dictation" : "Dictate"}
+                    </button>
+                  )}
+                  <div className="h-px bg-border mx-2 my-1" />
+                </div>
                 {/* MCP tools (local only) */}
 
                 {cli === "claude-local" && (
@@ -1307,7 +1526,7 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
 
   if (variant === "inline") {
     return (
-      <div>
+      <div className="composer-shell">
         {header}
         {inner}
       </div>
@@ -1316,7 +1535,7 @@ const ComposerInner = forwardRef<ComposerHandle, Props>(function Composer(
 
   return (
     <div
-      className="sticky bottom-0 px-4 pb-4 pt-2"
+      className="composer-shell sticky bottom-0 px-4 pb-4 pt-2"
       style={{ background: "linear-gradient(to top, var(--bg) 75%, transparent)" }}
     >
       {queued.length > 0 && (

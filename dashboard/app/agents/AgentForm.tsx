@@ -52,11 +52,7 @@ export function AgentForm({ existing }: { existing?: Agent } = {}) {
   const [allowedMutations, setAllowedMutations] = useState<Set<MutationTier>>(
     new Set(existing?.allowed_mutations ?? ["read-only"])
   );
-  const [budget, setBudget] = useState<OrchestratorBudget>(existing?.budget ?? {
-    max_total_tokens: 200000,
-    max_slice_calls: 15,
-    max_recursion_depth: 3,
-  });
+  const [budget, setBudget] = useState<OrchestratorBudget>(existing?.budget ?? {});
   const [onBudgetExceeded, setOnBudgetExceeded] = useState<OnBudgetExceeded>(existing?.on_budget_exceeded ?? "report-partial");
   const [onSliceFailure, setOnSliceFailure] = useState<OnSliceFailure>(existing?.on_slice_failure ?? "continue");
 
@@ -482,7 +478,7 @@ export function AgentForm({ existing }: { existing?: Agent } = {}) {
             <SectionIntro
               eyebrow="Step 5"
               title="Limits and failure policy"
-              description="Set guardrails for orchestrated runs so the agent stays predictable."
+              description="Leave budget fields blank for no agent-level cap."
             />
             <div className="rounded-lg border border-border bg-bg-subtle p-4 space-y-3">
             <div className="text-[12px] font-semibold text-fg">Budget</div>
@@ -492,7 +488,7 @@ export function AgentForm({ existing }: { existing?: Agent } = {}) {
                   type="number"
                   value={budget.max_total_tokens?.toString() ?? ""}
                   onChange={(e) => setBudget((b) => ({ ...b, max_total_tokens: e.target.value ? parseInt(e.target.value, 10) : undefined }))}
-                  placeholder="200000"
+                  placeholder="Unlimited"
                 />
               </Field>
               <Field label="Max slice calls">
@@ -500,7 +496,7 @@ export function AgentForm({ existing }: { existing?: Agent } = {}) {
                   type="number"
                   value={budget.max_slice_calls?.toString() ?? ""}
                   onChange={(e) => setBudget((b) => ({ ...b, max_slice_calls: e.target.value ? parseInt(e.target.value, 10) : undefined }))}
-                  placeholder="15"
+                  placeholder="Unlimited"
                 />
               </Field>
               <Field label="Max recursion depth">
@@ -508,7 +504,7 @@ export function AgentForm({ existing }: { existing?: Agent } = {}) {
                   type="number"
                   value={budget.max_recursion_depth?.toString() ?? ""}
                   onChange={(e) => setBudget((b) => ({ ...b, max_recursion_depth: e.target.value ? parseInt(e.target.value, 10) : undefined }))}
-                  placeholder="3"
+                  placeholder="Unlimited"
                 />
               </Field>
             </div>

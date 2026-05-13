@@ -35,16 +35,6 @@ type NativeAgentTranscriptResponse = {
   error?: string;
 };
 
-type NativeAgentSummary = {
-  id: string;
-  title?: string;
-  status?: string;
-};
-
-type NativeAgentListResponse = {
-  agents?: NativeAgentSummary[];
-};
-
 type TranscriptState =
   | { status: "loading" }
   | { status: "loaded"; data: NativeAgentTranscriptResponse }
@@ -85,36 +75,30 @@ function transcriptMessageText(message: NativeAgentTranscriptMessage): string {
   return message.type ? `[${message.type}]` : "[native event]";
 }
 
-function nativeAgentStatus(status: string | undefined): BackgroundActivityRow["status"] {
-  if (status === "running") return "run";
-  if (status === "failed") return "err";
-  if (status === "stopped") return "stop";
-  return "ok";
-}
-
-function mergeActivityRows(rows: BackgroundActivityRow[], nativeRows: BackgroundActivityRow[]): BackgroundActivityRow[] {
-  const byKey = new Map<string, BackgroundActivityRow>();
-  for (const row of rows) byKey.set(rowKey(row), row);
-  for (const row of nativeRows) {
-    const key = rowKey(row);
-    if (!byKey.has(key)) byKey.set(key, row);
-  }
-  return Array.from(byKey.values());
+function agentTypeLabel(row: BackgroundActivityRow): string {
+  if (row.kind === "session") return "background chat";
+  if (row.provider === "claude") return "Claude sub-agent";
+  if (row.provider === "codex") return "Codex sub-agent";
+  return "sub-agent";
 }
 
 function NativeTranscript({
   state,
   canLoad,
+  unavailableReason,
   onRetry,
 }: {
   state?: TranscriptState;
   canLoad: boolean;
+  unavailableReason?: string;
   onRetry: () => void;
 }): JSX.Element {
   if (!canLoad) {
     return (
       <div className="insp-agent-transcript">
-        <div className="insp-agent-transcript-empty">Open this from a chat route to load the native transcript.</div>
+        <div className="insp-agent-transcript-empty">
+          {unavailableReason ?? "Open this from a chat route to load the native transcript."}
+        </div>
       </div>
     );
   }
@@ -180,16 +164,10 @@ export function BackgroundAgentsPanel({
 }: Props): JSX.Element {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [routeSessionId, setRouteSessionId] = useState<string | null>(null);
-  const [nativeRows, setNativeRows] = useState<BackgroundActivityRow[]>([]);
-  const [dismissedNativeRows, setDismissedNativeRows] = useState<Set<string>>(() => new Set());
   const [transcripts, setTranscripts] = useState<Record<string, TranscriptState>>({});
   const [transcriptReloads, setTranscriptReloads] = useState<Record<string, number>>({});
   const transcriptRequestsRef = useRef(new Set<string>());
-  const activityRows = useMemo(
-    () => mergeActivityRows(rows, nativeRows).filter((row) => !dismissedNativeRows.has(rowKey(row))),
-    [dismissedNativeRows, nativeRows, rows],
-  );
-  const orderedRows = useMemo(() => sortBackgroundActivityRows(activityRows), [activityRows]);
+  const orderedRows = useMemo(() => sortBackgroundActivityRows(rows), [rows]);
   const selected = useMemo(
     () => orderedRows.find((row) => rowKey(row) === selectedKey) ?? orderedRows[0] ?? null,
     [orderedRows, selectedKey],
@@ -197,10 +175,10 @@ export function BackgroundAgentsPanel({
   const selectedTranscript = selected?.kind === "agent" ? transcripts[selected.id] : undefined;
   const selectedTranscriptReload = selected?.kind === "agent" ? transcriptReloads[selected.id] ?? 0 : 0;
   const counts = useMemo(() => ({
-    running: activityRows.filter((row) => row.status === "run").length,
-    done: activityRows.filter((row) => row.status === "ok").length,
-    attention: activityRows.filter((row) => row.status === "err" || row.status === "stop").length,
-  }), [activityRows]);
+    running: rows.filter((row) => row.status === "run").length,
+    done: rows.filter((row) => row.status === "ok").length,
+    attention: rows.filter((row) => row.status === "err" || row.status === "stop").length,
+  }), [rows]);
 
   useEffect(() => {
     if (selectedKey && orderedRows.some((row) => rowKey(row) === selectedKey)) return;
@@ -213,34 +191,7 @@ export function BackgroundAgentsPanel({
   }, []);
 
   useEffect(() => {
-    if (!routeSessionId) return;
-    const controller = new AbortController();
-    fetch(`/api/sessions/${encodeURIComponent(routeSessionId)}/native-agents`, {
-      cache: "no-store",
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`Native agents request failed (${response.status})`);
-        return response.json() as Promise<NativeAgentListResponse>;
-      })
-      .then((body) => {
-        const nextRows = (body.agents ?? []).map((agent, index): BackgroundActivityRow => ({
-          id: agent.id,
-          title: agent.title?.trim() || "Native sub-agent",
-          status: nativeAgentStatus(agent.status),
-          kind: "agent",
-          activityOrder: index,
-        }));
-        setNativeRows(nextRows);
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setNativeRows([]);
-      });
-    return () => controller.abort();
-  }, [routeSessionId]);
-
-  useEffect(() => {
-    if (!selected || selected.kind !== "agent" || !routeSessionId) return;
+    if (!selected || selected.kind !== "agent" || !routeSessionId || selected.transcriptAvailable === false) return;
     if (transcriptRequestsRef.current.has(selected.id)) return;
 
     const agentId = selected.id;
@@ -284,7 +235,7 @@ export function BackgroundAgentsPanel({
         transcriptRequestsRef.current.delete(agentId);
       }
     };
-  }, [routeSessionId, selected?.id, selected?.kind, selectedTranscriptReload]);
+  }, [routeSessionId, selected?.id, selected?.kind, selected?.transcriptAvailable, selectedTranscriptReload]);
 
   const retryTranscript = (agentId: string) => {
     transcriptRequestsRef.current.delete(agentId);
@@ -299,14 +250,7 @@ export function BackgroundAgentsPanel({
     }));
   };
 
-  const dismissRow = (row: BackgroundActivityRow) => {
-    if (nativeRows.some((nativeRow) => rowKey(nativeRow) === rowKey(row))) {
-      setDismissedNativeRows((current) => new Set(current).add(rowKey(row)));
-    }
-    onDismiss(row);
-  };
-
-  if (activityRows.length === 0) {
+  if (rows.length === 0) {
     return (
       <div className="insp-agents-pane">
         <div className="insp-empty">
@@ -341,6 +285,8 @@ export function BackgroundAgentsPanel({
         {orderedRows.map((row) => {
           const active = selected ? rowKey(row) === rowKey(selected) : false;
           const stopping = isStopping(row);
+          const canInspect = row.kind === "agent" && row.inspectAvailable !== false;
+          const canStop = row.status === "run" && row.stopAvailable !== false;
           return (
             <div key={rowKey(row)} className={`insp-agent-row ${active ? "active" : ""}`.trim()}>
               <button
@@ -353,7 +299,7 @@ export function BackgroundAgentsPanel({
                 <span className="insp-agent-copy">
                   <span className="insp-agent-title">{row.title}</span>
                   <span className="insp-agent-meta">
-                    {row.kind === "session" ? "background chat" : "sub-agent"} · {backgroundStatusLabel(row.status)}
+                    {agentTypeLabel(row)} · {backgroundStatusLabel(row.status)}
                   </span>
                 </span>
               </button>
@@ -362,12 +308,12 @@ export function BackgroundAgentsPanel({
                   <Link className="insp-agent-link" href={`/chats/${encodeURIComponent(row.id)}`}>
                     Open
                   </Link>
-                ) : (
+                ) : canInspect ? (
                   <button type="button" className="insp-agent-link" onClick={() => onInspectAgent(row.id)}>
                     Tool
                   </button>
-                )}
-                {row.status === "run" ? (
+                ) : null}
+                {canStop ? (
                   <button
                     type="button"
                     className="insp-agent-link danger"
@@ -376,8 +322,12 @@ export function BackgroundAgentsPanel({
                   >
                     {stopping ? "..." : "Stop"}
                   </button>
+                ) : row.status === "run" ? (
+                  <button type="button" className="insp-agent-link muted" disabled>
+                    Running
+                  </button>
                 ) : (
-                  <button type="button" className="insp-agent-link muted" onClick={() => dismissRow(row)}>
+                  <button type="button" className="insp-agent-link muted" onClick={() => onDismiss(row)}>
                     Hide
                   </button>
                 )}
@@ -393,18 +343,21 @@ export function BackgroundAgentsPanel({
             <span className={`background-agent-dot ${selected.status}`} aria-hidden="true" />
             <div>
               <h3>{selected.title}</h3>
-              <p>{selected.kind === "session" ? "Background chat continuation" : "Native sub-agent"}</p>
+              <p>{selected.kind === "session" ? "Background chat continuation" : agentTypeLabel(selected)}</p>
             </div>
           </div>
           <div className="kv-stack">
             <div className="kv-row"><span className="kv-label">Status</span><span className="kv-value">{backgroundStatusLabel(selected.status)}</span></div>
-            <div className="kv-row"><span className="kv-label">Type</span><span className="kv-value">{selected.kind === "session" ? "Chat" : "Sub-agent"}</span></div>
+            <div className="kv-row"><span className="kv-label">Type</span><span className="kv-value">{selected.kind === "session" ? "Chat" : agentTypeLabel(selected)}</span></div>
             <div className="kv-row"><span className="kv-label">ID</span><span className="kv-value" title={selected.id}>{selected.id}</span></div>
           </div>
           {selected.kind === "agent" && (
             <NativeTranscript
               state={selectedTranscript}
-              canLoad={Boolean(routeSessionId)}
+              canLoad={Boolean(routeSessionId) && selected.transcriptAvailable !== false}
+              unavailableReason={selected.transcriptAvailable === false
+                ? "This native CLI did not expose a transcript reader for this agent."
+                : undefined}
               onRetry={() => retryTranscript(selected.id)}
             />
           )}
@@ -413,12 +366,12 @@ export function BackgroundAgentsPanel({
               <Link className="terminal-primary-button" href={`/chats/${encodeURIComponent(selected.id)}`}>
                 Open background chat
               </Link>
-            ) : (
+            ) : selected.inspectAvailable !== false ? (
               <button type="button" className="terminal-primary-button" onClick={() => onInspectAgent(selected.id)}>
                 Inspect tool call
               </button>
-            )}
-            {selected.status === "run" ? (
+            ) : null}
+            {selected.status === "run" && selected.stopAvailable !== false ? (
               <button
                 type="button"
                 className="insp-agent-secondary danger"
@@ -427,8 +380,12 @@ export function BackgroundAgentsPanel({
               >
                 {isStopping(selected) ? "Stopping..." : "Stop"}
               </button>
+            ) : selected.status === "run" ? (
+              <button type="button" className="insp-agent-secondary" disabled>
+                Running
+              </button>
             ) : (
-              <button type="button" className="insp-agent-secondary" onClick={() => dismissRow(selected)}>
+              <button type="button" className="insp-agent-secondary" onClick={() => onDismiss(selected)}>
                 Hide from list
               </button>
             )}

@@ -205,14 +205,6 @@ async function main() {
       message,
       cli: "codex",
       reasoningEffort: "high",
-      overrides: {
-        budget: {
-          max_total_tokens: 1200000,
-          max_wallclock_seconds: 1200,
-          max_slice_calls: 20,
-          max_recursion_depth: 3,
-        },
-      },
     }),
   });
 

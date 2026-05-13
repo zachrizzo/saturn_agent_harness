@@ -110,6 +110,7 @@ export type Agent = {
   prompt: string;
   cwd?: string;
   allowedTools?: string[];
+  timeout_seconds?: number;
   tags?: string[];
   cron?: string | null;
   created_at: string;
@@ -457,8 +458,11 @@ function compactOptionalString(
   return { value: compacted, changed: compacted !== value };
 }
 
-function firstUserMessageTurnIndex(turns: TurnRecord[]): number {
-  return turns.findIndex((turn) => Boolean(turn.user_message?.trim()));
+function lastUserMessageTurnIndex(turns: TurnRecord[]): number {
+  for (let i = turns.length - 1; i >= 0; i--) {
+    if (turns[i]?.user_message?.trim()) return i;
+  }
+  return -1;
 }
 
 function compactSessionMetaForList(
@@ -466,12 +470,12 @@ function compactSessionMetaForList(
   maxChars: number,
 ): { meta: SessionMeta; partial: boolean } {
   const turns = meta.turns ?? [];
-  const firstUserIdx = firstUserMessageTurnIndex(turns);
+  const titleUserIdx = lastUserMessageTurnIndex(turns);
   const lastIdx = turns.length - 1;
   let partial = false;
 
   const compactTurns = turns.map((turn, idx): TurnRecord => {
-    const keepUserPreview = idx === firstUserIdx || idx === lastIdx;
+    const keepUserPreview = idx === titleUserIdx || idx === lastIdx;
     const keepFinalPreview = idx === lastIdx;
     const next: TurnRecord = { ...turn };
 
@@ -496,14 +500,14 @@ function compactSessionMetaForRecentRead(
   maxChars: number,
 ): { meta: SessionMeta; partial: boolean } {
   const turns = meta.turns ?? [];
-  const firstUserIdx = firstUserMessageTurnIndex(turns);
+  const titleUserIdx = lastUserMessageTurnIndex(turns);
   const recentStart = Math.max(0, turns.length - Math.max(1, recentTurns));
   let partial = false;
 
   const compactTurns = turns.map((turn, idx): TurnRecord => {
     const next: TurnRecord = { ...turn };
     const keepFullUser = idx >= recentStart;
-    const keepTitleUser = idx === firstUserIdx;
+    const keepTitleUser = idx === titleUserIdx;
 
     const user = compactOptionalString(
       next.user_message,

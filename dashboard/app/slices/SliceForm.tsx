@@ -512,7 +512,7 @@ export function SliceForm({ existing }: { existing?: Slice } = {}) {
             type="number"
             value={maxTokens}
             onChange={(e) => setMaxTokens(e.target.value)}
-            placeholder="8000"
+            placeholder="Unlimited"
           />
         </Field>
       </div>

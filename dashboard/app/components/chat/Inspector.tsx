@@ -10,6 +10,8 @@ import type { SessionMeta } from "@/lib/runs";
 import { projectNameFromPath, type TerminalListResponse, type TerminalRecord } from "@/lib/terminal-types";
 import { FileViewer } from "@/app/components/chat/FileViewer";
 import { BackgroundAgentsPanel } from "@/app/components/chat/BackgroundAgentsPanel";
+import { GitLabMergeRequestReview } from "@/app/components/chat/GitLabMergeRequestReview";
+import type { ComposerContextAttachment } from "@/app/components/chat/Composer";
 import type { BackgroundActivityRow } from "@/app/components/chat/background-agents";
 
 export type InspectorTool = {
@@ -37,6 +39,8 @@ type Props = {
   referencedFiles?: string[];
   fileOpenRequest?: { path: string; requestId: number } | null;
   onInsertIntoComposer?: (text: string) => void;
+  onAttachToComposer?: (attachment: ComposerContextAttachment) => void;
+  onPinContext?: (text: string, label: string) => void | Promise<void>;
   onClose?: () => void;
   requestedTab?: { key: InspectorTabKey; requestId: number } | null;
 };
@@ -82,13 +86,14 @@ function useStableToolList(tools: InspectorTool[]): InspectorTool[] {
   }, [tools]);
 }
 
-export type InspectorTabKey = "tool" | "agents" | "terminal" | "files" | "web" | "tokens";
+export type InspectorTabKey = "tool" | "agents" | "terminal" | "files" | "mr" | "web" | "tokens";
 
 const INSPECTOR_TABS: Array<{ key: InspectorTabKey; label: string }> = [
   { key: "tool", label: "Tool" },
   { key: "agents", label: "Agents" },
   { key: "terminal", label: "Terminal" },
   { key: "files", label: "Files" },
+  { key: "mr", label: "MR" },
   { key: "web", label: "Web" },
   { key: "tokens", label: "Tokens" },
 ];
@@ -1083,6 +1088,8 @@ export const Inspector = memo(function Inspector({
   referencedFiles = [],
   fileOpenRequest,
   onInsertIntoComposer,
+  onAttachToComposer,
+  onPinContext,
   onClose,
   requestedTab,
 }: Props) {
@@ -1110,6 +1117,7 @@ export const Inspector = memo(function Inspector({
   const [webAnnotations, setWebAnnotations] = useState<WebAnnotation[]>([]);
   const [selectedWebAnnotationId, setSelectedWebAnnotationId] = useState<number | null>(null);
   const [webHoverTarget, setWebHoverTarget] = useState<WebElementTarget | null>(null);
+  const [panelExpanded, setPanelExpanded] = useState(false);
   const webFrameRef = useRef<HTMLIFrameElement | null>(null);
   const xtermHostRef = useRef<HTMLDivElement | null>(null);
   const xtermRef = useRef<XTerm | null>(null);
@@ -1124,6 +1132,15 @@ export const Inspector = memo(function Inspector({
     if (!requestedTab) return;
     setTab(requestedTab.key);
   }, [requestedTab?.key, requestedTab?.requestId]);
+
+  useEffect(() => {
+    if (!panelExpanded) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPanelExpanded(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [panelExpanded]);
   const latestTurnStartedAt = latestTurn?.started_at ?? "";
   const latestTurnFinishedAt = latestTurn?.finished_at ?? "";
   const sessionCwd = session.agent_snapshot?.cwd?.trim() || null;
@@ -1747,8 +1764,32 @@ export const Inspector = memo(function Inspector({
   const collapseVisibleDirs = useCallback(() => {
     setCollapsedDirs((current) => new Set([...current, ...visibleDirKeys]));
   }, [visibleDirKeys]);
+  const inspectorTabOptions = INSPECTOR_TABS.map(({ key, label }) => {
+    const badge =
+      key === "tool" ? tools.length :
+      key === "agents" ? backgroundActivities.length :
+      key === "terminal" ? relatedTerminals.length :
+      key === "files" ? fileTabCount :
+      null;
+    return {
+      key,
+      label,
+      badge,
+      display: badge != null && badge > 0 ? `${label} (${badge})` : label,
+    };
+  });
+  const activeTabOption = inspectorTabOptions.find((item) => item.key === tab);
   return (
-    <aside className="inspector" style={{ width }}>
+    <>
+    {panelExpanded && (
+      <button
+        type="button"
+        className="inspector-modal-backdrop"
+        onClick={() => setPanelExpanded(false)}
+        aria-label="Close expanded inspector panel"
+      />
+    )}
+    <aside className={`inspector ${panelExpanded ? "expanded" : ""}`} style={{ width }}>
       <button
         type="button"
         className="inspector-resizer"
@@ -1767,29 +1808,41 @@ export const Inspector = memo(function Inspector({
           ×
         </button>
       )}
-      {/* Tab bar */}
-      <div className="tab-bar">
-        {INSPECTOR_TABS.map(({ key, label }) => {
-          const badge =
-            key === "tool" ? tools.length :
-            key === "agents" ? backgroundActivities.length :
-            key === "terminal" ? relatedTerminals.length :
-            key === "files" ? fileTabCount :
-            null;
-          return (
-            <button
-              key={key}
-              type="button"
-              className={`tab ${tab === key ? "active" : ""}`}
-              onClick={() => setTab(key)}
-            >
-              {label}
-              {badge != null && badge > 0 && (
-                <span className="n">{badge}</span>
-              )}
-            </button>
-          );
-        })}
+      {/* Tab selector */}
+      <div className="insp-tab-menu">
+        <span className="insp-tab-menu-label">Panel</span>
+        <select
+          className="insp-tab-menu-select"
+          value={tab}
+          onChange={(event) => setTab(event.target.value as InspectorTabKey)}
+          aria-label="Inspector panel"
+        >
+          {inspectorTabOptions.map((item) => (
+            <option key={item.key} value={item.key}>
+              {item.display}
+            </option>
+          ))}
+        </select>
+        {activeTabOption?.badge != null && activeTabOption.badge > 0 && (
+          <span className="insp-tab-menu-count">{activeTabOption.badge}</span>
+        )}
+        <button
+          type="button"
+          className="insp-tab-menu-expand"
+          onClick={() => setPanelExpanded((value) => !value)}
+          aria-label={panelExpanded ? "Exit expanded inspector panel" : "Open inspector panel larger"}
+          title={panelExpanded ? "Exit large panel" : "Open larger"}
+        >
+          {panelExpanded ? (
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M8 3v5H3M16 3v5h5M8 21v-5H3M16 21v-5h5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          ) : (
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M3 9V3h6M21 9V3h-6M3 15v6h6M21 15v6h-6" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          )}
+        </button>
       </div>
 
       {/* ── Agents tab ── */}
@@ -2067,6 +2120,17 @@ export const Inspector = memo(function Inspector({
         )
       )}
 
+      {/* ── GitLab MR tab ── */}
+      {tab === "mr" && (
+        <GitLabMergeRequestReview
+          cacheKey={session.session_id}
+          panelWidth={width}
+          onInsertIntoComposer={onInsertIntoComposer}
+          onAttachToComposer={onAttachToComposer}
+          onPinContext={onPinContext}
+        />
+      )}
+
       {/* ── Web tab ── */}
       {tab === "web" && (
         <div className="insp-web-pane">
@@ -2252,5 +2316,6 @@ export const Inspector = memo(function Inspector({
         </div>
       )}
     </aside>
+    </>
   );
 });

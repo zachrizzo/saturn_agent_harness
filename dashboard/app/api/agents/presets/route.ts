@@ -23,23 +23,21 @@ export async function POST() {
 
 STRATEGY:
 1. Call list_slices to see available specialists.
-2. Call get_budget to check your budget.
-3. Call dispatch_slice("scope-bucketer", { focus: "categorize the changed files in this diff: <diff summary>" }) to understand scope.
-4. Based on scope, dispatch relevant reviewers IN PARALLEL (multiple dispatch_slice calls in one response):
+2. Call dispatch_slice("scope-bucketer", { focus: "categorize the changed files in this diff: <diff summary>" }) to understand scope.
+3. Based on scope, dispatch relevant reviewers IN PARALLEL (multiple dispatch_slice calls in one response):
    - Always: security-reviewer, correctness-reviewer
    - If TypeScript/JS: conventions-reviewer
    - If has package.json changes: supply-chain-reviewer
    - If performance-critical paths: performance-reviewer
    - If has test files: test-reviewer
-5. Pass focus as the file list for each domain (e.g., "Review these backend files: src/api/auth.ts, src/middleware/jwt.ts").
-6. When all slices return, synthesize a single markdown report:
+4. Pass focus as the file list for each domain (e.g., "Review these backend files: src/api/auth.ts, src/middleware/jwt.ts").
+5. When all slices return, synthesize a single markdown report:
    - Group findings by severity: Critical → High → Medium → Low
    - Deduplicate findings at the same file:line
    - Add a "## Needs Attention" section for critical/high findings
    - End with a one-line summary: "N critical, M high, P medium, Q low findings across X slices."
-7. Call stop("review complete") when done.
+6. Call stop("review complete") when done.
 
-If a slice returns budget_exceeded, synthesize with what you have and note incomplete coverage.
 If a slice fails, note it in the report and continue.`,
       slices_available: [
         "scope-bucketer",
@@ -52,11 +50,6 @@ If a slice fails, note it in the report and continue.`,
       ],
       can_create_custom_slices: false,
       allowed_mutations: ["read-only"],
-      budget: {
-        max_total_tokens: 300000,
-        max_slice_calls: 15,
-        max_recursion_depth: 1,
-      },
       on_budget_exceeded: "report-partial",
       on_slice_failure: "continue",
       allowedTools: [],
@@ -87,11 +80,6 @@ STRATEGY:
       slices_available: ["web-searcher", "code-reader"],
       can_create_custom_slices: true,
       allowed_mutations: ["read-only"],
-      budget: {
-        max_total_tokens: 200000,
-        max_slice_calls: 10,
-        max_recursion_depth: 1,
-      },
       on_budget_exceeded: "report-partial",
       on_slice_failure: "continue",
       allowedTools: [],
@@ -107,7 +95,7 @@ STRATEGY:
       prompt: `You are a feature implementation orchestrator. Given a feature request, plan and implement it carefully.
 
 STRATEGY:
-1. Call list_slices and get_budget.
+1. Call list_slices.
 2. Call dispatch_slice("code-reader", { focus: "understand the current codebase structure relevant to: <feature>" }) to understand context.
 3. Plan the implementation: identify files to create/modify, interfaces to add.
 4. For each independent change, dispatch dispatch_slice("code-writer-typescript", { focus: "<specific change>", prior_context: "<relevant context from code-reader>" }).
@@ -126,11 +114,6 @@ IMPORTANT: code-writer-typescript uses worktree sandbox — changes are isolated
       ],
       can_create_custom_slices: false,
       allowed_mutations: ["read-only", "writes-source"],
-      budget: {
-        max_total_tokens: 500000,
-        max_slice_calls: 30,
-        max_recursion_depth: 2,
-      },
       on_budget_exceeded: "report-partial",
       on_slice_failure: "abort",
       allowedTools: [],

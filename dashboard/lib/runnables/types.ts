@@ -84,6 +84,8 @@ export type StartSessionOpts = {
   cwd?: string;
   systemPrompt?: string;
   allowedTools?: string[];
+  /** Extra MCP servers to expose for this session. */
+  mcpServers?: Record<string, unknown>;
   /** If set, rehydrate from a neutral transcript. */
   seed?: NeutralTranscript;
 };

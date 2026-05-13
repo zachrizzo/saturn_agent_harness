@@ -5,7 +5,7 @@ import remarkGfm from "remark-gfm";
 import dynamic from "next/dynamic";
 import { Children, isValidElement, memo, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { StreamEvent } from "@/lib/events";
+import { coalesceAssistantTextDeltas, type StreamEvent } from "@/lib/events";
 import type { CLI } from "@/lib/runs";
 import { formatReasoningEffort, type ModelReasoningEffort } from "@/lib/models";
 import { toClaudeAlias } from "@/lib/claude-models";
@@ -913,14 +913,15 @@ function AssistantBlock({
       : events,
     [events, streaming],
   );
+  const renderEvents = useMemo(() => coalesceAssistantTextDeltas(displayEvents), [displayEvents]);
   const hiddenStreamingEventCount = events.length - displayEvents.length;
 
   // Collect all text for copy
-  const allText = displayEvents
+  const allText = renderEvents
     .filter((ev) => ev.kind === "assistant_text" || ev.kind === "plan_text")
     .map((ev) => (ev as Extract<StreamEvent, { kind: "assistant_text" | "plan_text" }>).text)
     .join("\n\n");
-  const bedrockAuthSourceText = displayEvents
+  const bedrockAuthSourceText = renderEvents
     .map((ev) => {
       if (ev.kind === "assistant_text" || ev.kind === "plan_text") return ev.text;
       if (ev.kind === "result" && !ev.success) return extractSaturnFailure(ev.raw)?.stderrTail ?? "";
@@ -932,7 +933,7 @@ function AssistantBlock({
 
   // Group sub-agent child events by their parentToolUseId
   const subEventsByParent = new Map<string, StreamEvent[]>();
-  for (const ev of displayEvents) {
+  for (const ev of renderEvents) {
     const pid = (ev as { parentToolUseId?: string }).parentToolUseId;
     if (!pid) continue;
     if (!subEventsByParent.has(pid)) subEventsByParent.set(pid, []);
@@ -941,7 +942,7 @@ function AssistantBlock({
 
   // Pair top-level (non-sub-agent) tool_use with tool_result
   const toolResults = new Map<string, Extract<StreamEvent, { kind: "tool_result" }>>();
-  for (const ev of displayEvents) {
+  for (const ev of renderEvents) {
     if (ev.kind === "tool_result" && !(ev as { parentToolUseId?: string }).parentToolUseId) {
       toolResults.set(ev.toolUseId, ev);
     }
@@ -964,7 +965,7 @@ function AssistantBlock({
     toolBuffer = [];
   };
 
-  displayEvents.forEach((ev, i) => {
+  renderEvents.forEach((ev, i) => {
     const eventKey = hiddenStreamingEventCount + i;
     // Skip sub-agent events — they're rendered inside SubAgentCard
     if ((ev as { parentToolUseId?: string }).parentToolUseId) return;
@@ -997,7 +998,7 @@ function AssistantBlock({
       const isAgent = ev.name === "Agent";
       if (isAgent) {
         flushToolRow();
-        const remaining = displayEvents.slice(i + 1);
+        const remaining = renderEvents.slice(i + 1);
         const isLast = remaining.every((e) => e.kind === "tool_result" || (e as { parentToolUseId?: string }).parentToolUseId);
         const status = !res ? "run" : res.isError ? "err" : "ok";
         rendered.push(

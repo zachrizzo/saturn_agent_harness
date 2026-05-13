@@ -1,5 +1,6 @@
 import type { Agent, Job, SessionMeta } from "./runs";
 import type { Task } from "./tasks";
+import { sessionTitle } from "./session-utils";
 
 export type CommandItemKind = "job" | "agent" | "chat" | "task" | "action";
 
@@ -18,15 +19,6 @@ export type CommandItem = {
 function compact(value?: string | null, max = 180): string {
   const text = (value ?? "").replace(/\s+/g, " ").trim();
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
-}
-
-function firstUserMessage(s: SessionMeta): string {
-  for (const turn of s.turns ?? []) {
-    const msg = compact(turn.user_message, 140);
-    if (msg) return msg;
-  }
-  const name = s.agent_snapshot?.name;
-  return name && name !== "Ad-hoc chat" ? name : "New chat";
 }
 
 function lastPreview(s: SessionMeta): string {
@@ -181,7 +173,7 @@ export function buildIndex(
   for (const s of sessions) {
     const turns = s.turns ?? [];
     if (turns.length === 0) continue;
-    const title = firstUserMessage(s);
+    const title = sessionTitle(s);
     const agentName = s.agent_snapshot?.name ?? "Ad-hoc chat";
     const lastTurn = turns[turns.length - 1];
     const updated = lastTurn?.finished_at ?? lastTurn?.started_at ?? s.started_at;

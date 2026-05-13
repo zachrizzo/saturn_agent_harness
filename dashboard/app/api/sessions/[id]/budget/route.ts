@@ -4,6 +4,7 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import { readBudget } from "@/lib/budget";
 import { getSessionMeta } from "@/lib/runs";
+import { effectiveOrchestratorLimits, effectiveSwarmAgent } from "@/lib/session-utils";
 
 export async function GET(
   _req: Request,
@@ -14,6 +15,8 @@ export async function GET(
     readBudget(id),
     getSessionMeta(id),
   ]);
-  const limits = session?.agent_snapshot?.budget ?? {};
+  const limits = session?.agent_snapshot
+    ? effectiveOrchestratorLimits(effectiveSwarmAgent(session.agent_snapshot, session), session.overrides?.budget)
+    : {};
   return NextResponse.json({ budget, limits });
 }
