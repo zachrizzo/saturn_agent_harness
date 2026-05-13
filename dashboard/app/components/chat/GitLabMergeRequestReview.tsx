@@ -523,6 +523,7 @@ function MarkdownComment({ body, instanceUrl }: { body: string; instanceUrl: str
 function MergeRequestDiff({
   parsed,
   searchQuery,
+  activeSearchRowIndex,
   comments,
   instanceUrl,
   sourceByPath,
@@ -535,6 +536,7 @@ function MergeRequestDiff({
 }: {
   parsed: ParsedDiff;
   searchQuery: string;
+  activeSearchRowIndex: number | null;
   comments: GitLabMergeRequestComment[];
   instanceUrl: string;
   sourceByPath: Map<string, string>;
@@ -552,6 +554,7 @@ function MergeRequestDiff({
   );
   const commentsByLine = useMemo(() => commentMap(comments), [comments]);
   const [highlightedRows, setHighlightedRows] = useState(() => plainHighlightedRows(rows));
+  const diffRootRef = useRef<HTMLDivElement | null>(null);
   const normalizedSearch = searchQuery.trim().toLowerCase();
 
   useEffect(() => {
@@ -569,12 +572,18 @@ function MergeRequestDiff({
     };
   }, [rows]);
 
+  useEffect(() => {
+    if (activeSearchRowIndex === null) return;
+    const active = diffRootRef.current?.querySelector<HTMLElement>("[data-active-search-match='true']");
+    active?.scrollIntoView({ block: "center", inline: "nearest" });
+  }, [activeSearchRowIndex, normalizedSearch]);
+
   if (parsed.rows.length === 0) {
     return <div className="insp-mr-empty">No textual diff is available for this file.</div>;
   }
 
   return (
-    <div className="file-viewer-diff" role="region" aria-label="File diff">
+    <div ref={diffRootRef} className="file-viewer-diff" role="region" aria-label="File diff">
       <div className="file-viewer-diff-table">
         {renderedRows.map((rendered) => {
           if (rendered.kind === "context-control") {
@@ -613,12 +622,29 @@ function MergeRequestDiff({
 
           const { row, index, filePath } = rendered.item;
           const searchHit = normalizedSearch.length > 0 && rowSearchText({ row, index, filePath }).toLowerCase().includes(normalizedSearch);
+          const activeSearchHit = searchHit && activeSearchRowIndex === index;
           if (row.kind === "section") {
-            return <div key={index} className="file-viewer-diff-section">{row.text}</div>;
+            return (
+              <div
+                key={index}
+                className={`file-viewer-diff-section ${searchHit ? "search-hit" : ""} ${activeSearchHit ? "active-search-hit" : ""}`}
+                data-active-search-match={activeSearchHit ? "true" : undefined}
+              >
+                {row.text}
+              </div>
+            );
           }
 
           if (row.kind === "file") {
-            return <div key={index} className="file-viewer-diff-file">{row.text}</div>;
+            return (
+              <div
+                key={index}
+                className={`file-viewer-diff-file ${searchHit ? "search-hit" : ""} ${activeSearchHit ? "active-search-hit" : ""}`}
+                data-active-search-match={activeSearchHit ? "true" : undefined}
+              >
+                {row.text}
+              </div>
+            );
           }
 
           if (row.kind === "line") {
@@ -628,7 +654,8 @@ function MergeRequestDiff({
               <div key={index} className="insp-mr-diff-line-wrap">
                 <button
                   type="button"
-                  className={`file-viewer-diff-row ${row.lineKind} selectable ${selected ? "selected" : ""} ${searchHit ? "search-hit" : ""}`}
+                  className={`file-viewer-diff-row ${row.lineKind} selectable ${selected ? "selected" : ""} ${searchHit ? "search-hit" : ""} ${activeSearchHit ? "active-search-hit" : ""}`}
+                  data-active-search-match={activeSearchHit ? "true" : undefined}
                   onPointerDown={(event) => onStartRowSelection(index, event)}
                   onPointerEnter={(event) => onEnterRowSelection(index, event)}
                   onClick={(event) => onToggleRow(index, event)}
@@ -668,7 +695,11 @@ function MergeRequestDiff({
           }
 
           return (
-            <div key={index} className={`file-viewer-diff-row ${row.kind} ${searchHit ? "search-hit" : ""}`}>
+            <div
+              key={index}
+              className={`file-viewer-diff-row ${row.kind} ${searchHit ? "search-hit" : ""} ${activeSearchHit ? "active-search-hit" : ""}`}
+              data-active-search-match={activeSearchHit ? "true" : undefined}
+            >
               <span className="file-viewer-diff-gutter old" />
               <span className="file-viewer-diff-gutter new" />
               <span className="file-viewer-diff-sign" />
@@ -694,6 +725,7 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
   const [pinStatus, setPinStatus] = useState<string | null>(null);
   const [urlEditorOpen, setUrlEditorOpen] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
+  const [activeSearchMatchIndex, setActiveSearchMatchIndex] = useState(0);
   const [filesCollapsed, setFilesCollapsed] = useState(false);
   const [filesTouched, setFilesTouched] = useState(false);
   const [fileViewCollapsed, setFileViewCollapsed] = useState(false);
@@ -737,12 +769,16 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
     [diffRows],
   );
   const searchText = searchQuery.trim().toLowerCase();
-  const searchMatches = useMemo(
+  const searchMatchRowIndexes = useMemo(
     () => searchText
-      ? diffRows.filter((item) => rowSearchText(item).toLowerCase().includes(searchText)).length
-      : 0,
+      ? diffRows.filter((item) => rowSearchText(item).toLowerCase().includes(searchText)).map((item) => item.index)
+      : [],
     [diffRows, searchText],
   );
+  const searchMatches = searchMatchRowIndexes.length;
+  const activeSearchRowIndex = searchMatches > 0
+    ? searchMatchRowIndexes[Math.min(activeSearchMatchIndex, searchMatches - 1)] ?? null
+    : null;
   const filteredFiles = useMemo(() => {
     if (!review || !searchText) return review?.diffs ?? [];
     return review.diffs.filter((file) => (
@@ -854,6 +890,22 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
     setFilesCollapsed(!wideLayout);
   }, [filesTouched, review, wideLayout]);
 
+  useEffect(() => {
+    setActiveSearchMatchIndex(0);
+  }, [searchText, selectedPath]);
+
+  useEffect(() => {
+    setActiveSearchMatchIndex((current) => {
+      if (searchMatches === 0) return 0;
+      return Math.min(current, searchMatches - 1);
+    });
+  }, [searchMatches]);
+
+  const cycleSearchMatch = useCallback((direction: 1 | -1) => {
+    if (searchMatches === 0) return;
+    setActiveSearchMatchIndex((current) => (current + direction + searchMatches) % searchMatches);
+  }, [searchMatches]);
+
   const loadMergeRequestUrl = useCallback(async (rawUrl: string, persist = true, options: { force?: boolean } = {}) => {
     const url = normalizeUrl(rawUrl);
     if (!url) {
@@ -874,6 +926,7 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
     rowSelectionDragRef.current = null;
     setFilesTouched(false);
     setSearchQuery("");
+    setActiveSearchMatchIndex(0);
     setExpandedContext(new Set());
     try {
       if (!options.force) {
@@ -1296,14 +1349,47 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
                   className="insp-mr-search"
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" || searchMatches === 0) return;
+                    event.preventDefault();
+                    cycleSearchMatch(event.shiftKey ? -1 : 1);
+                  }}
                   placeholder="Search MR diff"
                   aria-label="Search merge request diff"
                 />
               </div>
               {searchQuery.trim() && (
-                <span className="insp-mr-search-count">
-                  {searchMatches.toLocaleString()} match{searchMatches === 1 ? "" : "es"}
-                </span>
+                <div className="insp-mr-search-nav" aria-label="Search result navigation">
+                  <span className="insp-mr-search-count">
+                    {searchMatches > 0
+                      ? `${Math.min(activeSearchMatchIndex + 1, searchMatches).toLocaleString()} / ${searchMatches.toLocaleString()}`
+                      : "0 matches"}
+                  </span>
+                  <button
+                    type="button"
+                    className="insp-mr-search-nav-button"
+                    onClick={() => cycleSearchMatch(-1)}
+                    disabled={searchMatches < 2}
+                    aria-label="Previous search result"
+                    title="Previous search result"
+                  >
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <path d="M4.5 9.5 8 6l3.5 3.5" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className="insp-mr-search-nav-button"
+                    onClick={() => cycleSearchMatch(1)}
+                    disabled={searchMatches < 2}
+                    aria-label="Next search result"
+                    title="Next search result"
+                  >
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <path d="M4.5 6.5 8 10l3.5-3.5" />
+                    </svg>
+                  </button>
+                </div>
               )}
               {selectedRows.size > 0 && (
                 <>
@@ -1384,6 +1470,7 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
               <MergeRequestDiff
                 parsed={parsedDiff}
                 searchQuery={searchQuery}
+                activeSearchRowIndex={activeSearchRowIndex}
                 comments={review.comments}
                 instanceUrl={review.instanceUrl}
                 sourceByPath={sourceByPath}

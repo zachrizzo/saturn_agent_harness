@@ -47,11 +47,16 @@ const STATUS_LABEL: Record<ToolStatus, string> = {
   run: "run",
 };
 
+function clipPreview(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
 /** Short human preview of a tool's input. Kept deterministic so the chip
  *  doesn't change width mid-stream. */
 function previewArgs(name: string, input: unknown): string {
   if (input == null) return "";
-  if (typeof input === "string") return input.slice(0, 80);
+  if (typeof input === "string") return clipPreview(input, 80);
   if (typeof input !== "object") return String(input);
   const rec = input as Record<string, unknown>;
   const keys = Object.keys(rec);
@@ -68,11 +73,11 @@ function previewArgs(name: string, input: unknown): string {
   };
   const picks = pref[name.toLowerCase()] ?? [];
   for (const k of picks) {
-    if (typeof rec[k] === "string") return `${k}: ${String(rec[k])}`;
+    if (typeof rec[k] === "string") return `${k}: ${clipPreview(String(rec[k]), 120)}`;
   }
   const first = keys[0];
   const v = rec[first];
-  if (typeof v === "string") return `${first}: ${v}`;
+  if (typeof v === "string") return `${first}: ${clipPreview(v, 120)}`;
   return `${first}: ${JSON.stringify(v).slice(0, 60)}`;
 }
 
