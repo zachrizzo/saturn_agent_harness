@@ -3,7 +3,9 @@
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import type { CSSProperties, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import type { ThemedToken } from "shiki";
+import type { BundledLanguage } from "shiki/bundle/web";
 import {
   formatGitLabMrContext,
   type GitLabMergeRequestComment,
@@ -30,6 +32,34 @@ type Props = {
 };
 
 const MR_URL_STORAGE_PREFIX = "saturn.gitlabMergeRequest.url";
+const MR_FILES_WIDTH_STORAGE_PREFIX = "saturn.gitlabMergeRequest.filesWidth";
+const MR_FILES_HEIGHT_STORAGE_PREFIX = "saturn.gitlabMergeRequest.filesHeight";
+const FILE_PANEL_MIN_WIDTH = 180;
+const FILE_PANEL_MAX_WIDTH = 520;
+const FILE_PANEL_MIN_DIFF_WIDTH = 320;
+const FILE_PANEL_MIN_HEIGHT = 96;
+const FILE_PANEL_MAX_HEIGHT = 360;
+const FILE_PANEL_DEFAULT_HEIGHT = 150;
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function maxFilePanelWidth(panelWidth?: number): number {
+  if (!panelWidth) return FILE_PANEL_MAX_WIDTH;
+  return clampNumber(panelWidth - FILE_PANEL_MIN_DIFF_WIDTH, FILE_PANEL_MIN_WIDTH, FILE_PANEL_MAX_WIDTH);
+}
+
+function defaultFilePanelWidth(panelWidth?: number): number {
+  return clampNumber(Math.round((panelWidth ?? 860) * 0.3), 220, maxFilePanelWidth(panelWidth));
+}
+
+function storedPanelSize(key: string, fallback: number, min: number, max: number): number {
+  if (typeof window === "undefined") return fallback;
+  const raw = window.localStorage.getItem(key);
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) ? clampNumber(parsed, min, max) : fallback;
+}
 
 function formatCount(value: number): string {
   return value.toLocaleString();
@@ -79,6 +109,14 @@ type DiffRowWithContext = {
 };
 
 type RowSelectionMode = "add" | "remove";
+type FilePanelResizeState = {
+  mode: "width" | "height";
+  startClientX: number;
+  startClientY: number;
+  startWidth: number;
+  startHeight: number;
+  maxWidth: number;
+};
 
 function rowsWithFileContext(parsed: ParsedDiff): DiffRowWithContext[] {
   let filePath: string | undefined;
@@ -134,53 +172,108 @@ function commentsForRow(
   return Array.from(new Map(comments.map((comment) => [comment.id, comment])).values());
 }
 
-type SyntaxLanguage = "python" | "typescript" | "generic";
+const SHIKI_THEME = "github-light";
+const SHIKI_FONT_STYLE_ITALIC = 1;
+const SHIKI_FONT_STYLE_BOLD = 2;
+const SHIKI_FONT_STYLE_UNDERLINE = 4;
 
-function languageForPath(pathValue?: string): SyntaxLanguage {
+type HighlightToken = {
+  content: string;
+  style?: CSSProperties;
+};
+
+function languageForPath(pathValue?: string): BundledLanguage | null {
   const lower = (pathValue ?? "").toLowerCase();
   if (lower.endsWith(".py")) return "python";
-  if (/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(lower)) return "typescript";
-  return "generic";
+  if (lower.endsWith(".tsx")) return "tsx";
+  if (lower.endsWith(".ts")) return "typescript";
+  if (lower.endsWith(".jsx")) return "jsx";
+  if (/\.(js|mjs|cjs)$/.test(lower)) return "javascript";
+  if (lower.endsWith(".jsonc")) return "jsonc";
+  if (lower.endsWith(".jsonl")) return "jsonl";
+  if (lower.endsWith(".json")) return "json";
+  if (lower.endsWith(".mdx")) return "mdx";
+  if (/\.(md|markdown)$/.test(lower)) return "markdown";
+  if (/\.(yaml|yml)$/.test(lower)) return "yaml";
+  if (/\.(sh|bash|zsh|fish)$/.test(lower)) return "shellscript";
+  if (lower.endsWith(".java")) return "java";
+  if (lower.endsWith(".php")) return "php";
+  if (lower.endsWith(".c")) return "c";
+  if (/\.(cc|cpp|cxx|hpp|hxx)$/.test(lower)) return "cpp";
+  if (lower.endsWith(".css")) return "css";
+  if (lower.endsWith(".scss")) return "scss";
+  if (lower.endsWith(".sass")) return "sass";
+  if (lower.endsWith(".less")) return "less";
+  if (lower.endsWith(".vue")) return "vue";
+  if (lower.endsWith(".svelte")) return "svelte";
+  if (/\.(html|htm)$/.test(lower)) return "html";
+  if (/\.(xml|svg)$/.test(lower)) return "xml";
+  if (lower.endsWith(".sql")) return "sql";
+  if (/\.(graphql|gql)$/.test(lower)) return "graphql";
+  if (lower.endsWith(".csv")) return "csv";
+  if (lower.endsWith(".r")) return "r";
+  return null;
 }
 
-function syntaxPattern(language: Exclude<SyntaxLanguage, "generic">): RegExp {
-  if (language === "python") {
-    return /(?<comment>#.*$)|(?<decorator>@[A-Za-z_][\w.]*)|(?<string>[rRuUbBfF]{0,3}(?:"""[^\r\n]*(?:"""|$)|'''[^\r\n]*(?:'''|$)|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'))|(?<keyword>\b(?:and|as|assert|async|await|break|case|class|continue|def|del|elif|else|except|finally|for|from|global|if|import|in|is|lambda|match|nonlocal|not|or|pass|raise|return|try|while|with|yield)\b)|(?<constant>\b(?:None|True|False)\b)|(?<builtin>\b(?:self|cls|Exception|ValueError|TypeError|NotImplementedError|str|int|float|bool|dict|list|set|tuple|len|range|enumerate|print|super|object|property|staticmethod|classmethod|isinstance|issubclass)\b)|(?<function>\b[A-Za-z_]\w*(?=\s*\())|(?<number>\b\d+(?:\.\d+)?\b)|(?<operator>->|==|!=|<=|>=|:=|\*\*|[=+\-*/%<>:])/g;
+function tokenStyle(token: ThemedToken): CSSProperties | undefined {
+  const style: CSSProperties = token.htmlStyle ? { ...token.htmlStyle } : {};
+  if (token.color && !style.color) style.color = token.color;
+  const fontStyle = token.fontStyle ?? 0;
+  if (fontStyle & SHIKI_FONT_STYLE_ITALIC) style.fontStyle = "italic";
+  if (fontStyle & SHIKI_FONT_STYLE_BOLD) style.fontWeight = 700;
+  if (fontStyle & SHIKI_FONT_STYLE_UNDERLINE) style.textDecoration = "underline";
+  return Object.keys(style).length > 0 ? style : undefined;
+}
+
+function renderHighlightedCode(text: string, tokens?: HighlightToken[]): ReactNode {
+  if (!tokens) return text;
+  return tokens.map((token, index) => (
+    <span key={`${index}-${token.content}`} style={token.style}>
+      {token.content}
+    </span>
+  ));
+}
+
+function plainHighlightedRows(rows: DiffRowWithContext[]): Map<number, HighlightToken[]> {
+  const highlighted = new Map<number, HighlightToken[]>();
+  for (const { row, index } of rows) {
+    if (row.kind === "line") {
+      highlighted.set(index, [{ content: row.text }]);
+    }
+  }
+  return highlighted;
+}
+
+async function highlightDiffRows(rows: DiffRowWithContext[]): Promise<Map<number, HighlightToken[]>> {
+  const groups = new Map<string, { language: BundledLanguage; rows: Array<{ index: number; text: string }> }>();
+  for (const { row, index, filePath } of rows) {
+    if (row.kind !== "line") continue;
+    const language = languageForPath(filePath);
+    if (!language) continue;
+    const key = `${filePath ?? "unknown"}:${language}`;
+    const group = groups.get(key) ?? { language, rows: [] };
+    group.rows.push({ index, text: row.text });
+    groups.set(key, group);
   }
 
-  return /(?<comment>\/\/.*$|\/\*[^\r\n]*(?:\*\/|$))|(?<string>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)|(?<keyword>\b(?:as|async|await|break|case|catch|class|const|continue|default|delete|else|export|extends|finally|for|from|function|if|import|in|instanceof|interface|let|new|of|return|satisfies|switch|throw|try|type|typeof|var|while|yield)\b)|(?<constant>\b(?:true|false|null|undefined)\b)|(?<builtin>\b(?:Array|Boolean|Date|Error|JSON|Map|Math|Number|Object|Promise|React|Set|String|console|document|window)\b)|(?<function>\b[A-Za-z_$][\w$]*(?=\s*\())|(?<number>\b\d+(?:\.\d+)?\b)|(?<operator>=>|===|!==|==|!=|<=|>=|\+\+|--|&&|\|\||[=+\-*/%<>?:])/g;
-}
+  if (groups.size === 0) return plainHighlightedRows(rows);
 
-function tokenClass(groups: Record<string, string | undefined>): string {
-  if (groups.comment) return "diff-token-comment";
-  if (groups.decorator) return "diff-token-decorator";
-  if (groups.string) return "diff-token-string";
-  if (groups.keyword) return "diff-token-keyword";
-  if (groups.constant) return "diff-token-constant";
-  if (groups.builtin) return "diff-token-builtin";
-  if (groups.function) return "diff-token-function";
-  if (groups.number) return "diff-token-number";
-  if (groups.operator) return "diff-token-operator";
-  return "";
-}
-
-function highlightCode(text: string, pathValue?: string): ReactNode {
-  const language = languageForPath(pathValue);
-  if (language === "generic" || !text) return text;
-
-  const regex = syntaxPattern(language);
-  const parts: ReactNode[] = [];
-  let lastIndex = 0;
-  for (const match of text.matchAll(regex)) {
-    const value = match[0];
-    const index = match.index ?? 0;
-    if (index > lastIndex) parts.push(text.slice(lastIndex, index));
-    const className = tokenClass(match.groups ?? {});
-    parts.push(className ? <span key={`${index}-${value}`} className={className}>{value}</span> : value);
-    lastIndex = index + value.length;
-  }
-  if (lastIndex < text.length) parts.push(text.slice(lastIndex));
-  return parts;
+  const highlighted = plainHighlightedRows(rows);
+  const { codeToTokens } = await import("shiki/bundle/web");
+  await Promise.all(Array.from(groups.values()).map(async (group) => {
+    const result = await codeToTokens(group.rows.map((item) => item.text).join("\n"), {
+      lang: group.language,
+      theme: SHIKI_THEME,
+    });
+    group.rows.forEach((item, lineIndex) => {
+      const tokens = result.tokens[lineIndex] ?? [];
+      highlighted.set(item.index, tokens.map((token) => ({
+        content: token.content,
+        style: tokenStyle(token),
+      })));
+    });
+  }));
+  return highlighted;
 }
 
 function formatCommentDate(value?: string): string {
@@ -239,7 +332,23 @@ function MergeRequestDiff({
 }) {
   const rows = useMemo(() => rowsWithFileContext(parsed), [parsed]);
   const commentsByLine = useMemo(() => commentMap(comments), [comments]);
+  const [highlightedRows, setHighlightedRows] = useState(() => plainHighlightedRows(rows));
   const normalizedSearch = searchQuery.trim().toLowerCase();
+
+  useEffect(() => {
+    let cancelled = false;
+    setHighlightedRows(plainHighlightedRows(rows));
+    highlightDiffRows(rows)
+      .then((next) => {
+        if (!cancelled) setHighlightedRows(next);
+      })
+      .catch(() => {
+        if (!cancelled) setHighlightedRows(plainHighlightedRows(rows));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rows]);
 
   if (parsed.rows.length === 0) {
     return <div className="insp-mr-empty">No textual diff is available for this file.</div>;
@@ -274,7 +383,7 @@ function MergeRequestDiff({
                   <span className="file-viewer-diff-gutter old">{row.oldLine ?? ""}</span>
                   <span className="file-viewer-diff-gutter new">{row.newLine ?? ""}</span>
                   <span className="file-viewer-diff-sign">{row.lineKind === "add" ? "+" : row.lineKind === "del" ? "-" : ""}</span>
-                  <span className="file-viewer-diff-code">{highlightCode(row.text, filePath)}</span>
+                  <span className="file-viewer-diff-code">{renderHighlightedCode(row.text, highlightedRows.get(index))}</span>
                 </button>
                 {rowComments.length > 0 && (
                   <details className="insp-mr-comments">
@@ -319,6 +428,8 @@ function MergeRequestDiff({
 }
 
 export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoComposer, onAttachToComposer, onPinContext }: Props) {
+  const filePanelWidthStorageKey = cacheKey ? `${MR_FILES_WIDTH_STORAGE_PREFIX}:${cacheKey}` : MR_FILES_WIDTH_STORAGE_PREFIX;
+  const filePanelHeightStorageKey = cacheKey ? `${MR_FILES_HEIGHT_STORAGE_PREFIX}:${cacheKey}` : MR_FILES_HEIGHT_STORAGE_PREFIX;
   const [draftUrl, setDraftUrl] = useState("");
   const [state, setState] = useState<ReviewState>({ status: "idle" });
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -329,8 +440,13 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
   const [filesCollapsed, setFilesCollapsed] = useState(false);
   const [filesTouched, setFilesTouched] = useState(false);
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
+  const [filePanelWidth, setFilePanelWidth] = useState(() => defaultFilePanelWidth(panelWidth));
+  const [filePanelHeight, setFilePanelHeight] = useState(FILE_PANEL_DEFAULT_HEIGHT);
   const lastSelectedRowRef = useRef<number | null>(null);
   const rowSelectionDragRef = useRef<{ anchor: number; mode: RowSelectionMode } | null>(null);
+  const filePanelResizeRef = useRef<FilePanelResizeState | null>(null);
+  const filePanelWidthRef = useRef(filePanelWidth);
+  const filePanelHeightRef = useRef(filePanelHeight);
   const suppressNextRowClickRef = useRef(false);
   const restoredStorageKeyRef = useRef<string | null>(null);
 
@@ -350,6 +466,10 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
   const scopedDeletions = selectedFile?.deletions ?? review?.deletions ?? 0;
   const scopedFiles = selectedFile ? 1 : review?.files ?? 0;
   const wideLayout = (panelWidth ?? 0) >= 760;
+  const reviewStyle = {
+    "--mr-files-width": `${filePanelWidth}px`,
+    "--mr-files-height": `${filePanelHeight}px`,
+  } as CSSProperties;
   const diffRows = useMemo(() => rowsWithFileContext(parsedDiff), [parsedDiff]);
   const lineRowIndexes = useMemo(
     () => diffRows.filter((item) => item.row.kind === "line").map((item) => item.index),
@@ -370,6 +490,90 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
       file.diff.toLowerCase().includes(searchText)
     ));
   }, [review, searchText]);
+
+  useEffect(() => {
+    filePanelWidthRef.current = filePanelWidth;
+  }, [filePanelWidth]);
+
+  useEffect(() => {
+    filePanelHeightRef.current = filePanelHeight;
+  }, [filePanelHeight]);
+
+  useEffect(() => {
+    const maxWidth = maxFilePanelWidth(panelWidth);
+    setFilePanelWidth((current) => {
+      const next = clampNumber(current, FILE_PANEL_MIN_WIDTH, maxWidth);
+      filePanelWidthRef.current = next;
+      return next;
+    });
+  }, [panelWidth]);
+
+  useEffect(() => {
+    const next = storedPanelSize(
+      filePanelWidthStorageKey,
+      defaultFilePanelWidth(panelWidth),
+      FILE_PANEL_MIN_WIDTH,
+      maxFilePanelWidth(panelWidth),
+    );
+    filePanelWidthRef.current = next;
+    setFilePanelWidth(next);
+    const nextHeight = storedPanelSize(
+      filePanelHeightStorageKey,
+      FILE_PANEL_DEFAULT_HEIGHT,
+      FILE_PANEL_MIN_HEIGHT,
+      FILE_PANEL_MAX_HEIGHT,
+    );
+    filePanelHeightRef.current = nextHeight;
+    setFilePanelHeight(nextHeight);
+    // Only reload saved sizes when the chat-specific storage keys change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filePanelWidthStorageKey, filePanelHeightStorageKey]);
+
+  useEffect(() => {
+    const stopResize = () => {
+      const resize = filePanelResizeRef.current;
+      if (!resize) return;
+      filePanelResizeRef.current = null;
+      document.documentElement.classList.remove("mr-files-resizing-width", "mr-files-resizing-height");
+      if (resize.mode === "width") {
+        window.localStorage.setItem(filePanelWidthStorageKey, String(filePanelWidthRef.current));
+      } else {
+        window.localStorage.setItem(filePanelHeightStorageKey, String(filePanelHeightRef.current));
+      }
+    };
+
+    const moveResize = (event: PointerEvent) => {
+      const resize = filePanelResizeRef.current;
+      if (!resize) return;
+      event.preventDefault();
+      if (resize.mode === "width") {
+        const next = clampNumber(
+          resize.startWidth + event.clientX - resize.startClientX,
+          FILE_PANEL_MIN_WIDTH,
+          resize.maxWidth,
+        );
+        filePanelWidthRef.current = next;
+        setFilePanelWidth(next);
+        return;
+      }
+      const next = clampNumber(
+        resize.startHeight + event.clientY - resize.startClientY,
+        FILE_PANEL_MIN_HEIGHT,
+        FILE_PANEL_MAX_HEIGHT,
+      );
+      filePanelHeightRef.current = next;
+      setFilePanelHeight(next);
+    };
+
+    window.addEventListener("pointermove", moveResize);
+    window.addEventListener("pointerup", stopResize);
+    window.addEventListener("pointercancel", stopResize);
+    return () => {
+      window.removeEventListener("pointermove", moveResize);
+      window.removeEventListener("pointerup", stopResize);
+      window.removeEventListener("pointercancel", stopResize);
+    };
+  }, [filePanelHeightStorageKey, filePanelWidthStorageKey]);
 
   useEffect(() => {
     if (!review || filesTouched) return;
@@ -479,6 +683,35 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
   const toggleFiles = () => {
     setFilesTouched(true);
     setFilesCollapsed((current) => !current);
+  };
+
+  const startFilePanelResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const mode = wideLayout ? "width" : "height";
+    filePanelResizeRef.current = {
+      mode,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startWidth: filePanelWidthRef.current,
+      startHeight: filePanelHeightRef.current,
+      maxWidth: maxFilePanelWidth(panelWidth),
+    };
+    document.documentElement.classList.remove("mr-files-resizing-width", "mr-files-resizing-height");
+    document.documentElement.classList.add(mode === "width" ? "mr-files-resizing-width" : "mr-files-resizing-height");
+  };
+
+  const resetFilePanelSize = () => {
+    if (wideLayout) {
+      const next = defaultFilePanelWidth(panelWidth);
+      filePanelWidthRef.current = next;
+      setFilePanelWidth(next);
+      window.localStorage.setItem(filePanelWidthStorageKey, String(next));
+      return;
+    }
+    filePanelHeightRef.current = FILE_PANEL_DEFAULT_HEIGHT;
+    setFilePanelHeight(FILE_PANEL_DEFAULT_HEIGHT);
+    window.localStorage.setItem(filePanelHeightStorageKey, String(FILE_PANEL_DEFAULT_HEIGHT));
   };
 
   const applyRowRangeSelection = useCallback((anchor: number, target: number, mode: RowSelectionMode) => {
@@ -691,7 +924,10 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
             </div>
           </details>
 
-          <div className={`insp-mr-review ${wideLayout ? "wide" : ""} ${filesCollapsed ? "files-collapsed" : ""}`.trim()}>
+          <div
+            className={`insp-mr-review ${wideLayout ? "wide" : ""} ${filesCollapsed ? "files-collapsed" : ""}`.trim()}
+            style={reviewStyle}
+          >
             <div className="insp-mr-diff-controls">
               <button type="button" className="insp-mr-button quiet" onClick={toggleFiles}>
                 {filesCollapsed ? `Show files (${review.files})` : "Hide files"}
@@ -731,39 +967,49 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
             </div>
 
             {!filesCollapsed && (
-            <div className="insp-mr-files">
-              <button
-                type="button"
-                className={`insp-mr-file-row ${selectedPath === null ? "active" : ""}`}
-                onClick={() => setSelectedPath(null)}
-              >
-                <span className="insp-mr-file-name">All changed files</span>
-                <span className="insp-mr-file-stat">+{formatCount(review.additions)} -{formatCount(review.deletions)}</span>
-              </button>
-              {filteredFiles.map((file) => {
-                const active = selectedFile === file;
-                const flags = fileFlags(file);
-                return (
+              <>
+                <div className="insp-mr-files">
                   <button
-                    key={`${file.oldPath}:${file.newPath}`}
                     type="button"
-                    className={`insp-mr-file-row ${active ? "active" : ""}`}
-                    onClick={() => setSelectedPath(file.newPath)}
-                    title={file.newPath}
+                    className={`insp-mr-file-row ${selectedPath === null ? "active" : ""}`}
+                    onClick={() => setSelectedPath(null)}
                   >
-                    <span className="insp-mr-file-name">{file.newPath}</span>
-                    {file.renamedFile && file.oldPath !== file.newPath && (
-                      <span className="insp-mr-file-old">from {file.oldPath}</span>
-                    )}
-                    <span className="insp-mr-file-stat">+{formatCount(file.additions)} -{formatCount(file.deletions)}</span>
-                    {flags.length > 0 && <span className="insp-mr-file-flags">{flags.join(", ")}</span>}
+                    <span className="insp-mr-file-name">All changed files</span>
+                    <span className="insp-mr-file-stat">+{formatCount(review.additions)} -{formatCount(review.deletions)}</span>
                   </button>
-                );
-              })}
-              {filteredFiles.length === 0 && (
-                <div className="insp-mr-files-empty">No files match the search.</div>
-              )}
-            </div>
+                  {filteredFiles.map((file) => {
+                    const active = selectedFile === file;
+                    const flags = fileFlags(file);
+                    return (
+                      <button
+                        key={`${file.oldPath}:${file.newPath}`}
+                        type="button"
+                        className={`insp-mr-file-row ${active ? "active" : ""}`}
+                        onClick={() => setSelectedPath(file.newPath)}
+                        title={file.newPath}
+                      >
+                        <span className="insp-mr-file-name">{file.newPath}</span>
+                        {file.renamedFile && file.oldPath !== file.newPath && (
+                          <span className="insp-mr-file-old">from {file.oldPath}</span>
+                        )}
+                        <span className="insp-mr-file-stat">+{formatCount(file.additions)} -{formatCount(file.deletions)}</span>
+                        {flags.length > 0 && <span className="insp-mr-file-flags">{flags.join(", ")}</span>}
+                      </button>
+                    );
+                  })}
+                  {filteredFiles.length === 0 && (
+                    <div className="insp-mr-files-empty">No files match the search.</div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="insp-mr-files-resizer"
+                  onPointerDown={startFilePanelResize}
+                  onDoubleClick={resetFilePanelSize}
+                  aria-label={wideLayout ? "Resize file list width" : "Resize file list height"}
+                  title="Drag to resize the file list. Double-click to reset."
+                />
+              </>
             )}
 
             <div className="insp-mr-diff">
