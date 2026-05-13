@@ -309,7 +309,7 @@ export function BackgroundAgentsPanel({
                     Open
                   </Link>
                 ) : canInspect ? (
-                  <button type="button" className="insp-agent-link" onClick={() => onInspectAgent(row.id)}>
+                  <button type="button" className="insp-agent-link" onClick={() => onInspectAgent(row.inspectToolId ?? row.id)}>
                     Tool
                   </button>
                 ) : null}
@@ -367,7 +367,7 @@ export function BackgroundAgentsPanel({
                 Open background chat
               </Link>
             ) : selected.inspectAvailable !== false ? (
-              <button type="button" className="terminal-primary-button" onClick={() => onInspectAgent(selected.id)}>
+              <button type="button" className="terminal-primary-button" onClick={() => onInspectAgent(selected.inspectToolId ?? selected.id)}>
                 Inspect tool call
               </button>
             ) : null}

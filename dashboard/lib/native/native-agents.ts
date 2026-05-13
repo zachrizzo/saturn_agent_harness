@@ -16,6 +16,7 @@ export type NativeAgentRun = {
   prompt?: string;
   description?: string;
   saturnToolId: string;
+  linkedToolUseId?: string;
   nativeAgentId: string;
   nativeSessionId?: string;
   nativeThreadId?: string;
@@ -152,6 +153,7 @@ export async function listNativeAgents(sessionId: string): Promise<NativeAgentRu
     const provider = providerForToolUse(event);
     const result = results.get(event.id);
     const status = statusFromResult(result);
+    const linkedToolUseId = stringValue(input.tool_use_id);
     const nativeAgentId = stringValue(input.receiver_thread_id) ?? event.id;
     const nativeThreadId = provider === "codex" ? nativeAgentId : undefined;
     const nativeSessionId = provider === "claude"
@@ -169,6 +171,7 @@ export async function listNativeAgents(sessionId: string): Promise<NativeAgentRu
       prompt: stringValue(input.prompt) ?? stringValue(item.prompt),
       description: stringValue(input.description),
       saturnToolId: event.id,
+      linkedToolUseId,
       nativeAgentId,
       nativeSessionId,
       nativeThreadId,

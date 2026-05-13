@@ -30,7 +30,9 @@ export type BackgroundActivityRow = {
   startedAt?: string;
   updatedAt?: string;
   activityOrder?: number;
+  aliasIds?: string[];
   inspectAvailable?: boolean;
+  inspectToolId?: string;
   stopAvailable?: boolean;
   transcriptAvailable?: boolean;
 };

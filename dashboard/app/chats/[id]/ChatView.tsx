@@ -65,6 +65,9 @@ type NativeAgentSummary = {
   provider?: BackgroundActivityRow["provider"];
   status?: string;
   title?: string;
+  saturnToolId?: string;
+  linkedToolUseId?: string;
+  nativeAgentId?: string;
   stopAvailable?: boolean;
   transcriptAvailable?: boolean;
 };
@@ -386,6 +389,8 @@ function nativeAgentStatus(status: string | undefined): BackgroundActivityRow["s
 function nativeAgentRowsFromResponse(body: NativeAgentsResponse): BackgroundActivityRow[] {
   return (body.agents ?? []).map((agent, index) => {
     const status = nativeAgentStatus(agent.status);
+    const aliasIds = [agent.saturnToolId, agent.linkedToolUseId, agent.nativeAgentId]
+      .filter((value): value is string => Boolean(value && value !== agent.id));
     return {
       id: agent.id,
       title: agent.title?.trim() || "Native sub-agent",
@@ -393,6 +398,7 @@ function nativeAgentRowsFromResponse(body: NativeAgentsResponse): BackgroundActi
       kind: "agent" as const,
       provider: agent.provider,
       activityOrder: index,
+      aliasIds,
       inspectAvailable: false,
       stopAvailable: agent.stopAvailable ?? status === "run",
       transcriptAvailable: agent.transcriptAvailable ?? true,
@@ -409,7 +415,24 @@ function mergeAgentActivityRows(
 
   for (const nativeRow of nativeRows) {
     const key = backgroundActivityDismissKey(nativeRow);
-    const transcriptRow = byKey.get(key);
+    let transcriptRow = byKey.get(key);
+    for (const aliasId of nativeRow.aliasIds ?? []) {
+      const aliasKey = backgroundActivityDismissKey({ id: aliasId, kind: "agent" });
+      const aliasRow = byKey.get(aliasKey);
+      if (!aliasRow) continue;
+      transcriptRow = transcriptRow
+        ? {
+            ...aliasRow,
+            ...transcriptRow,
+            inspectAvailable: transcriptRow.inspectAvailable ?? aliasRow.inspectAvailable,
+            inspectToolId: transcriptRow.inspectToolId ?? aliasRow.inspectToolId ?? aliasRow.id,
+            startedAt: transcriptRow.startedAt ?? aliasRow.startedAt,
+            updatedAt: transcriptRow.updatedAt ?? aliasRow.updatedAt,
+            activityOrder: transcriptRow.activityOrder ?? aliasRow.activityOrder,
+          }
+        : { ...aliasRow, inspectToolId: aliasRow.inspectToolId ?? aliasRow.id };
+      byKey.delete(aliasKey);
+    }
     byKey.set(key, {
       ...transcriptRow,
       ...nativeRow,
@@ -418,6 +441,7 @@ function mergeAgentActivityRows(
       updatedAt: nativeRow.updatedAt ?? transcriptRow?.updatedAt,
       activityOrder: nativeRow.activityOrder ?? transcriptRow?.activityOrder,
       inspectAvailable: transcriptRow?.inspectAvailable ?? nativeRow.inspectAvailable,
+      inspectToolId: transcriptRow?.inspectToolId ?? nativeRow.inspectToolId,
     });
   }
 
@@ -2055,6 +2079,7 @@ export function ChatView({
       ...row,
       kind: "agent" as const,
       inspectAvailable: true,
+      inspectToolId: row.id,
       stopAvailable: row.status === "run",
       transcriptAvailable: false,
     })),
