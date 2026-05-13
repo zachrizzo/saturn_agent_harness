@@ -109,6 +109,28 @@ type DiffRowWithContext = {
   filePath?: string;
 };
 
+type ContextControlRow = {
+  kind: "context-control";
+  key: string;
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  expanded: boolean;
+};
+
+type ExpandedContextLine = {
+  kind: "context-line";
+  key: string;
+  filePath: string;
+  lineNumber: number;
+  text: string;
+};
+
+type RenderableDiffRow =
+  | { kind: "diff"; item: DiffRowWithContext }
+  | ContextControlRow
+  | ExpandedContextLine;
+
 type RowSelectionMode = "add" | "remove";
 type FilePanelResizeState = {
   mode: "width" | "height";
@@ -125,6 +147,109 @@ function rowsWithFileContext(parsed: ParsedDiff): DiffRowWithContext[] {
     if (row.kind === "file") filePath = row.text;
     return { row, index, filePath };
   });
+}
+
+function sourceLines(content: string | undefined): string[] {
+  if (content === undefined) return [];
+  const lines = content.split(/\r?\n/);
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+
+function hunkNewStart(text: string): number | undefined {
+  const match = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(text);
+  if (!match) return undefined;
+  return Number(match[1]);
+}
+
+function contextKey(filePath: string, startLine: number, endLine: number): string {
+  return `${filePath}:${startLine}-${endLine}`;
+}
+
+function contextControl(
+  filePath: string,
+  startLine: number,
+  endLine: number,
+  expandedContext: Set<string>,
+): ContextControlRow | null {
+  if (startLine > endLine) return null;
+  const key = contextKey(filePath, startLine, endLine);
+  return {
+    kind: "context-control",
+    key,
+    filePath,
+    startLine,
+    endLine,
+    expanded: expandedContext.has(key),
+  };
+}
+
+function expandedContextRows(control: ContextControlRow, lines: string[]): ExpandedContextLine[] {
+  if (!control.expanded) return [];
+  return lines.slice(control.startLine - 1, control.endLine).map((text, offset) => {
+    const lineNumber = control.startLine + offset;
+    return {
+      kind: "context-line",
+      key: `${control.key}:${lineNumber}`,
+      filePath: control.filePath,
+      lineNumber,
+      text,
+    };
+  });
+}
+
+function renderableRows(
+  rows: DiffRowWithContext[],
+  sourceByPath: Map<string, string>,
+  expandedContext: Set<string>,
+): RenderableDiffRow[] {
+  const result: RenderableDiffRow[] = [];
+  const lastNewLineByFile = new Map<string, number>();
+  const lastFilePathByFile = new Set<string>();
+  let currentFilePath: string | undefined;
+
+  const pushControl = (filePath: string | undefined, startLine: number, endLine: number) => {
+    if (!filePath) return;
+    const lines = sourceLines(sourceByPath.get(filePath));
+    if (lines.length === 0) return;
+    const boundedEnd = Math.min(endLine, lines.length);
+    const control = contextControl(filePath, startLine, boundedEnd, expandedContext);
+    if (!control) return;
+    result.push(control);
+    result.push(...expandedContextRows(control, lines));
+  };
+
+  const finishFile = (filePath: string | undefined) => {
+    if (!filePath || lastFilePathByFile.has(filePath)) return;
+    const lines = sourceLines(sourceByPath.get(filePath));
+    const lastShownLine = lastNewLineByFile.get(filePath) ?? 0;
+    if (lines.length > lastShownLine) pushControl(filePath, lastShownLine + 1, lines.length);
+    lastFilePathByFile.add(filePath);
+  };
+
+  for (const item of rows) {
+    if (item.row.kind === "file") {
+      finishFile(currentFilePath);
+      currentFilePath = item.filePath;
+    }
+
+    if (item.row.kind === "hunk" && item.filePath) {
+      const newStart = hunkNewStart(item.row.text);
+      if (newStart !== undefined) {
+        const lastShownLine = lastNewLineByFile.get(item.filePath) ?? 0;
+        pushControl(item.filePath, lastShownLine + 1, newStart - 1);
+      }
+    }
+
+    result.push({ kind: "diff", item });
+
+    if (item.row.kind === "line" && item.filePath && item.row.newLine != null) {
+      lastNewLineByFile.set(item.filePath, Math.max(lastNewLineByFile.get(item.filePath) ?? 0, item.row.newLine));
+    }
+  }
+
+  finishFile(currentFilePath);
+  return result;
 }
 
 function lineNumberLabel(row: Extract<ParsedDiffRow, { kind: "line" }>): string {
@@ -322,21 +447,31 @@ function MergeRequestDiff({
   searchQuery,
   comments,
   instanceUrl,
+  sourceByPath,
   selectedRows,
+  expandedContext,
   onToggleRow,
   onStartRowSelection,
   onEnterRowSelection,
+  onToggleContext,
 }: {
   parsed: ParsedDiff;
   searchQuery: string;
   comments: GitLabMergeRequestComment[];
   instanceUrl: string;
+  sourceByPath: Map<string, string>;
   selectedRows: Set<number>;
+  expandedContext: Set<string>;
   onToggleRow: (index: number, event: ReactMouseEvent<HTMLButtonElement>) => void;
   onStartRowSelection: (index: number, event: ReactPointerEvent<HTMLButtonElement>) => void;
   onEnterRowSelection: (index: number, event: ReactPointerEvent<HTMLButtonElement>) => void;
+  onToggleContext: (key: string) => void;
 }) {
   const rows = useMemo(() => rowsWithFileContext(parsed), [parsed]);
+  const renderedRows = useMemo(
+    () => renderableRows(rows, sourceByPath, expandedContext),
+    [expandedContext, rows, sourceByPath],
+  );
   const commentsByLine = useMemo(() => commentMap(comments), [comments]);
   const [highlightedRows, setHighlightedRows] = useState(() => plainHighlightedRows(rows));
   const normalizedSearch = searchQuery.trim().toLowerCase();
@@ -363,7 +498,42 @@ function MergeRequestDiff({
   return (
     <div className="file-viewer-diff" role="region" aria-label="File diff">
       <div className="file-viewer-diff-table">
-        {rows.map(({ row, index, filePath }) => {
+        {renderedRows.map((rendered) => {
+          if (rendered.kind === "context-control") {
+            const count = rendered.endLine - rendered.startLine + 1;
+            return (
+              <button
+                key={rendered.key}
+                type="button"
+                className="insp-mr-context-expand"
+                onClick={() => onToggleContext(rendered.key)}
+                aria-expanded={rendered.expanded}
+              >
+                <span className="insp-mr-context-arrow">{rendered.expanded ? "⌃" : "⌄"}</span>
+                <span>
+                  {rendered.expanded ? "Hide" : "Show"} {count.toLocaleString()} context line{count === 1 ? "" : "s"}
+                </span>
+                <span className="insp-mr-context-range">
+                  {rendered.filePath}:{rendered.startLine}-{rendered.endLine}
+                </span>
+              </button>
+            );
+          }
+
+          if (rendered.kind === "context-line") {
+            const searchHit = normalizedSearch.length > 0
+              && `${rendered.filePath} +${rendered.lineNumber} ${rendered.text}`.toLowerCase().includes(normalizedSearch);
+            return (
+              <div key={rendered.key} className={`file-viewer-diff-row ctx expanded-context ${searchHit ? "search-hit" : ""}`}>
+                <span className="file-viewer-diff-gutter old" />
+                <span className="file-viewer-diff-gutter new">{rendered.lineNumber}</span>
+                <span className="file-viewer-diff-sign" />
+                <span className="file-viewer-diff-code">{rendered.text}</span>
+              </div>
+            );
+          }
+
+          const { row, index, filePath } = rendered.item;
           const searchHit = normalizedSearch.length > 0 && rowSearchText({ row, index, filePath }).toLowerCase().includes(normalizedSearch);
           if (row.kind === "section") {
             return <div key={index} className="file-viewer-diff-section">{row.text}</div>;
@@ -450,6 +620,7 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
   const [filesTouched, setFilesTouched] = useState(false);
   const [fileViewCollapsed, setFileViewCollapsed] = useState(false);
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
+  const [expandedContext, setExpandedContext] = useState<Set<string>>(new Set());
   const [filePanelWidth, setFilePanelWidth] = useState(() => defaultFilePanelWidth(panelWidth));
   const [filePanelHeight, setFilePanelHeight] = useState(FILE_PANEL_DEFAULT_HEIGHT);
   const lastSelectedRowRef = useRef<number | null>(null);
@@ -501,6 +672,15 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
       file.diff.toLowerCase().includes(searchText)
     ));
   }, [review, searchText]);
+  const sourceByPath = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const file of review?.diffs ?? []) {
+      if (!file.sourceContent) continue;
+      map.set(file.newPath, file.sourceContent);
+      if (file.oldPath && file.oldPath !== file.newPath) map.set(file.oldPath, file.sourceContent);
+    }
+    return map;
+  }, [review]);
 
   useEffect(() => {
     filePanelWidthRef.current = filePanelWidth;
@@ -611,6 +791,7 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
     rowSelectionDragRef.current = null;
     setFilesTouched(false);
     setSearchQuery("");
+    setExpandedContext(new Set());
     try {
       const res = await fetch(`/api/gitlab/merge-request?url=${encodeURIComponent(url)}`, {
         cache: "no-store",
@@ -707,6 +888,15 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
   const toggleFiles = () => {
     setFilesTouched(true);
     setFilesCollapsed((current) => !current);
+  };
+
+  const toggleContext = (key: string) => {
+    setExpandedContext((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   };
 
   const toggleFileView = () => {
@@ -1086,10 +1276,13 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
                 searchQuery={searchQuery}
                 comments={review.comments}
                 instanceUrl={review.instanceUrl}
+                sourceByPath={sourceByPath}
                 selectedRows={selectedRows}
+                expandedContext={expandedContext}
                 onToggleRow={toggleDiffRow}
                 onStartRowSelection={startRowSelection}
                 onEnterRowSelection={enterRowSelection}
+                onToggleContext={toggleContext}
               />
             </div>
             </div>

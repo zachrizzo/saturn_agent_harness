@@ -20,6 +20,9 @@ const PER_PAGE = 100;
 const MAX_DIFF_FILES = 500;
 const MAX_DIFF_BYTES = 4 * 1024 * 1024;
 const MAX_DISCUSSIONS = 300;
+const MAX_CONTEXT_FILES = 80;
+const MAX_CONTEXT_FILE_BYTES = 240 * 1024;
+const MAX_CONTEXT_TOTAL_BYTES = 2 * 1024 * 1024;
 const execFileAsync = promisify(execFile);
 
 type GitLabApiErrorData = {
@@ -263,6 +266,22 @@ async function fetchGitLabJson<T>(url: string, token: string | undefined): Promi
   };
 }
 
+async function fetchGitLabText(url: string, token: string | undefined): Promise<string> {
+  const res = await fetch(url, {
+    headers: apiHeaders(token),
+    cache: "no-store",
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    let data: GitLabApiErrorData | null = null;
+    try {
+      data = text ? JSON.parse(text) as GitLabApiErrorData : null;
+    } catch {}
+    throw new GitLabApiError(errorMessage(data, `GitLab API returned HTTP ${res.status}`), res.status);
+  }
+  return text;
+}
+
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
@@ -443,6 +462,65 @@ async function listDiscussions(
   };
 }
 
+async function hydrateSourceContext(
+  files: GitLabMergeRequestDiffFile[],
+  apiBaseUrl: string,
+  projectPath: string,
+  ref: string,
+  token: string | undefined,
+): Promise<{ files: GitLabMergeRequestDiffFile[]; warning?: string }> {
+  if (!ref || files.length === 0) return { files };
+
+  let totalBytes = 0;
+  let skipped = 0;
+  let failed = 0;
+  const hydrated: GitLabMergeRequestDiffFile[] = [];
+
+  for (const file of files) {
+    if (file.deletedFile || file.tooLarge || file.generatedFile || skipped > 0 || hydrated.length >= MAX_CONTEXT_FILES) {
+      hydrated.push(file);
+      continue;
+    }
+
+    if (totalBytes >= MAX_CONTEXT_TOTAL_BYTES) {
+      skipped += 1;
+      hydrated.push(file);
+      continue;
+    }
+
+    try {
+      const url = new URL(`${apiBaseUrl}/projects/${encodeURIComponent(projectPath)}/repository/files/${encodeURIComponent(file.newPath)}/raw`);
+      url.searchParams.set("ref", ref);
+      const text = await fetchGitLabText(url.toString(), token);
+      const bytes = Buffer.byteLength(text, "utf8");
+      const remaining = Math.max(0, MAX_CONTEXT_TOTAL_BYTES - totalBytes);
+      const maxBytes = Math.min(MAX_CONTEXT_FILE_BYTES, remaining);
+      const sourceContent = bytes > maxBytes
+        ? Buffer.from(text).subarray(0, maxBytes).toString("utf8")
+        : text;
+      totalBytes += Buffer.byteLength(sourceContent, "utf8");
+      hydrated.push({
+        ...file,
+        sourceContent,
+        sourceContentTruncated: bytes > maxBytes,
+      });
+    } catch (err) {
+      if (err instanceof GitLabApiError && (err.status === 401 || err.status === 403 || err.status === 404)) {
+        failed += 1;
+        hydrated.push(file);
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  const notes = [
+    skipped > 0 ? `${skipped.toLocaleString()} file${skipped === 1 ? "" : "s"} skipped for expandable context because the context payload limit was reached.` : "",
+    failed > 0 ? `${failed.toLocaleString()} file${failed === 1 ? "" : "s"} could not load expandable context from GitLab.` : "",
+  ].filter(Boolean);
+  return { files: hydrated, warning: notes.join(" ") || undefined };
+}
+
 export async function GET(req: NextRequest) {
   const rawUrl = req.nextUrl.searchParams.get("url") ?? "";
   let parsed: ReturnType<typeof parseGitLabMergeRequestUrl>;
@@ -487,6 +565,15 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    const contextResult = await hydrateSourceContext(
+      diffResult.files,
+      parsed.apiBaseUrl,
+      parsed.projectPath,
+      stringValue(mr.sha) || stringValue(mr.source_branch),
+      token,
+    );
+    if (contextResult.warning) warnings.push(contextResult.warning);
+
     const review: GitLabMergeRequestReview = {
       sourceUrl: parsed.sourceUrl,
       instanceUrl: parsed.instanceUrl,
@@ -509,7 +596,7 @@ export async function GET(req: NextRequest) {
       files: diffResult.files.length,
       additions: diffResult.files.reduce((total, file) => total + file.additions, 0),
       deletions: diffResult.files.reduce((total, file) => total + file.deletions, 0),
-      diffs: diffResult.files,
+      diffs: contextResult.files,
       comments,
       truncated: diffResult.truncated,
       warnings,

@@ -516,6 +516,9 @@ h1, h2, h3, h4, h5, h6 {
   color: var(--text);
   font-size: 13px;
   line-height: 1.6;
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: break-word;
 }
 
 .prose-dashboard h1,
@@ -537,6 +540,8 @@ h1, h2, h3, h4, h5, h6 {
 .prose-dashboard p {
   color: var(--text-muted);
   margin: 0.4rem 0;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .prose-dashboard ul {
@@ -575,6 +580,7 @@ h1, h2, h3, h4, h5, h6 {
   border-radius: 4px;
   color: var(--text);
   border: 1px solid var(--border);
+  overflow-wrap: anywhere;
 }
 
 .prose-dashboard .chat-file-ref {
@@ -1116,7 +1122,10 @@ h1, h2, h3, h4, h5, h6 {
 
 /* GFM tables — rendered as real HTML tables via remark-gfm. */
 .prose-dashboard .markdown-table-scroll {
+  display: block;
+  width: 100%;
   max-width: 100%;
+  min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
   margin: 0.6rem 0;
@@ -1134,6 +1143,7 @@ h1, h2, h3, h4, h5, h6 {
   border-collapse: collapse;
   min-width: 100%;
   width: max-content;
+  max-width: none;
   margin: 0;
   font-size: 12.5px;
 }
@@ -2284,6 +2294,101 @@ html[data-chat-inspector-collapsed="1"] .chat-shell .inspector {
   font-size: 11.5px;
 }
 
+.user-message-bubble {
+  position: relative;
+  min-width: 0;
+  padding-right: 34px;
+}
+
+.user-message-text {
+  overflow-wrap: anywhere;
+}
+
+.message-meta-popover {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+}
+
+.message-meta-popover > summary {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.78);
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1;
+  list-style: none;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.message-meta-popover > summary::-webkit-details-marker {
+  display: none;
+}
+
+.message-meta-popover > summary:hover,
+.message-meta-popover[open] > summary {
+  border-color: rgba(255, 255, 255, 0.44);
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+
+.message-meta-popover-card {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: min(260px, 72vw);
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elev);
+  color: var(--fg);
+  box-shadow: var(--shadow-lg);
+  text-align: left;
+}
+
+.message-meta-popover-title {
+  margin-bottom: 8px;
+  color: var(--text-subtle);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.message-meta-popover dl {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+
+.message-meta-popover dl > div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+}
+
+.message-meta-popover dt {
+  color: var(--text-subtle);
+  font-size: 11px;
+}
+
+.message-meta-popover dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--fg);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .chat-background-panel-button {
   gap: 6px;
 }
@@ -2566,6 +2671,8 @@ html[data-chat-inspector-collapsed="1"] .chat-shell .chat-scroll-bottom-button {
 .assistant-text-stack {
   display: grid;
   gap: 10px;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .plan-checklist {
@@ -6674,7 +6781,7 @@ html[data-chat-inspector-collapsed="1"] .chat-shell .chat-scroll-bottom-button {
 .file-viewer-markdown.prose-dashboard ul,
 .file-viewer-markdown.prose-dashboard ol,
 .file-viewer-markdown.prose-dashboard blockquote,
-.file-viewer-markdown.prose-dashboard table,
+.file-viewer-markdown.prose-dashboard .markdown-table-scroll,
 .file-viewer-markdown.prose-dashboard pre {
   max-width: 860px;
 }
@@ -10382,6 +10489,63 @@ html.mr-files-resizing-height * {
   border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
   background: color-mix(in srgb, var(--accent) 8%, var(--bg-elev));
   color: var(--accent);
+}
+
+.insp-mr-context-expand {
+  display: grid;
+  grid-template-columns: 28px minmax(0, auto) minmax(0, 1fr);
+  align-items: center;
+  min-width: 100%;
+  width: max-content;
+  min-height: 34px;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg));
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11.5px;
+  gap: 8px;
+  padding: 0 12px 0 116px;
+  text-align: left;
+}
+
+.insp-mr-context-expand:hover {
+  background: color-mix(in srgb, var(--accent) 11%, var(--bg-hover));
+  color: var(--text);
+}
+
+.insp-mr-context-expand:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  outline-offset: -2px;
+}
+
+.insp-mr-context-arrow {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-elev) 82%, var(--bg));
+  color: var(--accent);
+  font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.insp-mr-context-range {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-subtle);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-viewer-diff-row.expanded-context {
+  --diff-row-bg: color-mix(in srgb, var(--bg-subtle) 72%, var(--bg));
+  --diff-gutter-bg: color-mix(in srgb, var(--bg-subtle) 82%, var(--bg));
 }
 
 .insp-mr-review.wide .insp-mr-diff,

@@ -1715,6 +1715,10 @@ export function ChatView({
     setMobileInspectorOpen(true);
   }, []);
 
+  const clearInspectorTabRequest = useCallback((requestId: number) => {
+    setInspectorTabRequest((current) => current?.requestId === requestId ? null : current);
+  }, []);
+
   const stopGeneration = useCallback(async () => {
     const { controller, seq } = beginExclusiveAction();
     beginMutation();
@@ -2064,7 +2068,8 @@ export function ChatView({
   const selectInspectorTool = useCallback((t: InspectorTool) => {
     setActiveToolId(t.id);
     setInspectorCollapsed(false);
-  }, []);
+    openInspectorTab("tool");
+  }, [openInspectorTab]);
 
   const toolSelection = useMemo(() => ({
     activeId: activeToolId,
@@ -2461,6 +2466,7 @@ export function ChatView({
           onPinContext={pinInspectorContext}
           onClose={() => setMobileInspectorOpen(false)}
           requestedTab={inspectorTabRequest}
+          onRequestedTabHandled={clearInspectorTabRequest}
         />
       </div>
     </ToolSelectionProvider>

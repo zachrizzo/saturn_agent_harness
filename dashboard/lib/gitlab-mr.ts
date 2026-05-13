@@ -11,6 +11,8 @@ export type GitLabMergeRequestDiffFile = {
   newPath: string;
   diff: string;
   unifiedDiff: string;
+  sourceContent?: string;
+  sourceContentTruncated?: boolean;
   additions: number;
   deletions: number;
   newFile: boolean;

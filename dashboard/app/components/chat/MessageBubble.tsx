@@ -296,7 +296,7 @@ function UserBubble({ message, cli, model, reasoningEffort, sessionId, turnIndex
       )}
 
       <div
-        className="max-w-[85%] rounded-2xl rounded-tr-md px-3.5 py-2 text-[13px] transition-all duration-200"
+        className="user-message-bubble max-w-[85%] rounded-2xl rounded-tr-md px-3.5 py-2 text-[13px] transition-all duration-200"
         style={{
           background: "var(--user-bubble-bg)",
           color: "#fff",
@@ -306,24 +306,37 @@ function UserBubble({ message, cli, model, reasoningEffort, sessionId, turnIndex
           opacity: editing ? 1 : undefined,
         }}
       >
-        <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider mb-1" style={{ color: "rgba(255,255,255,0.6)" }}>
-          <span>you</span>
-          <span>·</span>
-          <span>{CLI_SHORT_LABELS[cli]}</span>
-          {model && (
-            <>
-              <span>·</span>
-              <span className="mono truncate max-w-[160px]">{toClaudeAlias(model) ?? model}</span>
-            </>
-          )}
-          {reasoningEffort && (
-            <>
-              <span>·</span>
-              <span>{formatReasoningEffort(reasoningEffort)} effort</span>
-            </>
-          )}
-        </div>
-        <div className="whitespace-pre-wrap">{message}</div>
+        <details className="message-meta-popover">
+          <summary aria-label="Message details" title="Message details">
+            <span aria-hidden="true">•••</span>
+          </summary>
+          <div className="message-meta-popover-card">
+            <div className="message-meta-popover-title">Message details</div>
+            <dl>
+              <div>
+                <dt>Author</dt>
+                <dd>You</dd>
+              </div>
+              <div>
+                <dt>Runtime</dt>
+                <dd>{CLI_SHORT_LABELS[cli]}</dd>
+              </div>
+              {model && (
+                <div>
+                  <dt>Model</dt>
+                  <dd className="mono">{toClaudeAlias(model) ?? model}</dd>
+                </div>
+              )}
+              {reasoningEffort && (
+                <div>
+                  <dt>Reasoning</dt>
+                  <dd>{formatReasoningEffort(reasoningEffort)} effort</dd>
+                </div>
+              )}
+            </dl>
+          </div>
+        </details>
+        <div className="user-message-text whitespace-pre-wrap">{message}</div>
         <MediaPreviewGrid refs={mediaRefs} sessionId={sessionId} />
       </div>
     </div>

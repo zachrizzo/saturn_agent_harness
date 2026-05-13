@@ -43,6 +43,7 @@ type Props = {
   onPinContext?: (text: string, label: string) => void | Promise<void>;
   onClose?: () => void;
   requestedTab?: { key: InspectorTabKey; requestId: number } | null;
+  onRequestedTabHandled?: (requestId: number) => void;
 };
 
 function sameInspectorTool(a: InspectorTool, b: InspectorTool): boolean {
@@ -97,6 +98,22 @@ const INSPECTOR_TABS: Array<{ key: InspectorTabKey; label: string }> = [
   { key: "web", label: "Web" },
   { key: "tokens", label: "Tokens" },
 ];
+
+const INSPECTOR_TAB_STORAGE_KEY = "saturn.inspector.activeTab";
+
+function isInspectorTabKey(value: string | null): value is InspectorTabKey {
+  return INSPECTOR_TABS.some((item) => item.key === value);
+}
+
+function readStoredInspectorTab(): InspectorTabKey {
+  if (typeof window === "undefined") return "tool";
+  try {
+    const storedTab = window.localStorage.getItem(INSPECTOR_TAB_STORAGE_KEY);
+    return isInspectorTabKey(storedTab) ? storedTab : "tool";
+  } catch {
+    return "tool";
+  }
+}
 type FilesFilter = "all" | "changes" | "files";
 type FileDiscoveryStatus = "idle" | "loading" | "ready";
 
@@ -1092,8 +1109,9 @@ export const Inspector = memo(function Inspector({
   onPinContext,
   onClose,
   requestedTab,
+  onRequestedTabHandled,
 }: Props) {
-  const [tab, setTab] = useState<InspectorTabKey>("tool");
+  const [tab, setTab] = useState<InspectorTabKey>(() => readStoredInspectorTab());
   const [filesFilter, setFilesFilter] = useState<FilesFilter>("all");
   const [fileSearch, setFileSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -1127,11 +1145,22 @@ export const Inspector = memo(function Inspector({
   const pendingPtyDataRef = useRef("");
   const resizeCleanupRef = useRef<(() => void) | null>(null);
   const latestTurn = session.turns.at(-1);
+  const selectTab = useCallback((nextTab: InspectorTabKey) => {
+    setTab(nextTab);
+    if (typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem(INSPECTOR_TAB_STORAGE_KEY, nextTab);
+      } catch {
+        // Ignore storage failures; the in-memory tab state still updates.
+      }
+    }
+  }, []);
 
   useEffect(() => {
     if (!requestedTab) return;
-    setTab(requestedTab.key);
-  }, [requestedTab?.key, requestedTab?.requestId]);
+    selectTab(requestedTab.key);
+    onRequestedTabHandled?.(requestedTab.requestId);
+  }, [onRequestedTabHandled, requestedTab, selectTab]);
 
   useEffect(() => {
     if (!panelExpanded) return;
@@ -1163,8 +1192,8 @@ export const Inspector = memo(function Inspector({
   }, []);
   const viewToolTerminal = useCallback((toolId: string) => {
     setSelectedTerminalId(agentBashTerminalId(session.session_id, toolId));
-    setTab("terminal");
-  }, [session.session_id]);
+    selectTab("terminal");
+  }, [selectTab, session.session_id]);
   const selectTerminalId = useCallback((terminalId: string) => {
     setSelectedTerminalId(terminalId);
   }, []);
@@ -1315,7 +1344,6 @@ export const Inspector = memo(function Inspector({
   useEffect(() => {
     if (activeTool) {
       setSelectedId(activeTool.id);
-      setTab("tool");
       if (isBashInspectorTool(activeTool)) {
         setSelectedTerminalId(agentBashTerminalId(session.session_id, activeTool.id));
       }
@@ -1429,7 +1457,7 @@ export const Inspector = memo(function Inspector({
       });
       setSessionTerminals((current) => upsertTerminalRecord(current, data.terminal));
       setSelectedTerminalId(data.terminal.id);
-      setTab("terminal");
+      selectTab("terminal");
     } catch (err) {
       setTerminalCreateError(err instanceof Error ? err.message : "Failed to create terminal.");
     } finally {
@@ -1697,10 +1725,10 @@ export const Inspector = memo(function Inspector({
 
   useEffect(() => {
     if (!fileOpenRequest?.path) return;
-    setTab("files");
+    selectTab("files");
     setFilesFilter("files");
     setSelectedFile(fileOpenRequest.path);
-  }, [fileOpenRequest?.requestId, fileOpenRequest?.path]);
+  }, [fileOpenRequest?.requestId, fileOpenRequest?.path, selectTab]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1814,7 +1842,7 @@ export const Inspector = memo(function Inspector({
         <select
           className="insp-tab-menu-select"
           value={tab}
-          onChange={(event) => setTab(event.target.value as InspectorTabKey)}
+          onChange={(event) => selectTab(event.target.value as InspectorTabKey)}
           aria-label="Inspector panel"
         >
           {inspectorTabOptions.map((item) => (
