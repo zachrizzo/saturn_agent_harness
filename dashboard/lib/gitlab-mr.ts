@@ -72,6 +72,8 @@ export type GitLabMergeRequestContextOptions = {
   maxDiffChars?: number;
 };
 
+export const GITLAB_MR_SESSION_TAG = "gitlab-mr";
+export const GITLAB_MR_SESSION_TAG_PREFIX = "gitlab-mr:";
 const DEFAULT_CONTEXT_DIFF_CHARS = 9_000;
 
 export function parseGitLabMergeRequestUrl(rawUrl: string): ParsedGitLabMergeRequestUrl {
@@ -115,6 +117,23 @@ export function parseGitLabMergeRequestUrl(rawUrl: string): ParsedGitLabMergeReq
     projectPath: projectSegments.join("/"),
     iid: Number(iidRaw),
   };
+}
+
+export function gitLabMergeRequestKey(parsed: ParsedGitLabMergeRequestUrl): string {
+  const host = new URL(parsed.instanceUrl).hostname.toLowerCase();
+  return `${host}/${parsed.projectPath}!${parsed.iid}`;
+}
+
+export function gitLabMergeRequestSessionTag(parsed: ParsedGitLabMergeRequestUrl): string {
+  return `${GITLAB_MR_SESSION_TAG_PREFIX}${gitLabMergeRequestKey(parsed)}`;
+}
+
+export function gitLabMergeRequestSessionTagFromUrl(rawUrl: string): string | null {
+  try {
+    return gitLabMergeRequestSessionTag(parseGitLabMergeRequestUrl(rawUrl));
+  } catch {
+    return null;
+  }
 }
 
 export function diffStats(diff: string): { additions: number; deletions: number } {

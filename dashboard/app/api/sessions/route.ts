@@ -8,6 +8,7 @@ import {
   sessionDir,
   type Agent,
   type CLI,
+  type PinnedContextItem,
   type SessionMeta,
 } from "@/lib/runs";
 import { spawnTurn } from "@/lib/turn";
@@ -25,6 +26,7 @@ export const runtime = "nodejs";
 type CreateSessionBody = {
   agent_id?: string;
   message?: string;
+  idle?: boolean;
   cli?: CLI;
   model?: string;
   cwd?: string;
@@ -41,6 +43,13 @@ type CreateSessionBody = {
     timeout_seconds?: number;
   };
   overrides?: SessionMeta["overrides"];
+  tags?: string[];
+  title_override?: string;
+  pinned_context?: Array<{
+    text?: string;
+    label?: string;
+    role?: PinnedContextItem["role"];
+  }>;
 };
 
 type CreateSessionRequest = {
@@ -86,6 +95,34 @@ function validateStringArray(value: unknown, field: string): string | null {
     return `${field} must be an array of non-empty strings`;
   }
   return null;
+}
+
+function cleanStringList(value: string[] | undefined): string[] | undefined {
+  if (!value) return undefined;
+  const cleaned = Array.from(new Set(value.map((item) => item.trim()).filter(Boolean)));
+  return cleaned.length > 0 ? cleaned : undefined;
+}
+
+function normalizeInitialPinnedContext(
+  value: CreateSessionBody["pinned_context"],
+  now: string,
+): PinnedContextItem[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const items = value.flatMap((item): PinnedContextItem[] => {
+    const text = item.text?.trim();
+    if (!text) return [];
+    const role = item.role === "user" || item.role === "assistant" || item.role === "tool" || item.role === "context"
+      ? item.role
+      : "context";
+    return [{
+      id: randomUUID(),
+      role,
+      text,
+      label: item.label?.trim() || "Pinned context",
+      created_at: now,
+    }];
+  });
+  return items.length > 0 ? items : undefined;
 }
 
 function validateSessionOverrides(overrides: CreateSessionBody["overrides"]): string | null {
@@ -176,7 +213,8 @@ export async function POST(req: NextRequest) {
     throw err;
   }
   const message = body.message?.trim();
-  if (!message) {
+  const idle = body.idle === true;
+  if (!message && !idle) {
     return NextResponse.json({ error: "message is required" }, { status: 400 });
   }
 
@@ -220,8 +258,12 @@ export async function POST(req: NextRequest) {
   if (allowedToolsError) {
     return NextResponse.json({ error: allowedToolsError }, { status: 400 });
   }
+  const tagsError = validateStringArray(body.tags, "tags");
+  if (tagsError) {
+    return NextResponse.json({ error: tagsError }, { status: 400 });
+  }
 
-  if (isBedrockCli(cli)) {
+  if (!idle && isBedrockCli(cli)) {
     try {
       await assertBedrockSsoReady();
     } catch (err) {
@@ -235,14 +277,22 @@ export async function POST(req: NextRequest) {
   const session_id = randomUUID();
   const dir = sessionDir(session_id);
   const now = new Date().toISOString();
+  const tags = cleanStringList(body.tags);
+  const titleOverride = typeof body.title_override === "string" && body.title_override.trim()
+    ? body.title_override.trim()
+    : undefined;
+  const pinnedContext = normalizeInitialPinnedContext(body.pinned_context, now);
   const meta: SessionMeta = {
     session_id,
     agent_id: body.agent_id,
     agent_snapshot: sessionAgent,
     started_at: now,
-    status: "running",
+    status: idle ? "idle" : "running",
     turns: [],
     overrides: body.overrides,
+    ...(tags ? { tags } : {}),
+    ...(titleOverride ? { title_override: titleOverride } : {}),
+    ...(pinnedContext ? { pinned_context: pinnedContext } : {}),
   };
 
   await fs.mkdir(dir, { recursive: true });
@@ -250,9 +300,13 @@ export async function POST(req: NextRequest) {
   await fs.writeFile(path.join(dir, "stream.jsonl"), "", "utf8");
   await fs.writeFile(path.join(dir, "stderr.log"), "", "utf8");
 
+  if (idle) {
+    return NextResponse.json({ session_id });
+  }
+
   try {
     const uploads = await saveSessionUploads(session_id, files);
-    const messageWithUploads = appendUploadReferences(message, uploads);
+    const messageWithUploads = appendUploadReferences(message ?? "", uploads);
     await spawnTurn(session_id, cli, model, messageWithUploads, sessionAgent, body.mcpTools, reasoningEffort);
     return NextResponse.json({ session_id, message: messageWithUploads });
   } catch (err) {

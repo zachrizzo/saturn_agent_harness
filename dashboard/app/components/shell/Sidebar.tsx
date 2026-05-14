@@ -12,6 +12,7 @@ import {
   IconHome,
   IconJob,
   IconMemory,
+  IconMergeRequest,
   IconPanelLeftClose,
   IconPanelLeftOpen,
   IconSettings,
@@ -35,6 +36,7 @@ function matchPrefix(...prefixes: string[]): (p: string) => boolean {
 const NAV: NavItem[] = [
   { href: "/",       label: "Home",   icon: <IconHome />,  match: (p) => p === "/" },
   { href: "/chats",  label: "Chats",  icon: <IconChat />,  match: matchPrefix("/chats", "/chat") },
+  { href: "/mrs",    label: "MRs",    icon: <IconMergeRequest />, match: matchPrefix("/mrs") },
   { href: "/terminals", label: "Terminals", icon: <IconTerminal />, match: matchPrefix("/terminals") },
   { href: "/memory", label: "Memory", icon: <IconMemory />, match: matchPrefix("/memory") },
   { href: "/dispatch", label: "Dispatch", icon: <IconDispatch />, match: matchPrefix("/dispatch") },

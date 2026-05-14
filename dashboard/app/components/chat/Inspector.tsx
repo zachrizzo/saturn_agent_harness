@@ -41,6 +41,7 @@ type Props = {
   onInsertIntoComposer?: (text: string) => void;
   onAttachToComposer?: (attachment: ComposerContextAttachment) => void;
   onPinContext?: (text: string, label: string) => void | Promise<void>;
+  initialMrUrl?: string;
   onClose?: () => void;
   requestedTab?: { key: InspectorTabKey; requestId: number } | null;
   onRequestedTabHandled?: (requestId: number) => void;
@@ -1107,6 +1108,7 @@ export const Inspector = memo(function Inspector({
   onInsertIntoComposer,
   onAttachToComposer,
   onPinContext,
+  initialMrUrl,
   onClose,
   requestedTab,
   onRequestedTabHandled,
@@ -2153,6 +2155,7 @@ export const Inspector = memo(function Inspector({
         <GitLabMergeRequestReview
           cacheKey={session.session_id}
           panelWidth={width}
+          initialUrl={initialMrUrl}
           onInsertIntoComposer={onInsertIntoComposer}
           onAttachToComposer={onAttachToComposer}
           onPinContext={onPinContext}

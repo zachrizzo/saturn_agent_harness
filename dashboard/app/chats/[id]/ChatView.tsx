@@ -15,6 +15,11 @@ import { Composer, type ComposerContextAttachment, type ComposerHandle } from "@
 import { Inspector, type InspectorTabKey, type InspectorTool } from "@/app/components/chat/Inspector";
 import { ToolSelectionProvider } from "@/app/components/chat/tool-selection";
 import {
+  DEFAULT_INSPECTOR_WIDTH,
+  readStoredInspectorWidth,
+  writeStoredInspectorWidth,
+} from "@/app/components/chat/inspector-width";
+import {
   backgroundActivityDismissKey,
   backgroundRunStatus,
   backgroundSubAgentRows,
@@ -36,6 +41,8 @@ type Props = {
   initialVisibleEventsPartial?: boolean;
   pendingMessage?: string;
   hiddenMcpImageServers?: string[];
+  initialInspectorTab?: InspectorTabKey;
+  initialMrUrl?: string;
 };
 type SseStartOverride =
   | { mode: "afterTurnId"; turnId: string }
@@ -82,7 +89,6 @@ const INITIAL_SNAPSHOT_FRESHEN_DELAY_MS = 650;
 const INITIAL_NATIVE_AGENTS_REFRESH_DELAY_MS = 500;
 const INITIAL_VISIBLE_TURNS = 4;
 const VISIBLE_TURN_INCREMENT = 8;
-const INSPECTOR_WIDTH_KEY = "saturn.inspectorWidth";
 const INSPECTOR_COLLAPSED_KEY = "saturn.inspectorCollapsed";
 const MOBILE_INSPECTOR_OPEN_KEY = "saturn.mobileInspectorOpen";
 const DISMISSED_BACKGROUND_ACTIVITY_KEY_PREFIX = "saturn.dismissedBackgroundActivity";
@@ -470,6 +476,8 @@ export function ChatView({
   initialVisibleEventsPartial,
   pendingMessage,
   hiddenMcpImageServers,
+  initialInspectorTab,
+  initialMrUrl,
 }: Props) {
   const router = useRouter();
 
@@ -540,7 +548,7 @@ export function ChatView({
   const initialFreshenSessionRef = useRef<string | null>(null);
   const [editingTurnIndex, setEditingTurnIndex] = useState<number | null>(null);
   const turnRefs = useRef<Map<number, HTMLDivElement>>(new Map());
-  const [inspectorWidth, setInspectorWidth] = useState(420);
+  const [inspectorWidth, setInspectorWidth] = useState<number | null>(null);
   const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
   const [inspectorTabRequest, setInspectorTabRequest] = useState<{ key: InspectorTabKey; requestId: number } | null>(null);
   const [referencedFiles, setReferencedFiles] = useState<string[]>([]);
@@ -558,6 +566,7 @@ export function ChatView({
   const [stoppingBackgroundRuns, setStoppingBackgroundRuns] = useState<Set<string>>(() => new Set());
   const [backgroundingCurrentTurn, setBackgroundingCurrentTurn] = useState(false);
   const [dismissedBackgroundActivity, setDismissedBackgroundActivity] = useState<Set<string>>(() => new Set());
+  const effectiveInspectorWidth = inspectorWidth ?? DEFAULT_INSPECTOR_WIDTH;
 
   // Tool selection — drives Inspector content.
   const [activeToolId, setActiveToolId] = useState<string | null>(null);
@@ -619,21 +628,21 @@ export function ChatView({
     }).catch(() => {});
   }, [sessionId]);
 
-  useEffect(() => {
-    const stored = Number(window.localStorage.getItem(INSPECTOR_WIDTH_KEY));
-    if (Number.isFinite(stored) && stored >= 320 && stored <= 1100) {
-      setInspectorWidth(stored);
-    }
+  useLayoutEffect(() => {
+    const storedWidth = readStoredInspectorWidth(sessionId);
+    setInspectorWidth(storedWidth);
+    document.documentElement.style.setProperty("--persisted-inspector-width", `${storedWidth}px`);
     const collapsed = window.localStorage.getItem(INSPECTOR_COLLAPSED_KEY) === "1";
     setInspectorCollapsed(collapsed);
     setDocumentInspectorCollapsed(collapsed);
     setMobileInspectorOpen(window.localStorage.getItem(MOBILE_INSPECTOR_OPEN_KEY) === "1");
-  }, []);
+  }, [sessionId]);
 
   useEffect(() => {
-    window.localStorage.setItem(INSPECTOR_WIDTH_KEY, String(inspectorWidth));
+    if (inspectorWidth === null) return;
+    writeStoredInspectorWidth(sessionId, inspectorWidth);
     document.documentElement.style.setProperty("--persisted-inspector-width", `${inspectorWidth}px`);
-  }, [inspectorWidth]);
+  }, [inspectorWidth, sessionId]);
 
   useEffect(() => {
     window.localStorage.setItem(INSPECTOR_COLLAPSED_KEY, inspectorCollapsed ? "1" : "0");
@@ -1651,6 +1660,11 @@ export function ChatView({
     setMobileInspectorOpen(true);
   }, []);
 
+  useEffect(() => {
+    if (!initialInspectorTab) return;
+    openInspectorTab(initialInspectorTab);
+  }, [initialInspectorTab, openInspectorTab, sessionId]);
+
   const clearInspectorTabRequest = useCallback((requestId: number) => {
     setInspectorTabRequest((current) => current?.requestId === requestId ? null : current);
   }, []);
@@ -2084,7 +2098,7 @@ export function ChatView({
           mobileInspectorOpen ? "inspector-open" : "",
           inspectorCollapsed ? "inspector-collapsed" : "",
         ].filter(Boolean).join(" ")}
-        style={{ "--inspector-width": `var(--persisted-inspector-width, ${inspectorWidth}px)` } as CSSProperties}
+        style={{ "--inspector-width": `var(--persisted-inspector-width, ${effectiveInspectorWidth}px)` } as CSSProperties}
       >
         <div className="chat-main">
           <header className="chat-header" title={headerDetails || sessionId}>
@@ -2383,7 +2397,7 @@ export function ChatView({
           tools={tools}
           tokens={tokens}
           events={renderedEvents}
-          width={inspectorWidth}
+          width={effectiveInspectorWidth}
           onWidthChange={setInspectorWidth}
           backgroundActivities={visibleBackgroundActivityRows}
           isBackgroundActivityStopping={isBackgroundActivityStopping}
@@ -2395,6 +2409,7 @@ export function ChatView({
           onInsertIntoComposer={insertIntoComposer}
           onAttachToComposer={attachContextToComposer}
           onPinContext={pinInspectorContext}
+          initialMrUrl={initialMrUrl}
           onClose={() => setMobileInspectorOpen(false)}
           requestedTab={inspectorTabRequest}
           onRequestedTabHandled={clearInspectorTabRequest}

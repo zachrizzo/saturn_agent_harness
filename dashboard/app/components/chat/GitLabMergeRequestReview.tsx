@@ -27,6 +27,7 @@ type ReviewState =
 type Props = {
   cacheKey?: string;
   panelWidth?: number;
+  initialUrl?: string;
   onInsertIntoComposer?: (text: string) => void;
   onAttachToComposer?: (attachment: ComposerContextAttachment) => void;
   onPinContext?: (text: string, label: string) => void | Promise<void>;
@@ -717,7 +718,7 @@ function MergeRequestDiff({
   );
 }
 
-export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoComposer, onAttachToComposer, onPinContext }: Props) {
+export function GitLabMergeRequestReview({ cacheKey, panelWidth, initialUrl, onInsertIntoComposer, onAttachToComposer, onPinContext }: Props) {
   const filePanelWidthStorageKey = cacheKey ? `${MR_FILES_WIDTH_STORAGE_PREFIX}:${cacheKey}` : MR_FILES_WIDTH_STORAGE_PREFIX;
   const filePanelHeightStorageKey = cacheKey ? `${MR_FILES_HEIGHT_STORAGE_PREFIX}:${cacheKey}` : MR_FILES_HEIGHT_STORAGE_PREFIX;
   const fileViewCollapsedStorageKey = cacheKey
@@ -745,6 +746,7 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
   const filePanelHeightRef = useRef(filePanelHeight);
   const suppressNextRowClickRef = useRef(false);
   const restoredStorageKeyRef = useRef<string | null>(null);
+  const loadedInitialUrlRef = useRef<string | null>(null);
   const loadRequestIdRef = useRef(0);
 
   const review = state.status === "ok" ? state.data : null;
@@ -976,6 +978,7 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
   useEffect(() => {
     if (restoredStorageKeyRef.current === storageKey) return;
     restoredStorageKeyRef.current = storageKey;
+    if (initialUrl?.trim()) return;
     const cachedUrl = window.localStorage.getItem(storageKey)?.trim();
     if (!cachedUrl) {
       loadRequestIdRef.current += 1;
@@ -988,7 +991,18 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, onInsertIntoCom
       return;
     }
     void loadMergeRequestUrl(cachedUrl, false);
-  }, [loadMergeRequestUrl, storageKey]);
+  }, [initialUrl, loadMergeRequestUrl, storageKey]);
+
+  useEffect(() => {
+    const requestedUrl = initialUrl?.trim();
+    if (!requestedUrl) return;
+    const normalized = normalizeUrl(requestedUrl);
+    if (!normalized) return;
+    const key = `${storageKey}:${normalized}`;
+    if (loadedInitialUrlRef.current === key) return;
+    loadedInitialUrlRef.current = key;
+    void loadMergeRequestUrl(normalized, true);
+  }, [initialUrl, loadMergeRequestUrl, storageKey]);
 
   const loadMergeRequest = async (event?: FormEvent<HTMLFormElement>) => {
     event?.preventDefault();

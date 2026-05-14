@@ -33,7 +33,16 @@ const uiPrefsScript = `
     if (localStorage.getItem("saturn.inspectorCollapsed") === "1") {
       root.setAttribute("data-chat-inspector-collapsed", "1");
     }
-    var width = Number(localStorage.getItem("saturn.inspectorWidth"));
+    var widthKey = "saturn.inspectorWidth";
+    var chatMatch = window.location.pathname.match(/^\\/chats\\/([^/?#]+)/);
+    if (chatMatch && chatMatch[1]) {
+      widthKey = "saturn.inspectorWidth:" + decodeURIComponent(chatMatch[1]);
+    }
+    var widthRaw = localStorage.getItem(widthKey);
+    var width = Number(widthRaw);
+    if ((widthRaw === null || !Number.isFinite(width) || width < 320 || width > 1100) && widthKey !== "saturn.inspectorWidth") {
+      width = Number(localStorage.getItem("saturn.inspectorWidth"));
+    }
     if (Number.isFinite(width) && width >= 320 && width <= 1100) {
       root.style.setProperty("--persisted-inspector-width", width + "px");
     }

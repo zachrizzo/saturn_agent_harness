@@ -1,6 +1,6 @@
 "use client";
 
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import Link from "next/link";
 import type { SessionMeta, CLI } from "@/lib/runs";
@@ -13,6 +13,11 @@ import { MessageBubble } from "@/app/components/chat/MessageBubble";
 import { Composer, type ComposerHandle } from "@/app/components/chat/Composer";
 import { Inspector, type InspectorTool } from "@/app/components/chat/Inspector";
 import { ToolSelectionProvider } from "@/app/components/chat/tool-selection";
+import {
+  DEFAULT_INSPECTOR_WIDTH,
+  readStoredInspectorWidth,
+  writeStoredInspectorWidth,
+} from "@/app/components/chat/inspector-width";
 import type { SliceEntry } from "./SliceLane";
 import { SliceLanes } from "./SliceLanes";
 import { CLI_SHORT_LABELS, DEFAULT_CLI, normalizeCli } from "@/lib/clis";
@@ -28,7 +33,6 @@ type Props = {
 };
 
 const STREAM_EVENT_FLUSH_MS = 250;
-const INSPECTOR_WIDTH_KEY = "saturn.inspectorWidth";
 const INSPECTOR_COLLAPSED_KEY = "saturn.inspectorCollapsed";
 const MOBILE_INSPECTOR_OPEN_KEY = "saturn.mobileInspectorOpen";
 
@@ -130,19 +134,19 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
-  const [inspectorWidth, setInspectorWidth] = useState(420);
+  const [inspectorWidth, setInspectorWidth] = useState<number | null>(null);
   const [compactInspectorLayout, setCompactInspectorLayout] = useState(false);
   const [activeToolId, setActiveToolId] = useState<string | null>(null);
   const [referencedFiles, setReferencedFiles] = useState<string[]>([]);
   const [fileOpenRequest, setFileOpenRequest] = useState<{ path: string; requestId: number } | null>(null);
   const fileOpenRequestId = useRef(0);
+  const effectiveInspectorWidth = inspectorWidth ?? DEFAULT_INSPECTOR_WIDTH;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     mountedRef.current = true;
-    const stored = Number(window.localStorage.getItem(INSPECTOR_WIDTH_KEY));
-    if (Number.isFinite(stored) && stored >= 320 && stored <= 1100) {
-      setInspectorWidth(stored);
-    }
+    const storedWidth = readStoredInspectorWidth(sessionId);
+    setInspectorWidth(storedWidth);
+    document.documentElement.style.setProperty("--persisted-inspector-width", `${storedWidth}px`);
     const collapsed = window.localStorage.getItem(INSPECTOR_COLLAPSED_KEY) === "1";
     setInspectorCollapsed(collapsed);
     setDocumentInspectorCollapsed(collapsed);
@@ -150,12 +154,13 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
     return () => {
       mountedRef.current = false;
     };
-  }, []);
+  }, [sessionId]);
 
   useEffect(() => {
-    window.localStorage.setItem(INSPECTOR_WIDTH_KEY, String(inspectorWidth));
+    if (inspectorWidth === null) return;
+    writeStoredInspectorWidth(sessionId, inspectorWidth);
     document.documentElement.style.setProperty("--persisted-inspector-width", `${inspectorWidth}px`);
-  }, [inspectorWidth]);
+  }, [inspectorWidth, sessionId]);
 
   useEffect(() => {
     window.localStorage.setItem(INSPECTOR_COLLAPSED_KEY, inspectorCollapsed ? "1" : "0");
@@ -600,7 +605,7 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
     <ToolSelectionProvider value={toolSelection}>
       <div
         className={`chat-shell ${mobileInspectorOpen ? "inspector-open" : ""} ${inspectorCollapsed ? "inspector-collapsed" : ""}`.trim()}
-        style={{ "--inspector-width": `var(--persisted-inspector-width, ${inspectorWidth}px)` } as CSSProperties}
+        style={{ "--inspector-width": `var(--persisted-inspector-width, ${effectiveInspectorWidth}px)` } as CSSProperties}
       >
         <div className="chat-main">
         {/* Header */}
@@ -741,7 +746,7 @@ export function SwarmView({ sessionId, initialMeta, initialEvents, hiddenMcpImag
         tools={tools}
         tokens={tokens}
         events={events}
-        width={inspectorWidth}
+        width={effectiveInspectorWidth}
         onWidthChange={setInspectorWidth}
         referencedFiles={referencedFiles}
         fileOpenRequest={fileOpenRequest}
