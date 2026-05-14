@@ -175,6 +175,31 @@ function shortDate(value?: string): string {
   });
 }
 
+function fullDate(value?: string): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function shortSha(value?: string): string {
+  return value ? value.slice(0, 12) : "";
+}
+
+function statusClass(value?: string): string {
+  return (value || "unknown").toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+}
+
+function pipelineLabel(review: GitLabMergeRequestReviewData): string {
+  return review.pipelineStatusLabel || review.pipelineStatus || "No pipeline visible";
+}
+
 function selectedFileForPath(
   review: GitLabMergeRequestReviewData,
   selectedPath: string | null,
@@ -502,7 +527,15 @@ function gitLabCommentHref(href: string | undefined, instanceUrl: string): strin
   }
 }
 
-function MarkdownComment({ body, instanceUrl }: { body: string; instanceUrl: string }) {
+function GitLabMarkdown({
+  body,
+  instanceUrl,
+  className,
+}: {
+  body: string;
+  instanceUrl: string;
+  className: string;
+}) {
   const components = useMemo<Components>(() => ({
     a: ({ href, children, ...props }) => (
       <a href={gitLabCommentHref(href, instanceUrl)} target="_blank" rel="noreferrer" {...props}>
@@ -517,12 +550,41 @@ function MarkdownComment({ body, instanceUrl }: { body: string; instanceUrl: str
   }), [instanceUrl]);
 
   return (
-    <div className="insp-mr-comment-body prose-dashboard">
+    <div className={className}>
       <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS} components={components}>
         {body}
       </ReactMarkdown>
     </div>
   );
+}
+
+function MarkdownComment({ body, instanceUrl }: { body: string; instanceUrl: string }) {
+  return <GitLabMarkdown body={body} instanceUrl={instanceUrl} className="insp-mr-comment-body prose-dashboard" />;
+}
+
+function detailRows(
+  review: GitLabMergeRequestReviewData,
+  unresolvedComments: number,
+  resolvedComments: number,
+): Array<{ label: string; value: string; title?: string }> {
+  return [
+    { label: "Project", value: review.projectPath },
+    { label: "Author", value: review.authorName || "Unknown" },
+    { label: "State", value: `${review.state}${review.draft ? " draft" : ""}` },
+    { label: "Source", value: review.sourceBranch || "Unknown" },
+    { label: "Target", value: review.targetBranch || "Unknown" },
+    { label: "Created", value: fullDate(review.createdAt) || "Unknown" },
+    { label: "Updated", value: fullDate(review.updatedAt) || "Unknown" },
+    { label: "Merge status", value: review.detailedMergeStatus || review.mergeStatus || "Unknown" },
+    { label: "Commit", value: shortSha(review.sha) || "Unknown", title: review.sha },
+    { label: "Pipeline", value: pipelineLabel(review), title: review.pipelineStatusTooltip || review.pipelineWebUrl },
+    { label: "Pipeline ref", value: review.pipelineRef || "Unknown" },
+    { label: "Pipeline SHA", value: shortSha(review.pipelineSha) || "Unknown", title: review.pipelineSha },
+    { label: "Pipeline updated", value: fullDate(review.pipelineUpdatedAt) || "Unknown" },
+    { label: "Changes", value: `${formatCount(review.files)} files, +${formatCount(review.additions)} -${formatCount(review.deletions)}` },
+    { label: "Comments", value: `${formatCount(review.comments.length)} total, ${formatCount(unresolvedComments)} unresolved, ${formatCount(resolvedComments)} resolved` },
+    { label: "Fetched", value: fullDate(review.fetchedAt) || "Unknown" },
+  ];
 }
 
 function MergeRequestDiff({
@@ -750,6 +812,9 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, initialUrl, onI
   const loadRequestIdRef = useRef(0);
 
   const review = state.status === "ok" ? state.data : null;
+  const unresolvedComments = review?.comments.filter((comment) => comment.resolved !== true).length ?? 0;
+  const resolvedComments = review?.comments.filter((comment) => comment.resolved === true).length ?? 0;
+  const mrDetailRows = review ? detailRows(review, unresolvedComments, resolvedComments) : [];
   const storageKey = useMemo(
     () => cacheKey ? `${MR_URL_STORAGE_PREFIX}:${cacheKey}` : MR_URL_STORAGE_PREFIX,
     [cacheKey],
@@ -1268,7 +1333,7 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, initialUrl, onI
 
       {review && (
         <>
-          <details className="insp-mr-summary">
+          <details className="insp-mr-summary" open>
             <summary className="insp-mr-summary-trigger">
               <div className="insp-mr-title" title={review.title}>
                 <span>!{review.iid}</span>
@@ -1279,6 +1344,14 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, initialUrl, onI
                 <span className="add">+{formatCount(scopedAdditions)}</span>
                 <span className="del">-{formatCount(scopedDeletions)}</span>
                 {review.comments.length > 0 && <span>{review.comments.length} comments</span>}
+                {(review.pipelineStatus || review.pipelineStatusLabel) && (
+                  <span
+                    className={`pipeline ${statusClass(review.pipelineStatusGroup || review.pipelineStatus)}`}
+                    title={review.pipelineStatusTooltip || `Pipeline ${pipelineLabel(review)}`}
+                  >
+                    ci {pipelineLabel(review)}
+                  </span>
+                )}
                 {review.warnings.length > 0 && (
                   <span className="warn">
                     {review.warnings.length} warning{review.warnings.length === 1 ? "" : "s"}
@@ -1303,10 +1376,77 @@ export function GitLabMergeRequestReview({ cacheKey, panelWidth, initialUrl, onI
               </div>
               {review.warnings.length > 0 && (
                 <div className="insp-mr-warnings">
-                  {review.warnings.slice(0, 3).map((warning) => (
+                  {review.warnings.map((warning) => (
                     <div key={warning}>{warning}</div>
                   ))}
                 </div>
+              )}
+              <div className="insp-mr-details-section">
+                <div className="insp-mr-section-heading">
+                  <span>Full MR details</span>
+                </div>
+                <dl className="insp-mr-detail-grid">
+                  {mrDetailRows.map((item) => (
+                    <div key={item.label}>
+                      <dt>{item.label}</dt>
+                      <dd title={item.title ?? item.value}>{item.value}</dd>
+                    </div>
+                  ))}
+                </dl>
+                {review.pipelineWebUrl && (
+                  <a
+                    className={`insp-mr-pipeline-link ${statusClass(review.pipelineStatusGroup || review.pipelineStatus)}`}
+                    href={review.pipelineWebUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open pipeline: {pipelineLabel(review)}
+                  </a>
+                )}
+              </div>
+              <div className="insp-mr-description">
+                <div className="insp-mr-section-heading">
+                  <span>Description</span>
+                </div>
+                {review.description?.trim() ? (
+                  <GitLabMarkdown
+                    body={review.description}
+                    instanceUrl={review.instanceUrl}
+                    className="insp-mr-description-body prose-dashboard"
+                  />
+                ) : (
+                  <div className="insp-mr-description-empty">No description provided.</div>
+                )}
+              </div>
+              {review.comments.length > 0 && (
+                <details className="insp-mr-discussions" open>
+                  <summary className="insp-mr-discussions-trigger">
+                    <span>Discussions</span>
+                    <span>
+                      {formatCount(review.comments.length)} total, {formatCount(unresolvedComments)} unresolved, {formatCount(resolvedComments)} resolved
+                    </span>
+                  </summary>
+                  <div className="insp-mr-discussions-list">
+                    {review.comments.map((comment) => {
+                      const line = comment.newLine ?? comment.oldLine;
+                      const location = [
+                        comment.path,
+                        typeof line === "number" ? `line ${line}` : "",
+                      ].filter(Boolean).join(": ");
+                      return (
+                        <div key={`${comment.discussionId}:${comment.id}`} className={`insp-mr-discussion ${comment.resolved ? "resolved" : ""}`.trim()}>
+                          <div className="insp-mr-discussion-head">
+                            <strong>{comment.authorName || comment.authorUsername || "GitLab comment"}</strong>
+                            {formatCommentDate(comment.createdAt) && <span>{formatCommentDate(comment.createdAt)}</span>}
+                            {location && <span title={location}>{location}</span>}
+                            {comment.resolved ? <span>resolved</span> : <span className="open">unresolved</span>}
+                          </div>
+                          <MarkdownComment body={comment.body} instanceUrl={review.instanceUrl} />
+                        </div>
+                      );
+                    })}
+                  </div>
+                </details>
               )}
               <div className="insp-mr-actions">
                 <button type="button" className="insp-mr-button quiet" onClick={() => setUrlEditorOpen(true)}>

@@ -25,6 +25,25 @@ const MAX_CONTEXT_FILES = 80;
 const MAX_CONTEXT_FILE_BYTES = 240 * 1024;
 const MAX_CONTEXT_TOTAL_BYTES = 2 * 1024 * 1024;
 
+type GitLabPipelineApi = Record<string, unknown> & {
+  id?: number;
+  iid?: number;
+  status?: string;
+  web_url?: string;
+  ref?: string;
+  sha?: string;
+  created_at?: string;
+  updated_at?: string;
+  started_at?: string;
+  finished_at?: string;
+  detailed_status?: {
+    text?: string;
+    label?: string;
+    group?: string;
+    tooltip?: string;
+  };
+};
+
 type GitLabMergeRequestApi = Record<string, unknown> & {
   title?: string;
   state?: string;
@@ -41,6 +60,7 @@ type GitLabMergeRequestApi = Record<string, unknown> & {
   merge_status?: string;
   detailed_merge_status?: string;
   sha?: string;
+  head_pipeline?: GitLabPipelineApi | null;
 };
 
 type GitLabDiffApi = Record<string, unknown> & {
@@ -76,6 +96,10 @@ type GitLabDiscussionApi = Record<string, unknown> & {
 
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function boolValue(value: unknown): boolean {
@@ -385,6 +409,19 @@ export async function GET(req: NextRequest) {
       mergeStatus: stringValue(mr.merge_status) || undefined,
       detailedMergeStatus: stringValue(mr.detailed_merge_status) || undefined,
       sha: stringValue(mr.sha) || undefined,
+      pipelineId: numberValue(mr.head_pipeline?.id),
+      pipelineIid: numberValue(mr.head_pipeline?.iid),
+      pipelineStatus: stringValue(mr.head_pipeline?.status) || stringValue(mr.head_pipeline?.detailed_status?.group) || undefined,
+      pipelineStatusLabel: stringValue(mr.head_pipeline?.detailed_status?.label) || stringValue(mr.head_pipeline?.detailed_status?.text) || undefined,
+      pipelineStatusGroup: stringValue(mr.head_pipeline?.detailed_status?.group) || undefined,
+      pipelineStatusTooltip: stringValue(mr.head_pipeline?.detailed_status?.tooltip) || undefined,
+      pipelineWebUrl: stringValue(mr.head_pipeline?.web_url) || undefined,
+      pipelineRef: stringValue(mr.head_pipeline?.ref) || undefined,
+      pipelineSha: stringValue(mr.head_pipeline?.sha) || undefined,
+      pipelineCreatedAt: stringValue(mr.head_pipeline?.created_at) || undefined,
+      pipelineUpdatedAt: stringValue(mr.head_pipeline?.updated_at) || undefined,
+      pipelineStartedAt: stringValue(mr.head_pipeline?.started_at) || undefined,
+      pipelineFinishedAt: stringValue(mr.head_pipeline?.finished_at) || undefined,
       files: diffResult.files.length,
       additions: diffResult.files.reduce((total, file) => total + file.additions, 0),
       deletions: diffResult.files.reduce((total, file) => total + file.deletions, 0),

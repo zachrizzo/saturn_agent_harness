@@ -57,6 +57,19 @@ export type GitLabMergeRequestReview = {
   mergeStatus?: string;
   detailedMergeStatus?: string;
   sha?: string;
+  pipelineId?: number;
+  pipelineIid?: number;
+  pipelineStatus?: string;
+  pipelineStatusLabel?: string;
+  pipelineStatusGroup?: string;
+  pipelineStatusTooltip?: string;
+  pipelineWebUrl?: string;
+  pipelineRef?: string;
+  pipelineSha?: string;
+  pipelineCreatedAt?: string;
+  pipelineUpdatedAt?: string;
+  pipelineStartedAt?: string;
+  pipelineFinishedAt?: string;
   files: number;
   additions: number;
   deletions: number;
@@ -226,6 +239,9 @@ export function formatGitLabMrContext(
     `State: ${review.state}${review.draft ? " (draft)" : ""}`,
     `Branches: ${review.sourceBranch} -> ${review.targetBranch}`,
     `Author: ${review.authorName || "unknown"}`,
+    review.pipelineStatus || review.pipelineStatusLabel
+      ? `Pipeline: ${review.pipelineStatusLabel || review.pipelineStatus}${review.pipelineWebUrl ? ` (${review.pipelineWebUrl})` : ""}`
+      : "",
     `Diff summary: ${review.files} files, +${review.additions} -${review.deletions}`,
     selectedFile ? `Scope: ${scopedLabel}` : "",
     description,
