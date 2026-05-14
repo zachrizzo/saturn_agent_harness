@@ -78,7 +78,8 @@ type NativeAgentsResponse = {
 
 const STREAM_EVENT_FLUSH_MS = 250;
 const BACKGROUND_RUN_POLL_MS = 2500;
-const FULL_HISTORY_AUTO_HYDRATE_DELAY_MS = 900;
+const INITIAL_SNAPSHOT_FRESHEN_DELAY_MS = 650;
+const INITIAL_NATIVE_AGENTS_REFRESH_DELAY_MS = 500;
 const INITIAL_VISIBLE_TURNS = 4;
 const VISIBLE_TURN_INCREMENT = 8;
 const INSPECTOR_WIDTH_KEY = "saturn.inspectorWidth";
@@ -518,7 +519,6 @@ export function ChatView({
   const latestSnapshotRequestRef = useRef(0);
   const terminalRefreshTimerRef = useRef<number | null>(null);
   const editScrollTimerRef = useRef<number | null>(null);
-  const autoHydrateFullDetailsRef = useRef<string | null>(null);
   const activeActionAbortRef = useRef<AbortController | null>(null);
   const activeActionSeqRef = useRef(0);
   const [streaming, setStreaming] = useState(initialMeta.status === "running");
@@ -812,8 +812,10 @@ export function ChatView({
 
   useEffect(() => {
     setNativeAgentRows([]);
-    void refreshNativeAgents();
-  }, [refreshNativeAgents]);
+    if (meta.status === "running" || streaming) return;
+    const timer = window.setTimeout(() => { void refreshNativeAgents(); }, INITIAL_NATIVE_AGENTS_REFRESH_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [meta.status, refreshNativeAgents, streaming]);
 
   useEffect(() => {
     const hasRunningNativeAgent = nativeAgentRows.some((row) => row.status === "run");
@@ -832,7 +834,7 @@ export function ChatView({
   useEffect(() => {
     if (initialFreshenSessionRef.current === sessionId) return;
     initialFreshenSessionRef.current = sessionId;
-    const timer = window.setTimeout(() => { void refreshSessionSnapshot(); }, 80);
+    const timer = window.setTimeout(() => { void refreshSessionSnapshot(); }, INITIAL_SNAPSHOT_FRESHEN_DELAY_MS);
     return () => window.clearTimeout(timer);
   }, [refreshSessionSnapshot, sessionId]);
 
@@ -1087,9 +1089,9 @@ export function ChatView({
       ? `Load ${Math.min(VISIBLE_TURN_INCREMENT, hiddenTurnCount)} earlier`
       : "Load full details";
   const historyGateDetail = visibleEventsPartial && hiddenTurnCount > 0
-    ? `${hiddenTurnCount.toLocaleString()} older turn${hiddenTurnCount === 1 ? "" : "s"} hidden; full reply details are loading`
+    ? `${hiddenTurnCount.toLocaleString()} older turn${hiddenTurnCount === 1 ? "" : "s"} hidden; full details available on demand`
     : visibleEventsPartial
-    ? "Full reply details are loading"
+    ? "Full reply details available on demand"
     : hiddenTurnCount > 0
     ? `${hiddenTurnCount.toLocaleString()} older turn${hiddenTurnCount === 1 ? "" : "s"} hidden`
     : "Full reply details are loaded";
@@ -1101,71 +1103,6 @@ export function ChatView({
     initialBottomReadySessionRef.current = null;
     bumpInitialBottomPinRender((version) => version + 1);
   }, [sessionId, turnCount, pendingMessage]);
-
-  useEffect(() => {
-    if (!visibleEventsPartial || sessionBusy) return;
-    const hydrationKey = `${sessionId}:${meta.turns.length}`;
-    if (autoHydrateFullDetailsRef.current === hydrationKey) return;
-    autoHydrateFullDetailsRef.current = hydrationKey;
-
-    let cancelled = false;
-    let controller: AbortController | null = null;
-    const timer = window.setTimeout(() => {
-      const generation = snapshotGenerationRef.current;
-      const shouldPinBottom = atBottomRef.current;
-      if (!shouldPinBottom) {
-        const scrollEl = getChatScrollElement();
-        preserveScrollRef.current = {
-          top: scrollEl.scrollTop,
-          height: scrollEl.scrollHeight,
-        };
-      }
-
-      setHistoryLoading(true);
-      void (async () => {
-        controller = new AbortController();
-        try {
-          const params = new URLSearchParams({
-            events: "all",
-            compact: "1",
-            meta: "full",
-          });
-          const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}?${params.toString()}`, {
-            cache: "no-store",
-            signal: controller.signal,
-          });
-          if (!res.ok) return;
-          const data = await res.json() as {
-            meta: SessionMeta;
-            events: StreamEvent[];
-            eventsPartial?: boolean;
-            visibleEventsPartial?: boolean;
-          };
-          if (!mountedRef.current || cancelled || generation !== snapshotGenerationRef.current) {
-            preserveScrollRef.current = null;
-            return;
-          }
-          applySessionSnapshot(data.meta, data.events ?? []);
-          setEventsPartial(Boolean(data.eventsPartial));
-          setVisibleEventsPartial(Boolean(data.visibleEventsPartial ?? data.eventsPartial));
-          if (shouldPinBottom) {
-            window.requestAnimationFrame(() => scrollToEnd("auto"));
-          }
-        } catch {
-          preserveScrollRef.current = null;
-        } finally {
-          controller = null;
-          if (mountedRef.current) setHistoryLoading(false);
-        }
-      })();
-    }, FULL_HISTORY_AUTO_HYDRATE_DELAY_MS);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-      controller?.abort();
-    };
-  }, [applySessionSnapshot, getChatScrollElement, meta.turns.length, scrollToEnd, sessionBusy, sessionId, visibleEventsPartial]);
 
   const loadEarlierTurns = useCallback(async () => {
     if (historyLoading) return;

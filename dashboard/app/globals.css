@@ -10784,6 +10784,36 @@ html.mr-files-resizing-height * {
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
+[data-theme="dark"] .insp-mr-diff .file-viewer-diff-row.add {
+  --diff-row-bg: rgba(35, 134, 54, 0.16);
+  --diff-gutter-bg: rgba(35, 134, 54, 0.22);
+}
+
+[data-theme="dark"] .insp-mr-diff .file-viewer-diff-row.del {
+  --diff-row-bg: rgba(248, 81, 73, 0.14);
+  --diff-gutter-bg: rgba(248, 81, 73, 0.20);
+}
+
+[data-theme="dark"] .insp-mr-diff .file-viewer-diff-row.hunk {
+  --diff-row-bg: rgba(56, 139, 253, 0.16);
+  --diff-gutter-bg: rgba(56, 139, 253, 0.20);
+}
+
+[data-theme="dark"] .insp-mr-diff .file-viewer-diff-gutter,
+[data-theme="dark"] .insp-mr-diff .file-viewer-diff-sign {
+  color: #8b949e;
+}
+
+[data-theme="dark"] .insp-mr-diff .file-viewer-diff-code {
+  color: #c9d1d9;
+}
+
+[data-theme="dark"] .insp-mr-diff .file-viewer-diff-row.add .file-viewer-diff-code,
+[data-theme="dark"] .insp-mr-diff .file-viewer-diff-row.del .file-viewer-diff-code,
+[data-theme="dark"] .insp-mr-diff .file-viewer-diff-row.ctx .file-viewer-diff-code {
+  color: #e6edf3;
+}
+
 .file-viewer-diff-row.search-hit,
 .file-viewer-diff-file.search-hit,
 .file-viewer-diff-section.search-hit {

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Sidebar } from "./Sidebar";
+import { OPEN_NAVIGATION_DRAWER_EVENT } from "./sidebar-events";
 
 const SIDEBAR_COLLAPSED_KEY = "saturn:sidebar-collapsed";
 
@@ -37,6 +38,12 @@ export function DesktopSidebar(): JSX.Element {
     if (!loaded) return;
     setStoredSidebarCollapsed(collapsed);
   }, [collapsed, loaded]);
+
+  useEffect(() => {
+    const openSidebar = () => setCollapsed(false);
+    window.addEventListener(OPEN_NAVIGATION_DRAWER_EVENT, openSidebar);
+    return () => window.removeEventListener(OPEN_NAVIGATION_DRAWER_EVENT, openSidebar);
+  }, []);
 
   return (
     <aside

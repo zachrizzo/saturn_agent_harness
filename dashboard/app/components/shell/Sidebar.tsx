@@ -292,6 +292,7 @@ export function Sidebar({
   const [archiving, setArchiving] = useState<string | null>(null);
   const [hiddenIds, setHiddenIds] = useState<Set<string>>(new Set());
   const seenMapRef = useRef<Record<string, string>>({});
+  const prefetchedChatHrefsRef = useRef<Set<string>>(new Set());
 
   const archiveChat = useCallback(async (e: React.MouseEvent, id: string) => {
     e.preventDefault();
@@ -322,6 +323,12 @@ export function Sidebar({
     markSeen(id, seenAt);
     setSeenMap((prev) => ({ ...prev, [id]: seenAt }));
   }, []);
+
+  const prefetchChat = useCallback((href: string) => {
+    if (href === pathname || prefetchedChatHrefsRef.current.has(href)) return;
+    prefetchedChatHrefsRef.current.add(href);
+    router.prefetch(href);
+  }, [pathname, router]);
 
   // Load from localStorage on mount (client-only)
   useEffect(() => {
@@ -509,6 +516,8 @@ export function Sidebar({
                         <Link
                           href={href}
                           prefetch={false}
+                          onPointerEnter={() => prefetchChat(href)}
+                          onFocus={() => prefetchChat(href)}
                           onClick={(event) => handleDocumentChatClick(event, href, () => {
                             recordSeen(r.id);
                             onNavigate?.();

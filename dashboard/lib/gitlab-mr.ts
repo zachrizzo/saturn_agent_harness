@@ -199,7 +199,7 @@ export function formatGitLabMrContext(
     : "";
 
   return [
-    "GitLab merge request review context",
+    "GitLab merge request context",
     "",
     `MR: !${review.iid} ${review.title}`,
     `URL: ${review.webUrl || review.sourceUrl}`,

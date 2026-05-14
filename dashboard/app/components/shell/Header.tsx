@@ -7,6 +7,7 @@ import { Kbd } from "../ui";
 import { IconSearch, IconMenu, IconX } from "./icons";
 import { Sidebar } from "./Sidebar";
 import { CommandPalette } from "./CommandPalette";
+import { requestNavigationDrawerOpen } from "./sidebar-events";
 
 /**
  * Top app-shell header. Handles:
@@ -21,12 +22,21 @@ export function Header() {
   const drawerRootRef = useRef<HTMLDivElement>(null);
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
 
-  // Global ⌘K / Ctrl+K
+  // Global shell shortcuts.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setPaletteOpen((v) => !v);
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        if (window.matchMedia("(min-width: 768px)").matches) {
+          requestNavigationDrawerOpen();
+        } else {
+          setDrawerOpen(true);
+        }
       }
     }
     window.addEventListener("keydown", onKey);

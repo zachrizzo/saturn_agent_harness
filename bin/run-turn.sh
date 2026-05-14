@@ -67,6 +67,8 @@ source "$AUTOMATIONS_ROOT/bin/lib/session-meta.sh"
 source "$AUTOMATIONS_ROOT/bin/lib/transcript.sh"
 # shellcheck source=lib/memory-context.sh
 source "$AUTOMATIONS_ROOT/bin/lib/memory-context.sh"
+# shellcheck source=lib/mr-intent.sh
+source "$AUTOMATIONS_ROOT/bin/lib/mr-intent.sh"
 
 # saturn_emit_synthetic_failure <phase> <exit_code>
 # Append a synthetic terminator to $STREAM_FILE so the dashboard can render
@@ -416,6 +418,10 @@ if [[ "${SATURN_STEER_TURN:-}" == "1" ]]; then
   PROMPT_USER_MESSAGE="The previous assistant turn was intentionally interrupted by the user. Treat the newest user request as a steering correction or redirect, preserve useful prior context, and continue from there.
 
 $PROMPT_USER_MESSAGE"
+fi
+
+if saturn_should_apply_gitlab_mr_intent_guard "$USER_MESSAGE"; then
+  PROMPT_USER_MESSAGE="$(saturn_prepend_gitlab_mr_intent_guard "$PROMPT_USER_MESSAGE")"
 fi
 
 CLAUDE_SYSTEM_APPEND=""

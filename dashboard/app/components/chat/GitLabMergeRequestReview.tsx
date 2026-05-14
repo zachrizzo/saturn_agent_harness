@@ -14,6 +14,7 @@ import {
 } from "@/lib/gitlab-mr";
 import { parseUnifiedDiff, type ParsedDiff, type ParsedDiffRow } from "@/app/components/chat/FileViewer";
 import type { ComposerContextAttachment } from "@/app/components/chat/Composer";
+import { useTheme, type ResolvedTheme } from "@/app/components/ThemeProvider";
 
 const MARKDOWN_PLUGINS = [remarkGfm];
 
@@ -376,7 +377,10 @@ function commentsForRow(
   return Array.from(new Map(comments.map((comment) => [comment.id, comment])).values());
 }
 
-const SHIKI_THEME = "github-light";
+const SHIKI_THEMES: Record<ResolvedTheme, "github-light-default" | "github-dark-default"> = {
+  light: "github-light-default",
+  dark: "github-dark-default",
+};
 const SHIKI_FONT_STYLE_ITALIC = 1;
 const SHIKI_FONT_STYLE_BOLD = 2;
 const SHIKI_FONT_STYLE_UNDERLINE = 4;
@@ -448,7 +452,7 @@ function plainHighlightedRows(rows: DiffRowWithContext[]): Map<number, Highlight
   return highlighted;
 }
 
-async function highlightDiffRows(rows: DiffRowWithContext[]): Promise<Map<number, HighlightToken[]>> {
+async function highlightDiffRows(rows: DiffRowWithContext[], theme: ResolvedTheme): Promise<Map<number, HighlightToken[]>> {
   const groups = new Map<string, { language: BundledLanguage; rows: Array<{ index: number; text: string }> }>();
   for (const { row, index, filePath } of rows) {
     if (row.kind !== "line") continue;
@@ -467,7 +471,7 @@ async function highlightDiffRows(rows: DiffRowWithContext[]): Promise<Map<number
   await Promise.all(Array.from(groups.values()).map(async (group) => {
     const result = await codeToTokens(group.rows.map((item) => item.text).join("\n"), {
       lang: group.language,
-      theme: SHIKI_THEME,
+      theme: SHIKI_THEMES[theme],
     });
     group.rows.forEach((item, lineIndex) => {
       const tokens = result.tokens[lineIndex] ?? [];
@@ -547,6 +551,7 @@ function MergeRequestDiff({
   onEnterRowSelection: (index: number, event: ReactPointerEvent<HTMLButtonElement>) => void;
   onToggleContext: (key: string) => void;
 }) {
+  const { resolved: theme } = useTheme();
   const rows = useMemo(() => rowsWithFileContext(parsed), [parsed]);
   const renderedRows = useMemo(
     () => renderableRows(rows, sourceByPath, expandedContext),
@@ -560,7 +565,7 @@ function MergeRequestDiff({
   useEffect(() => {
     let cancelled = false;
     setHighlightedRows(plainHighlightedRows(rows));
-    highlightDiffRows(rows)
+    highlightDiffRows(rows, theme)
       .then((next) => {
         if (!cancelled) setHighlightedRows(next);
       })
@@ -570,7 +575,7 @@ function MergeRequestDiff({
     return () => {
       cancelled = true;
     };
-  }, [rows]);
+  }, [rows, theme]);
 
   useEffect(() => {
     if (activeSearchRowIndex === null) return;
@@ -659,7 +664,7 @@ function MergeRequestDiff({
                   onPointerDown={(event) => onStartRowSelection(index, event)}
                   onPointerEnter={(event) => onEnterRowSelection(index, event)}
                   onClick={(event) => onToggleRow(index, event)}
-                  title="Select this line for chat context. Drag or shift-click to select a range."
+                  aria-label="Select this diff line for chat context"
                 >
                   <span className="file-viewer-diff-gutter old">{row.oldLine ?? ""}</span>
                   <span className="file-viewer-diff-gutter new">{row.newLine ?? ""}</span>

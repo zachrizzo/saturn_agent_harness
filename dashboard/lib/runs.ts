@@ -258,7 +258,7 @@ function isENOENT(err: unknown): boolean {
 }
 
 const RECENT_SESSION_EVENT_TURNS = 4;
-const RECENT_SESSION_EVENT_MAX_BYTES = 2 * 1024 * 1024;
+const RECENT_SESSION_EVENT_MAX_BYTES = 512 * 1024;
 const SESSION_STREAM_TAIL_CHUNK_BYTES = 256 * 1024;
 const TURN_START_MARKER = "saturn.turn_start";
 const TURN_END_MARKERS = [
