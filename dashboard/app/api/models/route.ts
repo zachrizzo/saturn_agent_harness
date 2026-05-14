@@ -9,6 +9,7 @@ import { isModelReasoningEffort, normalizeSupportedReasoningEfforts } from "@/li
 import { claudeContextWindow, fallbackClaudeModels } from "@/lib/claude-models";
 import { normalizeCli } from "@/lib/clis";
 import { readBedrockConfig } from "@/lib/bedrock-auth";
+import { awsCliCommand, withAwsCliPath } from "@/lib/aws-cli";
 import { claudeCliReasoningEfforts, reasoningEffortsForCliModel } from "@/lib/model-capabilities";
 import { listCodexModels } from "@/lib/native/codex-app-server";
 
@@ -43,13 +44,14 @@ function claudeReasoningEfforts(id: string, name: string, cliEfforts: NonNullabl
 
 async function getClaudeModels(): Promise<Model[]> {
   const { profile: awsProfile, region: awsRegion } = await readBedrockConfig();
-  const env = { ...process.env, AWS_PROFILE: awsProfile, AWS_REGION: awsRegion, AWS_PAGER: "" };
+  const env = withAwsCliPath({ ...process.env, AWS_PROFILE: awsProfile, AWS_REGION: awsRegion, AWS_PAGER: "" });
   const cliEfforts = await claudeCliReasoningEfforts();
+  const aws = awsCliCommand();
 
   const [profilesOut, foundationOut] = await Promise.all([
-    execFileAsync("aws", ["bedrock", "list-inference-profiles", "--profile", awsProfile, "--region", awsRegion, "--output", "json", "--no-cli-pager"], { env })
+    execFileAsync(aws, ["bedrock", "list-inference-profiles", "--profile", awsProfile, "--region", awsRegion, "--output", "json", "--no-cli-pager"], { env })
       .catch(() => ({ stdout: '{"inferenceProfileSummaries":[]}' })),
-    execFileAsync("aws", ["bedrock", "list-foundation-models", "--by-provider", "Anthropic", "--profile", awsProfile, "--region", awsRegion, "--output", "json", "--no-cli-pager"], { env })
+    execFileAsync(aws, ["bedrock", "list-foundation-models", "--by-provider", "Anthropic", "--profile", awsProfile, "--region", awsRegion, "--output", "json", "--no-cli-pager"], { env })
       .catch(() => ({ stdout: '{"modelSummaries":[]}' })),
   ]);
 

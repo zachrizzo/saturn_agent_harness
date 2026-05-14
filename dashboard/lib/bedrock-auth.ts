@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readAppSettings } from "./settings";
+import { awsCliCommand, withAwsCliPath } from "./aws-cli";
 import {
   DEFAULT_BEDROCK_PROFILE,
   DEFAULT_BEDROCK_REGION,
@@ -44,14 +45,14 @@ export function bedrockLoginHint(profile = bedrockProfile(), region = bedrockReg
 }
 
 function awsEnv(profile: string, region: string): NodeJS.ProcessEnv {
-  return {
+  return withAwsCliPath({
     ...process.env,
     AWS_PROFILE: profile,
     AWS_REGION: region,
     AWS_DEFAULT_REGION: region,
     AWS_SDK_LOAD_CONFIG: "1",
     AWS_PAGER: "",
-  };
+  });
 }
 
 function errorText(err: unknown): string {
@@ -90,7 +91,7 @@ function friendlyAwsMessage(err: unknown, profile: string, region: string): stri
 }
 
 async function runAws(args: string[], profile: string, region: string): Promise<void> {
-  await execFileAsync("aws", [...args, "--profile", profile, "--region", region, "--output", "json", "--no-cli-pager"], {
+  await execFileAsync(awsCliCommand(), [...args, "--profile", profile, "--region", region, "--output", "json", "--no-cli-pager"], {
     env: awsEnv(profile, region),
     timeout: 8_000,
     maxBuffer: 1024 * 1024,

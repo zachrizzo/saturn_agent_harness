@@ -9,6 +9,7 @@ import { listWorkingDirectories } from "@/lib/working-directories";
 import { agentsFile, jobsFile, mcpConfigFile, sessionsRoot, settingsFile, workingDirectoriesFile } from "@/lib/paths";
 import { parseStreamJsonl, type StreamEvent } from "@/lib/events";
 import { CLI_SHORT_LABELS } from "@/lib/clis";
+import { awsCliCommand, withAwsCliPath } from "@/lib/aws-cli";
 
 export const revalidate = 0;
 export const dynamic = "force-dynamic";
@@ -155,7 +156,8 @@ function mergeMcpServers(...groups: McpServerSummary[][]): McpServerSummary[] {
 
 async function loadAwsProfiles(): Promise<string[]> {
   try {
-    const { stdout } = await execFileAsync("aws", ["configure", "list-profiles"], {
+    const { stdout } = await execFileAsync(awsCliCommand(), ["configure", "list-profiles"], {
+      env: withAwsCliPath(),
       timeout: 5000,
       maxBuffer: 1024 * 1024,
     });

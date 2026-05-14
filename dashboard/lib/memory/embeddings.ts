@@ -6,6 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { memoryRoot } from "../paths";
 import { readAppSettings, type AppSettings } from "../settings";
+import { awsCliCommand, withAwsCliPath } from "../aws-cli";
 import type { MemoryCaptureInput, MemoryFrontmatterValue, MemoryIndexEntry, MemoryScope, MemoryType } from "./index";
 
 const execFileAsync = promisify(execFile);
@@ -430,7 +431,7 @@ async function bedrockEmbedding(settings: AppSettings, input: string): Promise<n
     normalize: true,
   });
   try {
-    await execFileAsync("aws", [
+    await execFileAsync(awsCliCommand(), [
       "bedrock-runtime",
       "invoke-model",
       "--model-id",
@@ -452,12 +453,12 @@ async function bedrockEmbedding(settings: AppSettings, input: string): Promise<n
     ], {
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
-      env: {
+      env: withAwsCliPath({
         ...process.env,
         AWS_PROFILE: settings.bedrockProfile,
         AWS_REGION: settings.bedrockRegion,
         AWS_PAGER: "",
-      },
+      }),
     });
     const parsed = JSON.parse(await fs.readFile(outputPath, "utf8")) as { embedding?: unknown };
     if (!Array.isArray(parsed.embedding)) throw new Error("Bedrock embedding response is missing embedding");
@@ -498,7 +499,7 @@ async function invokeBedrockCurator(settings: AppSettings, system: string, promp
     messages: [{ role: "user", content: prompt }],
   });
   try {
-    await execFileAsync("aws", [
+    await execFileAsync(awsCliCommand(), [
       "bedrock-runtime",
       "invoke-model",
       "--model-id",
@@ -520,12 +521,12 @@ async function invokeBedrockCurator(settings: AppSettings, system: string, promp
     ], {
       timeout: 90_000,
       maxBuffer: 1024 * 1024,
-      env: {
+      env: withAwsCliPath({
         ...process.env,
         AWS_PROFILE: settings.bedrockProfile,
         AWS_REGION: settings.bedrockRegion,
         AWS_PAGER: "",
-      },
+      }),
     });
     const parsed = JSON.parse(await fs.readFile(outputPath, "utf8")) as { content?: Array<{ text?: string }> };
     const text = parsed.content?.find((item) => typeof item.text === "string")?.text;
