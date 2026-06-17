@@ -5,6 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { spawn } from "node:child_process";
+import { scriptCmd } from "@/lib/shell-script";
 import path from "node:path";
 import { DEFAULT_CLI, normalizeCli } from "@/lib/clis";
 import { spawnTurn } from "@/lib/turn";
@@ -60,7 +61,8 @@ const ORCHESTRATOR_GRAPH_NODE_ID = "__orchestrator__";
 
 function syncJobCron(name: string): void {
   const register = path.join(binDir(), "register-job.sh");
-  const proc = spawn(register, [name], { detached: true, stdio: "ignore" });
+  const [spawnCmd, spawnArgs] = scriptCmd(register, [name]);
+  const proc = spawn(spawnCmd, spawnArgs, { detached: true, stdio: "ignore" });
   proc.on("error", () => {});
   proc.unref();
 }
