@@ -146,6 +146,42 @@ claude_reasoning_efforts() {
     | awk 'NF'
 }
 
+# Probe `claude -p --help` once per shell and cache which optional flags the
+# installed Claude Code build supports. Older builds reject unknown flags, so
+# any flag we want to opt into has to be gated by a capability check.
+_SATURN_CLAUDE_HELP_CACHE=""
+_SATURN_CLAUDE_HELP_CACHED="0"
+claude_help_text() {
+  if [[ "$_SATURN_CLAUDE_HELP_CACHED" != "1" ]]; then
+    _SATURN_CLAUDE_HELP_CACHE="$(claude -p --help 2>&1 || true)"
+    _SATURN_CLAUDE_HELP_CACHED="1"
+  fi
+  printf '%s' "$_SATURN_CLAUDE_HELP_CACHE"
+}
+
+claude_capability_supported() {
+  local flag="$1"
+  [[ -n "$flag" ]] || return 1
+  claude_help_text | grep -Fq -- "$flag"
+}
+
+# Validate a model id before passing to --model / -m. Mirrors
+# sanitizeCustomModel() in open-design: alphanumeric start, plus the few
+# punctuation chars used by real model ids (./_/-/:/@), bounded length.
+saturn_validate_model_id() {
+  local value="$1"
+  local label="${2:-model_id}"
+  [[ -n "$value" ]] || return 0
+  if (( ${#value} > 200 )); then
+    echo "$label exceeds 200 characters" >&2
+    return 2
+  fi
+  if [[ ! "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._/:@-]*$ ]]; then
+    echo "$label must match ^[A-Za-z0-9][A-Za-z0-9._/:@-]*\$" >&2
+    return 2
+  fi
+}
+
 claude_effort_supported() {
   local effort="$1"
   local level
@@ -223,7 +259,10 @@ build_cli_args() {
         --skip-git-repo-check
         --dangerously-bypass-approvals-and-sandbox
       )
-      [[ -n "$model" ]] && RUN_ARGS+=(-m "$model")
+      if [[ -n "$model" ]]; then
+        saturn_validate_model_id "$model" "codex model" || return 2
+        RUN_ARGS+=(-m "$model")
+      fi
       if [[ -n "$reasoning_effort" ]] && codex_effort_supported "$model" "$reasoning_effort"; then
         RUN_ARGS+=(--config "model_reasoning_effort=\"$reasoning_effort\"")
       fi
@@ -263,9 +302,22 @@ build_cli_args() {
       elif [[ -n "$allowed_tools" ]]; then
         RUN_ARGS+=(--allowedTools "$allowed_tools")
       fi
-      [[ -n "$resolved_model" ]] && RUN_ARGS+=(--model "$resolved_model")
+      if [[ -n "$resolved_model" ]]; then
+        saturn_validate_model_id "$resolved_model" "claude model" || return 2
+        RUN_ARGS+=(--model "$resolved_model")
+      fi
       if [[ -n "$reasoning_effort" ]] && claude_effort_supported "$reasoning_effort"; then
         RUN_ARGS+=(--effort "$reasoning_effort")
+      fi
+      if claude_capability_supported "--include-partial-messages"; then
+        RUN_ARGS+=(--include-partial-messages)
+      fi
+      if claude_capability_supported "--add-dir"; then
+        local _add_dir
+        for _add_dir in "${SATURN_CLAUDE_ADD_DIRS[@]:-}"; do
+          [[ -n "$_add_dir" && -d "$_add_dir" ]] || continue
+          RUN_ARGS+=(--add-dir "$_add_dir")
+        done
       fi
       RUN_CMD="claude"
 
@@ -318,7 +370,10 @@ build_codex_collab_args() {
   if [[ -n "$session_id" && "$is_resume" == "yes" ]]; then
     RUN_ARGS+=(--thread-id "$session_id")
   fi
-  [[ -n "$model" ]] && RUN_ARGS+=(--model "$model")
+  if [[ -n "$model" ]]; then
+    saturn_validate_model_id "$model" "codex model" || return 2
+    RUN_ARGS+=(--model "$model")
+  fi
   if [[ -n "$reasoning_effort" ]] && codex_effort_supported "$model" "$reasoning_effort"; then
     RUN_ARGS+=(--effort "$reasoning_effort")
   fi

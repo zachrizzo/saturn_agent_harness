@@ -30,6 +30,27 @@ saturn_latest_nvm_bin() {
   return 0
 }
 
+saturn_latest_fnm_bin() {
+  local candidate
+  candidate="$(ls -td "$HOME"/.fnm/node-versions/*/installation/bin 2>/dev/null | head -n 1 || true)"
+  [[ -n "$candidate" ]] && printf '%s\n' "$candidate"
+  return 0
+}
+
+saturn_latest_mise_node_bin() {
+  local candidate
+  candidate="$(ls -td "$HOME"/.local/share/mise/installs/node/*/bin 2>/dev/null | head -n 1 || true)"
+  [[ -n "$candidate" ]] && printf '%s\n' "$candidate"
+  return 0
+}
+
+saturn_latest_asdf_node_bin() {
+  local candidate
+  candidate="$(ls -td "$HOME"/.asdf/installs/nodejs/*/bin 2>/dev/null | head -n 1 || true)"
+  [[ -n "$candidate" ]] && printf '%s\n' "$candidate"
+  return 0
+}
+
 saturn_setup_env() {
   export AUTOMATIONS_ROOT="${AUTOMATIONS_ROOT:-$SATURN_REPO_ROOT}"
   export HOME="${HOME:-$(eval echo ~)}"
@@ -41,6 +62,19 @@ saturn_setup_env() {
   saturn_prepend_path "/opt/homebrew/bin"
   saturn_prepend_path "$SATURN_REPO_ROOT/bin"
 
+  # Toolchain bin dirs — launchd/cron start with a minimal PATH and miss these.
+  # Order matters: most-recently-installed wins, so prepend in reverse priority.
+  saturn_prepend_path "$HOME/.cargo/bin"
+  saturn_prepend_path "$HOME/.local/share/pnpm"
+  local asdf_bin
+  asdf_bin="$(saturn_latest_asdf_node_bin)"
+  [[ -n "$asdf_bin" ]] && saturn_prepend_path "$asdf_bin"
+  local mise_bin
+  mise_bin="$(saturn_latest_mise_node_bin)"
+  [[ -n "$mise_bin" ]] && saturn_prepend_path "$mise_bin"
+  local fnm_bin
+  fnm_bin="$(saturn_latest_fnm_bin)"
+  [[ -n "$fnm_bin" ]] && saturn_prepend_path "$fnm_bin"
   local nvm_bin
   nvm_bin="$(saturn_latest_nvm_bin)"
   [[ -n "$nvm_bin" ]] && saturn_prepend_path "$nvm_bin"
